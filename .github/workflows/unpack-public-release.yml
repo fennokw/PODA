@@ -1,5 +1,6 @@
 name: One-time unpack public release
 
+# Triggered after the workflow exists on the default branch.
 on:
   push:
     branches: [main]
