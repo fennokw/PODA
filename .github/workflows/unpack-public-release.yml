@@ -1,6 +1,5 @@
 name: One-time unpack public release
 
-# Triggered after the workflow exists on the default branch.
 on:
   push:
     branches: [main]
@@ -29,6 +28,10 @@ jobs:
           work="$(mktemp -d)"
           unzip -q "$archive" -d "$work"
           test -d "$work/PODA"
+
+          # GitHub's workflow token can write source files but cannot create another
+          # workflow file. CI is added immediately afterward through the connector.
+          rm -f "$work/PODA/.github/workflows/ci.yml"
 
           cp -a "$work/PODA/." .
           rm -f "$archive"
