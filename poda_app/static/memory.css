@@ -1,0 +1,105 @@
+/* Canonical memory viewer chrome. Renderer semantics live in memory.js. */
+body.memory-page { overflow: auto; }
+.memory-shell { position: relative; z-index: 1; min-height: 100dvh; padding: var(--s-4) var(--s-5) var(--s-5); display: grid; grid-template-rows: auto auto auto minmax(640px, 1fr); gap: var(--s-3); }
+.memory-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-4); padding: var(--s-3) var(--s-4); border: 1px solid var(--line-0); border-radius: var(--r-panel); background: var(--surface-0); }
+.memory-title { display: flex; align-items: center; gap: var(--s-3); }
+.memory-title h1 { font-size: var(--fs-20); letter-spacing: -0.01em; }
+.memory-head-actions { display: flex; align-items: center; gap: var(--s-4); }
+.return-home { font-weight: 600; letter-spacing: 0.04em; }
+.memory-commandbar { position: sticky; top: var(--s-2); z-index: var(--z-sticky); display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; padding: var(--s-2) var(--s-3); border: 1px solid var(--line-1); border-radius: var(--r-panel); background: rgba(8, 13, 26, 0.92); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); box-shadow: var(--shadow-1); }
+.commit-memory { min-width: 240px; letter-spacing: 0.06em; font-weight: 700; }
+.draft-status { font-family: var(--mono); font-size: var(--fs-12); letter-spacing: 0.04em; color: var(--text-2); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.draft-status[data-mode="dirty"] { color: var(--warn); }
+.draft-status[data-mode="error"] { color: var(--danger); }
+.draft-status[data-mode="busy"] { color: var(--lavender); }
+.draft-status[data-mode="clean"] { color: var(--ok); }
+.auto-rotate-status { font-family: var(--mono); font-size: var(--fs-11); letter-spacing: 0.04em; color: var(--text-3); }
+.auto-rotate-status[data-mode="active"] { color: var(--lavender); }
+.viewer-version { margin-left: auto; font-family: var(--mono); letter-spacing: 0.08em; }
+
+.memory-view-layout { display: grid; grid-template-columns: 360px minmax(0, 1fr) 340px; gap: var(--s-3); min-height: 640px; }
+.memory-editor, .memory-side { border: 1px solid var(--line-0); border-radius: var(--r-panel); background: var(--surface-0); padding: var(--s-4); overflow: auto; max-height: calc(100dvh - 190px); display: grid; gap: var(--s-3); align-content: start; }
+.panel-title { color: var(--text-2); font-size: var(--fs-12); letter-spacing: var(--track-wide); text-transform: uppercase; font-weight: 600; }
+.dedicated-memory-canvas { position: relative; overflow: hidden; border: 1px solid var(--line-1); border-radius: var(--r-panel); background: radial-gradient(circle at 50% 46%, rgba(17, 31, 63, 0.35), rgba(2, 4, 10, 0.98) 58%, #020409 100%); min-height: 640px; }
+.dedicated-memory-canvas::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at center, transparent 48%, rgba(0, 5, 18, 0.5) 100%); }
+.graph-3d canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#memoryGL { cursor: grab; outline: none; touch-action: none; }
+#memoryGL:focus-visible { box-shadow: inset 0 0 0 2px var(--accent-ring); border-radius: var(--r-panel); }
+#memoryLabels { pointer-events: none; }
+.memory-toolbar { position: absolute; top: var(--s-3); left: var(--s-3); right: var(--s-3); z-index: 5; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; pointer-events: none; }
+.memory-toolbar > * { pointer-events: auto; }
+.memory-toolbar .btn { background: rgba(10, 17, 33, 0.82); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+.density-seg { margin-left: auto; background: rgba(10, 17, 33, 0.82); }
+.open3d-badge, .lod-badge { position: absolute; z-index: 5; padding: 6px 9px; border: 1px solid var(--line-0); border-radius: 8px; background: rgba(8, 13, 26, 0.8); color: var(--text-3); font: var(--fs-11) var(--mono); letter-spacing: 0.06em; pointer-events: none; }
+.open3d-badge { right: var(--s-3); bottom: var(--s-3); max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lod-badge { left: var(--s-3); bottom: var(--s-3); color: var(--lavender); max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.memory-search-panel { display: grid; gap: 8px; }
+.memory-search-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(90px, 1fr)); gap: 6px; }
+.memory-search-filters .input { min-height: 32px; padding: 5px 8px; font-size: var(--fs-12); }
+.memory-search-nav { display: grid; grid-template-columns: 1fr 1fr auto; gap: 6px; }
+.memory-search-meta { color: var(--text-3); font-size: var(--fs-11); line-height: 1.45; }
+.memory-search-results { max-height: 280px; overflow: auto; display: grid; gap: 2px; }
+.memory-search-result { width: 100%; text-align: left; padding: 8px 9px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: var(--text-1); font-size: var(--fs-12); cursor: pointer; display: grid; gap: 2px; }
+.memory-search-result:hover, .memory-search-result.active { background: var(--accent-soft); border-color: rgba(79, 179, 255, 0.25); color: var(--text-0); }
+.memory-search-result .search-result-kind { color: var(--text-3); font-size: var(--fs-11); font-family: var(--mono); }
+.memory-search-result .offscreen { color: var(--lavender); }
+
+.open3d-controls-help { display: grid; gap: 4px; padding: 0 12px 12px; }
+.open3d-controls-help > div { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 10px; align-items: center; color: var(--text-2); font-size: var(--fs-12); }
+.open3d-controls-help kbd { font: var(--fs-11) var(--mono); color: var(--text-1); border: 1px solid var(--line-1); padding: 3px 6px; border-radius: 6px; background: rgba(255, 255, 255, 0.035); }
+
+.node-kind { color: var(--cyan); font-family: var(--mono); letter-spacing: var(--track-wide); font-size: var(--fs-11); text-transform: uppercase; }
+.memory-editor label.label { margin-top: 4px; }
+.memory-primary-textarea { min-height: 150px; }
+.memory-trigger-textarea { min-height: 90px; }
+.xyz-editor { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.xyz-editor .input { min-width: 0; font-family: var(--mono); font-size: var(--fs-12); padding: 8px 6px; }
+.node-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.version-list { display: grid; gap: 4px; max-height: 220px; overflow: auto; }
+.version-item { padding: 6px 8px; border: 1px solid var(--line-0); border-radius: 8px; font-size: var(--fs-12); display: grid; gap: 2px; }
+.version-item .mono { color: var(--text-3); font-size: var(--fs-11); }
+.provenance-row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+@media (max-width: 1240px) { .memory-view-layout { grid-template-columns: 320px minmax(0, 1fr) 300px; } }
+@media (max-width: 1050px) {
+  .memory-view-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(520px, 1fr) auto; }
+  .memory-editor, .memory-side { max-height: none; }
+  .memory-head { flex-direction: column; align-items: flex-start; }
+  .viewer-version { width: 100%; margin-left: 0; }
+}
+
+/* ---------- Two-tier memory (v0.5.0) ---------- */
+.surface-seg { background: rgba(10, 17, 33, 0.82); align-items: center; }
+.seg-label { color: var(--text-3); font-size: var(--fs-11); padding: 0 6px 0 8px; letter-spacing: 0.04em; }
+.surface-seg button[aria-pressed="true"] { background: var(--lavender-soft); box-shadow: inset 0 0 0 1px rgba(154,168,255,0.35); }
+.tier-legend { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line-0); border-radius: var(--r-control); background: rgba(255,255,255,0.02); font-size: var(--fs-12); color: var(--text-2); }
+.legend-item { display: flex; align-items: center; gap: 8px; }
+.legend-item i { width: 14px; height: 14px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+.legend-item .lg-cloud { background: radial-gradient(circle, rgba(70,110,190,0.35), rgba(70,110,190,0.08)); border: 1px solid rgba(120,160,230,0.35); }
+.legend-item .lg-surface { background: radial-gradient(circle, rgba(154,168,255,0.55), rgba(154,168,255,0.12)); border: 1px solid rgba(154,168,255,0.6); }
+.legend-item .lg-point { width: 8px; height: 8px; margin: 0 3px; background: #73b8ff; box-shadow: 0 0 8px rgba(115,184,255,0.8); }
+.legend-item .lg-durable { width: 8px; height: 8px; margin: 0 3px; background: #7ee0ff; box-shadow: 0 0 8px rgba(126,224,255,0.8); }
+.pair-block { display: grid; gap: 4px; padding: 10px 12px; border-radius: var(--r-control); border: 1px solid var(--line-0); background: rgba(255,255,255,0.025); }
+.pair-block.you { border-color: rgba(79,179,255,0.3); background: var(--accent-soft); }
+.pair-block.poda { border-color: rgba(154,168,255,0.25); }
+.pair-block .who { font-size: var(--fs-11); letter-spacing: var(--track-wide); text-transform: uppercase; color: var(--text-2); font-weight: 600; display: flex; gap: 8px; align-items: center; }
+.pair-block .txt { white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-13); line-height: 1.5; color: var(--text-1); max-height: 220px; overflow: auto; }
+.member-list { display: grid; gap: 3px; max-height: 240px; overflow: auto; }
+.member-item { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 6px 8px; border-radius: 8px; border: 1px solid transparent; background: transparent; color: var(--text-1); font-size: var(--fs-12); cursor: pointer; }
+.member-item:hover { background: var(--lavender-soft); border-color: rgba(154,168,255,0.3); }
+.member-item .mt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tiers-help { width: min(560px, 92vw); }
+.tiers-help .dialog-body { gap: var(--s-2); }
+.tiers-help dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 14px; font-size: var(--fs-13); margin: 0; }
+.tiers-help dt { color: var(--lavender); font-weight: 600; }
+.tiers-help dd { margin: 0; color: var(--text-1); }
+.search-result-kind .tier { margin-right: 6px; }
+
+/* v0.5.0 fix: grid children default to min-width:auto, so wide textareas/selects forced the editor column to overflow and clip */
+.memory-editor > *, .memory-side > * { min-width: 0; max-width: 100%; }
+.memory-editor .input, .memory-editor textarea, .memory-editor select, .memory-side .input { width: 100%; box-sizing: border-box; min-width: 0; }
+.memory-editor .provenance-row, .memory-editor .row, .memory-editor .node-actions { flex-wrap: wrap; min-width: 0; }
+.memory-editor .member-item { min-width: 0; }
+.memory-editor .member-item .mt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.memory-editor { overflow-x: hidden; }

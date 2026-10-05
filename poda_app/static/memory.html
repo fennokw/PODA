@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
+  <title>PODA Memory</title>
+  <link rel="icon" href="/static/favicon.svg?v=0.5.0" type="image/svg+xml" />
+  <link rel="stylesheet" href="/static/styles.css?v=0.5.0" />
+  <link rel="stylesheet" href="/static/memory.css?v=0.5.0" />
+</head>
+<body class="memory-page">
+  <main class="memory-shell">
+    <header class="memory-head">
+      <div class="memory-title">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="13.5" fill="none" stroke="#4fb3ff" stroke-width="1.2" opacity=".55"/><circle cx="16" cy="16" r="3.2" fill="#7ee0ff"/><circle cx="7.5" cy="12" r="1.6" fill="#9aa8ff"/><circle cx="24" cy="9.5" r="1.4" fill="#9aa8ff"/><circle cx="22.5" cy="23.5" r="1.6" fill="#9aa8ff"/><path d="M16 16L7.5 12M16 16l8-6.5M16 16l6.5 7.5" stroke="#4fb3ff" stroke-width=".9" opacity=".7"/></svg>
+        <div>
+          <h1>Memory</h1>
+          <p class="muted small">Transactional 3D editor. Nothing changes committed memory until you commit.</p>
+        </div>
+      </div>
+      <div class="memory-head-actions">
+        <span class="faint small">Build <span class="mono" data-build>loading</span></span>
+        <button id="backToPoda" class="btn return-home">← RETURN TO PODA CHAT</button>
+      </div>
+    </header>
+
+    <section class="memory-commandbar canonical-commandbar" aria-label="Memory transaction">
+      <button id="commitMemoryChanges" class="btn btn-primary commit-memory" disabled>COMMIT MEMORY CHANGES</button>
+      <button id="discardDraft" class="btn">DISCARD DRAFT</button>
+      <span id="memoryDraftStatus" class="draft-status" data-mode="clean">NO PENDING CHANGES</span>
+      <span id="autoRotateStatus" class="auto-rotate-status" data-mode="waiting">AUTO-ROTATE · RESUMES AFTER 15s IDLE</span>
+      <span class="viewer-version faint small">CANONICAL VIEWER · /memory-viewer</span>
+    </section>
+
+    <div id="viewerFatal" class="notice notice-danger" hidden></div>
+
+    <section class="memory-view-layout">
+      <aside class="memory-editor" aria-label="Memory editor">
+        <div class="panel-title">Selected memory</div>
+        <div id="nodePanel"><p class="muted small">Select a surface memory, an in-depth point, or a cloud in the scene.</p></div>
+      </aside>
+
+      <div class="graph-3d dedicated-memory-canvas">
+        <canvas id="memoryGL" aria-label="3D memory scene" role="img"></canvas>
+        <canvas id="memoryLabels" aria-hidden="true"></canvas>
+        <div class="memory-toolbar" role="toolbar" aria-label="Scene controls">
+          <button id="overviewMemory" class="btn btn-sm">Overview</button>
+          <button id="addCloud" class="btn btn-sm">Add cloud</button>
+          <button id="addMemoryNode" class="btn btn-sm">Add memory</button>
+          <button id="resetCamera" class="btn btn-sm">Reset camera</button>
+          <div class="seg surface-seg" role="group" aria-label="Surface memories">
+            <span class="seg-label">Surface memories</span>
+            <button type="button" id="surfacesShown" data-surfaces="shown" aria-pressed="true">Shown</button>
+            <button type="button" id="surfacesHidden" data-surfaces="hidden" aria-pressed="false">Hidden</button>
+          </div>
+          <button id="tiersHelp" class="btn btn-sm btn-ghost" type="button" aria-haspopup="dialog" title="How the two memory tiers work">How tiers work</button>
+          <div class="seg density-seg" role="group" aria-label="Edge density">
+            <button type="button" data-density="complete" aria-pressed="true">Complete</button>
+            <button type="button" data-density="neighbors" aria-pressed="false">Neighbors</button>
+            <button type="button" data-density="minimal" aria-pressed="false">Minimal</button>
+          </div>
+        </div>
+        <div id="rendererBadge" class="open3d-badge">OPEN3D LOADING…</div>
+        <div id="lodBadge" class="lod-badge" hidden></div>
+      </div>
+
+      <aside class="memory-side" aria-label="Search and controls">
+        <div class="panel-title">Search the full memory database</div>
+        <div class="memory-search-panel">
+          <input id="memorySearchInput" class="input" type="search" placeholder="Words in any memory…" autocomplete="off" aria-label="Search memories" />
+          <div class="memory-search-filters">
+            <select id="memorySearchKind" class="input" aria-label="Kind"><option value="">any kind</option><option value="surface">surface</option><option value="exchange">in-depth (Q and A)</option><option value="durable">durable</option><option value="conversation">conversation</option><option value="summary">summary</option></select>
+            <select id="memorySearchSpeaker" class="input" aria-label="Speaker"><option value="">any speaker</option><option value="user">user</option><option value="assistant">assistant</option></select>
+            <select id="memorySearchCloud" class="input" aria-label="Cloud"><option value="">any cloud</option></select>
+          </div>
+          <div class="memory-search-filters">
+            <input id="memorySearchSince" class="input" type="date" aria-label="Since" />
+            <input id="memorySearchUntil" class="input" type="date" aria-label="Until" />
+          </div>
+          <div class="memory-search-nav">
+            <button id="memorySearchPrev" class="btn btn-sm" type="button">← Prev</button>
+            <button id="memorySearchNext" class="btn btn-sm" type="button">Next →</button>
+            <button id="memorySearchClear" class="btn btn-sm btn-ghost" type="button">Clear</button>
+          </div>
+          <div id="memorySearchMeta" class="memory-search-meta">Searches title, contents, reference triggers, tags, and provenance across the whole database, including points hidden by level of detail.</div>
+          <div id="memorySearchResults" class="memory-search-results" role="listbox" aria-label="Search results"></div>
+        </div>
+
+        <details class="thought-panel" id="open3dControlHelp">
+          <summary>Controls</summary>
+          <div class="open3d-controls-help">
+            <div><kbd>Left drag background</kbd><span>Rotate / arcball</span></div>
+            <div><kbd>Ctrl + left drag</kbd><span>Translate camera</span></div>
+            <div><kbd>Middle drag</kbd><span>Translate camera</span></div>
+            <div><kbd>Shift + left drag</kbd><span>Roll</span></div>
+            <div><kbd>Wheel</kbd><span>Zoom</span></div>
+            <div><kbd>R</kbd><span>Reset viewpoint</span></div>
+            <div><kbd>[ / ]</kbd><span>Field of view</span></div>
+            <div><kbd>Drag memory point</kbd><span>Move draft in the view plane</span></div>
+            <div><kbd>Drag selected cloud</kbd><span>Move cloud and its memories</span></div>
+            <div><kbd>Option + drag cloud</kbd><span>Move cloud immediately</span></div>
+            <div><kbd>Option + wheel</kbd><span>Move selected item through depth</span></div>
+            <div><kbd>Double-click cloud</kbd><span>Focus camera on cloud</span></div>
+          </div>
+        </details>
+
+        <div class="tier-legend" aria-label="Legend">
+          <span class="legend-item"><i class="lg-cloud"></i>topic cloud</span>
+          <span class="legend-item"><i class="lg-surface"></i>surface memory (distilled)</span>
+          <span class="legend-item"><i class="lg-point"></i>in-depth memory (Q and A)</span>
+          <span class="legend-item"><i class="lg-durable"></i>durable fact</span>
+        </div>
+        <div class="notice memory-draft-banner small">Only <strong>COMMIT MEMORY CHANGES</strong> writes text, membership, deletion, or XYZ back to PODA. Committing a position changes the manual spatial relevance signal used in retrieval. It does not rewrite the cosine similarity between text embeddings; editing title, contents, or triggers does.</div>
+      </aside>
+    </section>
+  </main>
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <script src="/static/ui.js?v=0.5.0"></script>
+  <script src="/static/memory-worker.js?v=0.5.0"></script>
+  <script src="/static/memory.js?v=0.5.0"></script>
+</body>
+</html>

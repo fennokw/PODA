@@ -1,0 +1,105 @@
+/* PODA design tokens. One palette, one radius system, one motion language. No remote assets. */
+:root {
+  color-scheme: dark;
+
+  /* Surfaces: deep navy to near-black. Never pure black. */
+  --bg-0: #04070f;
+  --bg-1: #070c18;
+  --bg-2: #0b1222;
+  --surface-0: rgba(10, 17, 33, 0.78);
+  --surface-1: #0d1526;
+  --surface-2: #111b31;
+  --surface-3: #16223d;
+  --glass: rgba(12, 20, 38, 0.66);
+
+  /* Lines */
+  --line-0: rgba(126, 170, 255, 0.10);
+  --line-1: rgba(126, 170, 255, 0.16);
+  --line-2: rgba(126, 170, 255, 0.28);
+  --line-glow: rgba(79, 179, 255, 0.45);
+
+  /* Text */
+  --text-0: #eaf2fd;
+  --text-1: rgba(214, 228, 248, 0.86);
+  --text-2: rgba(188, 206, 232, 0.64);
+  --text-3: rgba(160, 182, 214, 0.46);
+
+  /* Single accent (electric blue) + cyan highlight + lavender secondary */
+  --accent: #4fb3ff;
+  --accent-strong: #2f9bf2;
+  --accent-soft: rgba(79, 179, 255, 0.14);
+  --accent-ring: rgba(79, 179, 255, 0.36);
+  --cyan: #7ee0ff;
+  --lavender: #9aa8ff;
+  --lavender-soft: rgba(154, 168, 255, 0.14);
+
+  /* Semantic */
+  --ok: #5fd6a3;
+  --ok-soft: rgba(95, 214, 163, 0.14);
+  --warn: #f2c96a;
+  --warn-soft: rgba(242, 201, 106, 0.14);
+  --danger: #ff7a90;
+  --danger-soft: rgba(255, 122, 144, 0.14);
+
+  /* Typography (system only) */
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", system-ui, sans-serif;
+  --mono: "SF Mono", ui-monospace, Menlo, Monaco, Consolas, monospace;
+  --fs-11: 0.6875rem;
+  --fs-12: 0.75rem;
+  --fs-13: 0.8125rem;
+  --fs-14: 0.875rem;
+  --fs-15: 0.9375rem;
+  --fs-16: 1rem;
+  --fs-20: 1.25rem;
+  --fs-26: 1.625rem;
+  --fs-34: 2.125rem;
+  --lh-tight: 1.15;
+  --lh-body: 1.55;
+  --track-wide: 0.14em;
+
+  /* Spacing (4px base) */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-8: 32px;
+  --s-10: 40px;
+  --s-12: 48px;
+
+  /* Radius system: controls 10, panels 14, pills full */
+  --r-control: 10px;
+  --r-panel: 14px;
+  --r-pill: 999px;
+
+  /* Elevation: tinted to the navy background, never black */
+  --shadow-1: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 24px rgba(2, 8, 24, 0.45);
+  --shadow-2: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 20px 50px rgba(2, 8, 24, 0.6);
+  --shadow-focus: 0 0 0 3px var(--accent-ring);
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-standard: cubic-bezier(0.32, 0.72, 0, 1);
+  --d-fast: 140ms;
+  --d-base: 240ms;
+  --d-slow: 480ms;
+
+  /* Layout */
+  --rail-w: 232px;
+  --inspector-w: 336px;
+  --topbar-h: 56px;
+  --z-rail: 10;
+  --z-inspector: 10;
+  --z-sticky: 20;
+  --z-overlay: 40;
+  --z-toast: 50;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --d-fast: 0ms;
+    --d-base: 0ms;
+    --d-slow: 0ms;
+  }
+}
