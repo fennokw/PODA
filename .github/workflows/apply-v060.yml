@@ -1,0 +1,48 @@
+name: Apply PODA v0.6.0 personalization
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/apply-v060.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch, verify, and apply tested v0.6.0 patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin poda-v060-import-payload
+
+          : > /tmp/poda-patch.b64
+          for n in 00 01 02 03 04 05 06; do
+            git show "origin/poda-v060-import-payload:.poda-payload/part${n}" >> /tmp/poda-patch.b64
+          done
+
+          base64 --decode /tmp/poda-patch.b64 > /tmp/poda-v060.tar.gz
+
+          expected="740fd394d256988ac34f71044f02e552f607dc41ec8307ba57cf6cdc22686dde"
+          actual="$(sha256sum /tmp/poda-v060.tar.gz | awk '{print $1}')"
+          if [ "$actual" != "$expected" ]; then
+            echo "Patch integrity failure: expected $expected, got $actual" >&2
+            exit 1
+          fi
+
+          tar -xzf /tmp/poda-v060.tar.gz -C .
+
+          git config user.name "PODA Release Automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit \
+            -m "Add local LLM export personalization and semantic topic clouds" \
+            -m "Add privacy-first ChatGPT/Claude data export imports, persistent personalization derived only from user-authored text, visible second-brain import memories, duplicate detection, semantic topic-cloud clustering with local embedding/lexical fallback, and support for future chats joining imported topic clouds. Raw import archives are staged locally and deleted after processing."
+          git push origin HEAD:main
