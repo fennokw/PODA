@@ -32,7 +32,7 @@ jobs:
 
           base64 --decode /tmp/poda-patch.b64 > /tmp/poda-v060.tar.gz
 
-          expected="740fd394d256988ac34f71044f02e552f607dc41ec8307ba57cf6cdc22686dde"
+          expected="c7b68dd7d4b9287c41b2394b8c8ae520f98db2863e1bbe605cc847179b1c7846"
           actual="$(sha256sum /tmp/poda-v060.tar.gz | awk '{print $1}')"
           if [ "$actual" != "$expected" ]; then
             echo "Patch integrity failure: expected $expected, got $actual" >&2
@@ -40,6 +40,15 @@ jobs:
           fi
 
           tar -xzf /tmp/poda-v060.tar.gz -C .
+
+          test "$(cat PODA_VERSION.txt)" = "0.6.0-public"
+          test -f poda_app/imports/archive.py
+          test -f poda_app/imports/profile.py
+          test -f poda_app/imports/router.py
+          test -f poda_app/imports/service.py
+          test -f tests/test_llm_imports.py
+          python3 -m compileall -q poda_app
+          python3 tools/release_guard.py --check
 
           git config user.name "PODA Release Automation"
           git config user.email "actions@users.noreply.github.com"
