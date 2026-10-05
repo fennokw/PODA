@@ -1,7 +1,5 @@
 name: Apply PODA v0.6.0 personalization
 
-# Retry after completing and verifying every staged payload part.
-# Triggered after GitHub connector access was confirmed.
 on:
   push:
     branches: [main]
@@ -19,33 +17,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Fetch, verify, and apply tested v0.6.0 patch
+      - name: Fetch, verify, test, and apply PODA v0.6.0
         shell: bash
         run: |
           set -euo pipefail
           git fetch origin poda-v060-import-payload
 
-          : > /tmp/poda-patch.b64
-          for n in 00 01 02 03 04 05 06; do
-            git show "origin/poda-v060-import-payload:.poda-payload/part${n}" >> /tmp/poda-patch.b64
+          : > /tmp/poda-v060.patch.xz.b64
+          for n in 00 01 02 03; do
+            git show "origin/poda-v060-import-payload:.poda-patch/p${n}" >> /tmp/poda-v060.patch.xz.b64
           done
 
-          base64 --decode /tmp/poda-patch.b64 > /tmp/poda-v060.tar.gz
+          base64 --decode /tmp/poda-v060.patch.xz.b64 > /tmp/poda-v060.patch.xz
 
-          expected="c7b68dd7d4b9287c41b2394b8c8ae520f98db2863e1bbe605cc847179b1c7846"
-          actual="$(sha256sum /tmp/poda-v060.tar.gz | awk '{print $1}')"
+          expected="5c4b584411707a3ac11d495fb2492d6f8cf5f648662ae22ed119ac74cfd42afc"
+          actual="$(sha256sum /tmp/poda-v060.patch.xz | awk '{print $1}')"
           if [ "$actual" != "$expected" ]; then
             echo "Patch integrity failure: expected $expected, got $actual" >&2
             exit 1
           fi
 
-          set +e
-          tar -xzf /tmp/poda-v060.tar.gz -C .
-          tar_status=$?
-          set -e
-          if [ "$tar_status" -ne 0 ]; then
-            echo "Staged archive ended with a gzip/tar EOF; validating extracted source before accepting it."
-          fi
+          xz -dc /tmp/poda-v060.patch.xz > /tmp/poda-v060.patch
+          patch --batch --forward -p1 < /tmp/poda-v060.patch
 
           test "$(cat PODA_VERSION.txt)" = "0.6.0-public"
           test -f poda_app/imports/archive.py
@@ -53,6 +46,7 @@ jobs:
           test -f poda_app/imports/router.py
           test -f poda_app/imports/service.py
           test -f tests/test_llm_imports.py
+
           python3 -m compileall -q poda_app
           python3 tools/release_guard.py --check
           python3 -m pip install -q -r requirements.txt pytest
@@ -61,5 +55,7 @@ jobs:
           git config user.name "PODA Release Automation"
           git config user.email "actions@users.noreply.github.com"
           git add -A
-          git commit             -m "Add local LLM export personalization and semantic topic clouds"             -m "Add privacy-first ChatGPT/Claude data export imports, persistent personalization derived only from user-authored text, visible second-brain import memories, duplicate detection, semantic topic-cloud clustering with local embedding/lexical fallback, and support for future chats joining imported topic clouds. Raw import archives are staged locally and deleted after processing."
+          git commit \
+            -m "Add local LLM export personalization and semantic topic clouds" \
+            -m "Add privacy-first ChatGPT/Claude data export imports, persistent personalization derived only from user-authored text, visible second-brain import memories, duplicate detection, semantic topic-cloud clustering with local embedding/lexical fallback, and support for future chats joining imported topic clouds. Raw import archives are staged locally and deleted after processing."
           git push origin HEAD:main
