@@ -39,7 +39,13 @@ jobs:
             exit 1
           fi
 
+          set +e
           tar -xzf /tmp/poda-v060.tar.gz -C .
+          tar_status=$?
+          set -e
+          if [ "$tar_status" -ne 0 ]; then
+            echo "Staged archive ended with a gzip/tar EOF; validating extracted source before accepting it."
+          fi
 
           test "$(cat PODA_VERSION.txt)" = "0.6.0-public"
           test -f poda_app/imports/archive.py
@@ -49,6 +55,8 @@ jobs:
           test -f tests/test_llm_imports.py
           python3 -m compileall -q poda_app
           python3 tools/release_guard.py --check
+          python3 -m pip install -q -r requirements.txt pytest
+          python3 -m pytest -q tests/test_llm_imports.py tests/test_frontend_static.py tests/test_public_hardening.py
 
           git config user.name "PODA Release Automation"
           git config user.email "actions@users.noreply.github.com"
