@@ -1,4 +1,4 @@
-# PODA v0.5.1-public — Architecture
+# PODA v0.6.0-public — Architecture
 
 The public source build is a **single-machine local-first application**. The browser frontend uses bundled HTML/CSS/JavaScript and WebGL2; the API is FastAPI/Uvicorn bound only to `127.0.0.1`. The local Ollama service handles chat, planning and embeddings. SQLCipher persists memory and audit data outside the source checkout; macOS Keychain keeps encryption keys and connector secrets. External access is opt-in for Notion and connected mail providers only.
 

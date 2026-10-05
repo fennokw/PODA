@@ -445,3 +445,7 @@ dialog::backdrop { background: rgba(2, 6, 16, 0.66); backdrop-filter: blur(6px);
 .sw-row .row { flex-wrap: wrap; }
 .skill-drawer summary { cursor: pointer; color: var(--text-1, #cfe3ff); font-size: .85rem; padding: 6px 0; }
 .skill-md { max-height: 380px; overflow: auto; white-space: pre-wrap; font-size: .74rem; }
+
+/* v0.6.0 local personalization import */
+.import-hero{display:grid;gap:16px;padding:20px;border:1px solid color-mix(in srgb,var(--accent,#4fb3ff) 32%,transparent);background:linear-gradient(135deg,rgba(79,179,255,.08),rgba(154,168,255,.045));border-radius:16px}
+.import-hero h3{margin:0 0 6px;font-size:1.05rem}.import-hero .input[type=file]{padding:12px;background:rgba(4,16,32,.55)}

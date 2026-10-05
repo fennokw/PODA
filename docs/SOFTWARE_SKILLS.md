@@ -1,4 +1,4 @@
-# Software skills — deliberate expert opt-in (v0.5.1-public)
+# Software skills — deliberate expert opt-in (v0.6.0-public)
 
 External software execution is DISABLED in this public release until the user explicitly sets `PODA_ALLOW_EXTERNAL_SOFTWARE=I_TRUST_MY_INSTALLED_HARNESSES`. Once enabled, PODA can operate external software through explicit grants, receipted
 actions, and no pretending. **These harnesses are not confined by PODA's Python execution sandbox and may inherit your macOS user authority.** The mechanism is [CLI-Anything](https://github.com/HKUDS/CLI-Anything): each supported

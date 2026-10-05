@@ -106,3 +106,12 @@ def test_memory_viewer_two_tier_controls():
 def test_ask_recall_shows_tiers():
     app_js = (STATIC / "app.js").read_text(encoding="utf-8")
     assert "Surface memories read first" in app_js and "depth_used" in app_js and "memory_dive" in app_js
+
+
+def test_personalize_import_screen_is_shipped():
+    index = (STATIC / "index.html").read_text(encoding="utf-8")
+    app = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "Personalize" in index
+    assert "Import your main AI data export" in app
+    assert "/imports/llm-export" in app
+    assert "Open second brain" in app

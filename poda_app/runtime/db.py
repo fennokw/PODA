@@ -310,6 +310,10 @@ SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS agent_proposals (
         id TEXT PRIMARY KEY, session_id TEXT, created_at TEXT NOT NULL, status TEXT NOT NULL, plan_json TEXT NOT NULL,
         receipt_ids_json TEXT, decided_at TEXT)""",
+    """CREATE TABLE IF NOT EXISTS llm_imports (
+        id TEXT PRIMARY KEY, provider TEXT NOT NULL, source_filename TEXT, fingerprint TEXT NOT NULL UNIQUE,
+        conversation_count INTEGER DEFAULT 0, message_count INTEGER DEFAULT 0, memory_count INTEGER DEFAULT 0, cloud_count INTEGER DEFAULT 0,
+        profile_json TEXT, parser_meta_json TEXT, created_at TEXT NOT NULL)""",
 ]
 
 COLUMN_MIGRATIONS = [
@@ -433,13 +437,16 @@ def get_setting(key: str, default: str = "") -> str:
         conn.close()
 
 
-def set_setting(key: str, value: str) -> None:
-    conn = connect()
+def set_setting(key: str, value: str, conn=None) -> None:
+    own = conn is None
+    conn = conn or connect()
     try:
         conn.execute("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at", (key, value, now_iso()))
-        conn.commit()
+        if own:
+            conn.commit()
     finally:
-        conn.close()
+        if own:
+            conn.close()
 
 
 def init_database() -> dict[str, Any]:

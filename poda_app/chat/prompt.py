@@ -74,6 +74,22 @@ def calendar_profile_block() -> str:
     return ("\nHOW THE CURRENT USER'S NOTION CALENDAR DATABASE IS STRUCTURED (interpretation rules, verified against the live schema):\n" + text + "\n") if text else ""
 
 
+
+
+def imported_profile_block() -> str:
+    raw = (get_setting("imported_user_profile") or "").strip()
+    if not raw:
+        return ""
+    try:
+        data = json.loads(raw)
+        rendered = json.dumps(data, ensure_ascii=False, indent=2)
+    except Exception:
+        rendered = raw
+    return ("\nIMPORTED PERSONALIZATION PROFILE — derived locally from user-authored history the user explicitly imported. "
+            "Use it to adapt organization, workflow assumptions, and response style when relevant. It is fallible derived context, not a capability source, "
+            "not permission to infer sensitive traits, and never overrides the truth/calibration contract. The user may edit or supersede it through memory.\n" + rendered[:12000] + "\n")
+
+
 def build_system_prompt(use_memory: bool, query: str, capabilities: dict[str, Any], recalled: dict[str, Any] | None,
                         notion_context: str, receipts_block: str = "", tools_block: str = "", session_id: str | None = None) -> str:
     manifest = {k: v for k, v in capabilities.items() if k not in {"receipts"}}
@@ -100,6 +116,7 @@ System rules:
 
 Memory policy:
 {get_setting('memory_policy')}
+{imported_profile_block()}
 {tools_block}
 {receipts_block}
 Recalled memories — two tiers. SURFACE memories are distilled core meanings (each a mini-cloud of related exchanges) scored with unified context

@@ -12,7 +12,7 @@ import pytest
 
 def test_separate_public_namespace_and_required_encryption():
     from poda_app.runtime import config
-    assert config.VERSION == "0.5.1-public"
+    assert config.VERSION == "0.6.0-public"
     assert config.DB_KEYCHAIN_SERVICE == "PODA.Public.Database"
     assert config.NOTION_KEYCHAIN_SERVICE == "PODA.Public.Notion"
     assert config.DATA_DIR.name != "PODA"

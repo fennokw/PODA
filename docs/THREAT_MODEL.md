@@ -1,4 +1,4 @@
-# PODA v0.5.1-public — Technical threat model
+# PODA v0.6.0-public — Technical threat model
 
 This document describes implemented boundaries, known limitations, and deliberate opt-ins. It is not a certification or third-party security review. All personal data starts **empty** in a fresh install of this public source archive; new data is created under `~/Library/Application Support/PODA-Public/` rather than in the repository.
 

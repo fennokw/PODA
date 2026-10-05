@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "PODA"
-VERSION = "0.5.1-public"
+VERSION = "0.6.0-public"
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 PACKAGE_DIR = BASE_DIR / "poda_app"

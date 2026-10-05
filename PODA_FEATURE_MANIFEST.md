@@ -1,6 +1,6 @@
-# PODA v0.5.1-public — audited feature manifest
+# PODA v0.6.0-public — audited feature manifest
 
-**Source-only release.** It includes no user data, chat history, personal memories, tokens, linked accounts, prior app-support databases, backups or earlier private Git history. The memory *framework* remains intact and starts collecting new chat/memory records once installed.
+**Source-only release.** It includes no user data, chat history, personal memories, tokens, linked accounts, prior app-support databases, backups or earlier private Git history. The memory framework remains intact and starts collecting new chat/memory records once installed.
 
 | Function | Modules / verification |
 |---|---|
@@ -8,6 +8,8 @@
 | Ollama fast/balanced/deep routing; measured-memory budgets, conservative unknown-hardware fallback | `runtime/models.py`, `runtime/hardware.py` |
 | Live capability ledger, unsupported-action gate, action receipts | `runtime/capability.py`, `agent/gate.py`, `agent/receipts.py` |
 | Conversation pair nodes, durable personal facts, surface memory distillation, FTS5/cosine/spatial search | `memory/store.py`, `memory/surface.py`, `memory/retrieval.py` |
+| **Local LLM-history personalization import:** ChatGPT/Claude ZIP detection, ZIP safety checks, source provenance, semantic high-level topic clouds, visible imported exchange memories, user-authored workflow/style profile, duplicate fingerprint protection | `imports/`, `static/app.js`, `tests/test_llm_imports.py` |
+| Imported topic clouds can absorb matching future chats instead of forcing all ordinary discussion into one global conversation bucket | `memory/store.py::parent_for_text` |
 | Persistent post-commit embedding queue; no Ollama call within the atomic memory commit | `memory/embedding_jobs.py`, `memory/router.py`, `tests/` |
 | Open3D 3D geometry, local WebGL rendering, interactive translucent clouds and points, search and transactional commit | `memory/layout.py`, `static/memory.*`, `static/memory-worker.js` |
 | Explainable project priorities | `planner/priority.py` |
@@ -19,6 +21,13 @@
 | External CLI harnesses disabled until deliberate expert opt-in, additionally subject to per-harness permissions | `agent/software.py`, `agent/software_router.py` |
 | SQLCipher **required** for normal startup, separate `PODA-Public` Keychain and data directories, AES-GCM encrypted backups | `runtime/db.py`, `security/keychain.py`, `security/crypto.py` |
 | Positive-allowlist archive and GitHub CI security/test gate | `tools/release_guard.py`, `.github/workflows/ci.yml` |
+
+## Imported-data trust model
+
+- Imported **user** text may become durable personalization/knowledge context.
+- Imported **assistant** text is contextual history, never automatically a fact about the user.
+- A locally derived personalization profile is explicitly fallible and cannot override PODA's capability ledger, truth contract or action permissions.
+- The original ZIP is not retained after parsing. Imported normalized memories remain in the encrypted local PODA database until the user deletes them.
 
 ## Not promised
 

@@ -75,7 +75,7 @@
 
     initWorker() {
       try {
-        this.worker = new Worker('/static/memory-worker.js?v=0.5.0');
+        this.worker = new Worker('/static/memory-worker.js?v=0.6.0');
         this.worker.onmessage = (e) => {
           const d = e.data; if (d.seq !== this.connSeq) return; // stale
           this.uploadConnections(d.pos, d.colors, d.alphas, d.count); this.connPending = false; this.edgeCount = d.edges;

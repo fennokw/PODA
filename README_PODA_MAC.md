@@ -10,4 +10,4 @@ chmod +x *.command
 ./start_poda.command
 ```
 
-PODA v0.5.1-public starts with an empty encrypted database **outside the checkout** in `~/Library/Application Support/PODA-Public/`. Do not copy your private PODA database into this public installation.
+PODA v0.6.0-public starts with an empty encrypted database **outside the checkout** in `~/Library/Application Support/PODA-Public/`. Do not copy your private PODA database into this public installation.

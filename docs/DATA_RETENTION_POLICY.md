@@ -1,4 +1,4 @@
-# PODA v0.5.1-public — Data retention
+# PODA v0.6.0-public — Data retention
 
 The public GitHub repository and downloadable source ZIP include **no** personal content. The first run creates its own private database; a user explicitly decides when to connect external services. The runtime has no automatic cloud transcript/memory sync.
 

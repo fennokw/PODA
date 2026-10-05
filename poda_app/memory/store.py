@@ -160,7 +160,14 @@ def should_store_durable(content: str) -> bool:
     return any(p in lower for p in DURABLE_PHRASES)
 
 
-def parent_for_text(content: str) -> str:
+def parent_for_text(content: str, conn=None) -> str:
+    """Choose a high-level cloud for a user-authored memory.
+
+    Built-in organizational clouds remain first-class, but imported/dynamically-created
+    topic clouds can win when the new chat clearly overlaps their title/tags. This keeps
+    future chats organized around the user's actual archive instead of dumping ordinary
+    discussion into one Conversation Memory bucket.
+    """
     lower = (content or "").lower()
     scores = {
         "seed-email-triage": sum(2 for w in ["email", "inbox", "sender", "reply", "receipt", "thread", "message", "gmail", "follow up", "follow-up"] if w in lower),
@@ -171,7 +178,25 @@ def parent_for_text(content: str) -> str:
     if any(w in lower for w in ["i prefer", "from now on", "going forward", "remember that"]):
         scores[PERSONAL_CLOUD] += 6
     best = max(scores, key=scores.get)
-    return best if scores[best] > 0 else PERSONAL_CLOUD
+    if scores[best] > 0:
+        return best
+    if conn is not None:
+        tokens = {t.lower() for t in extract_terms(content, limit=14)}
+        tokens.update(re.findall(r"[a-z][a-z0-9_+-]{3,}", lower))
+        dynamic_best, dynamic_score = None, 0
+        for row in rows(conn, "SELECT id,title,summary,tags_json FROM memory_nodes WHERE node_type='domain' AND tags_json LIKE '%topic-cloud%'"):
+            try:
+                tags = {str(t).lower() for t in json.loads(row.get("tags_json") or "[]")}
+            except Exception:
+                tags = set()
+            title_words = set(re.findall(r"[a-z][a-z0-9_+-]{3,}", (row.get("title") or "").lower()))
+            summary_words = set(re.findall(r"[a-z][a-z0-9_+-]{4,}", (row.get("summary") or "").lower()))
+            score = 3 * len(tokens & tags) + 2 * len(tokens & title_words) + len(tokens & summary_words)
+            if score > dynamic_score:
+                dynamic_best, dynamic_score = row["id"], score
+        if dynamic_best and dynamic_score >= 3:
+            return dynamic_best
+    return CONVERSATION_CLOUD
 
 
 def memory_title(content: str) -> str:
@@ -217,7 +242,7 @@ def ingest_chat_turn(conn, role: str, content: str, source_message_id: str | Non
         if existing:
             return existing["id"]
     durable = role == "user" and should_store_durable(raw)
-    parent_id = parent_for_text(raw) if durable else CONVERSATION_CLOUD
+    parent_id = parent_for_text(raw, conn) if role == "user" else CONVERSATION_CLOUD
     memory_kind = "durable" if durable else "conversation"
     tags = extract_terms(raw, limit=9)
     for tag in [memory_kind, role]:

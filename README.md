@@ -4,7 +4,7 @@
 
 PODA is a self-hosted web application for **one Apple Silicon Mac**. Its chat models, embeddings, memory database, task planner and visual second brain run locally. Instead of relying on a hosted AI service to remember your life, PODA maintains an inspectable, editable local record of the context you choose to retain. It can also connect, with your permission, to **the Notion database behind Notion Calendar**, macOS Apple Mail, and optionally Gmail IMAP/SMTP. Those integrations necessarily contact external services; PODA's AI inference does not.
 
-> **Public source release v0.5.1-public.** This repository intentionally contains **no personal memories, chat transcripts, credentials, connected accounts, historical databases, logs, screenshots or private Git history**. On first run it creates a brand-new, encrypted memory database in `~/Library/Application Support/PODA-Public/`. It does not import or modify another PODA installation. The downloadable ZIP is a source repository, **not a signed Mac app**. See [Security and limitations](#security-and-limitations).
+> **Public source release v0.6.0-public.** This repository intentionally contains **no personal memories, chat transcripts, credentials, connected accounts, historical databases, logs, screenshots or private Git history**. On first run it creates a brand-new, encrypted memory database in `~/Library/Application Support/PODA-Public/`. It does not import or modify another PODA installation. The downloadable ZIP is a source repository, **not a signed Mac app**. See [Security and limitations](#security-and-limitations).
 
 ## Why PODA exists
 
@@ -37,7 +37,22 @@ PODA is open source so users can inspect the code that holds their personal data
 | Software skills | CLI-Anything discovery, permissions, skill instructions and receipts | External CLI execution is off by default; explicitly enabled harnesses can have ordinary user privileges |
 | Privacy | Loopback-only server, session/origin checks, outbound audit/offline mode, Keychain credentials, SQLCipher storage and encrypted backups | Same-user malicious processes, browser extensions and compromised macOS are outside PODA's isolation guarantee |
 
-The UI provides Ask, Memory, Plan, Notion, Mail, Files & Agent, Privacy and System. `⌘K` opens the command palette; number keys switch the main screens. `OPEN3D MEMORY` opens the dedicated `/memory-viewer`.
+The UI provides Ask, Memory, **Personalize**, Plan, Notion, Mail, Files & Agent, Privacy and System. `⌘K` opens the command palette; number keys switch the main screens. `OPEN3D MEMORY` opens the dedicated `/memory-viewer`.
+
+## Import an existing ChatGPT or Claude history
+
+PODA can optionally bootstrap itself from an official **main/data export ZIP** from ChatGPT or Claude. Open **Personalize** in the left rail and upload the provider export directly in the local UI. The archive is staged under PODA's private Application Support directory with restrictive permissions, parsed locally, and deleted immediately after parsing; the raw ZIP is not retained.
+
+The importer is designed to make a fresh PODA installation useful quickly without turning prior assistant output into unquestioned truth:
+
+1. User/assistant turns are normalized into source-tagged **visible exchange memories** in the same second-brain graph used by live chat. Assistant text is preserved as contextual conversation, not authoritative user fact.
+2. Conversations are grouped into **high-level semantic topic clouds** using local Ollama embeddings when available. If Ollama is offline, a deterministic lexical fallback still imports everything and builds manageable topic clouds.
+3. Within those big clouds, PODA's existing surface-memory system continues to distill related exchanges into smaller semantic surfaces. The result is a hierarchy rather than one giant Conversation Memory bucket.
+4. If the user enables personalization, PODA analyzes **user-authored text only** to derive workflow, communication and response-style preferences. It explicitly avoids inferring sensitive traits and stores the resulting profile as both local system personalization context and a visible second-brain memory.
+5. Future chats can match the imported topic-cloud tags, so new related conversations naturally continue inside the relevant high-level area instead of rebuilding the user's organization from scratch.
+6. Importing the exact same archive twice is idempotent: PODA fingerprints the ZIP and refuses to duplicate it.
+
+The archive parser rejects path traversal, symbolic links, suspicious compression ratios and oversized archives. Attachments and binary content are ignored. The feature never uploads the export to a hosted inference service; any profile synthesis uses the local Ollama runtime.
 
 ## Requirements
 
@@ -228,6 +243,7 @@ poda_app/
   runtime/                 configuration, hardware, Ollama, model budgets, SQLCipher and live ledger
   memory/                  source and surface nodes, offline embedding queue, hybrid retrieval,
                            spatial layout, 3D scenes and memory transactions
+  imports/                 secure ChatGPT/Claude export parsing, topic-cloud clustering and local personalization
   chat/                    streaming chat, scoped session context and grounded system prompt
   agent/                   file grants, code sandbox, tool orchestration, approval receipts,
                            CLI skill discovery and external-execution opt-in

@@ -3,6 +3,7 @@ uvicorn[standard]==0.53.0
 httpx==0.28.1
 requests==2.32.3
 pydantic==2.13.5
+python-multipart==0.0.20
 python-dateutil==2.9.0.post0
 cryptography==50.0.2
 sqlcipher3==0.6.2

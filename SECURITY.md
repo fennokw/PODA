@@ -33,3 +33,7 @@ Contact the repository maintainer privately using the GitHub repository's securi
 ## Before making the repository public
 
 Run `python3 tools/release_guard.py --check`, review a fresh `git status --ignored`, inspect the actual generated ZIP, check `git log --all --stat` for historic private content, and start from this source-only ZIP with a **new initial Git commit**. Never publish the original private v0.5.0 repository or its historical backups. See `docs/THREAT_MODEL.md` for an extended technical discussion.
+
+## LLM history imports
+
+The Personalize importer treats uploaded provider ZIPs as hostile input. It validates paths and archive expansion before parsing, ignores binary attachments, stages the ZIP inside PODA's private Application Support directory with restrictive permissions and deletes the temporary archive after the import finishes or fails. Imported assistant text is stored as contextual provenance, not automatically promoted to user fact. The resulting normalized memories are part of the user's encrypted PODA database and therefore persist until explicitly removed.

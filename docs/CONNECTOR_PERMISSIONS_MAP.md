@@ -1,4 +1,4 @@
-# PODA v0.5.1-public — Connector and execution permissions
+# PODA v0.6.0-public — Connector and execution permissions
 
 **Fresh public build:** no tokens, connected accounts, folder grants, external harnesses or memories. The following describe possible capabilities only after the user enables and verifies them.
 

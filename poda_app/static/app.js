@@ -1,7 +1,7 @@
 /* PODA home shell: Ask, Plan, Notion, Files & Agent, Privacy, System. Vanilla, local-only, no remote assets. */
 (function () {
   'use strict';
-  const { $, $$, el, api, errorDetail, errorNode, toast, confirmDialog, promptDialog, skeleton, emptyState, pill, statusPill, route, renderRoute, navigate, registerCommand, openPalette, loadBuild, fmtTime, fmtBytes } = window.PODA;
+  const { $, $$, el, api, ApiError, errorDetail, errorNode, toast, confirmDialog, promptDialog, skeleton, emptyState, pill, statusPill, route, renderRoute, navigate, registerCommand, openPalette, loadBuild, fmtTime, fmtBytes } = window.PODA;
   const md = window.PODAMarkdown;
 
   // ---------- Navigation ----------
@@ -15,11 +15,11 @@
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const tag = document.activeElement?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || document.activeElement?.isContentEditable) return;
-    const map = { 1: 'ask', 2: 'memory', 3: 'plan', 4: 'notion', 5: 'mail', 6: 'files', 7: 'privacy', 8: 'system' };
+    const map = { 1: 'ask', 2: 'memory', 3: 'plan', 4: 'notion', 5: 'mail', 6: 'files', 7: 'privacy', 8: 'system', 9: 'personalize' };
     if (map[e.key]) { e.preventDefault(); if (map[e.key] === 'memory') window.location.assign('/memory-viewer'); else navigate(map[e.key]); }
   });
 
-  const screens = [['ask', 'Ask', '1'], ['plan', 'Plan', '3'], ['notion', 'Notion', '4'], ['mail', 'Mail', '5'], ['files', 'Files & Agent', '6'], ['privacy', 'Privacy', '7'], ['system', 'System', '8']];
+  const screens = [['ask', 'Ask', '1'], ['personalize', 'Personalize', '9'], ['plan', 'Plan', '3'], ['notion', 'Notion', '4'], ['mail', 'Mail', '5'], ['files', 'Files & Agent', '6'], ['privacy', 'Privacy', '7'], ['system', 'System', '8']];
   for (const [name, label, key] of screens) registerCommand({ label: `Go to ${label}`, kind: 'Screen', key, keywords: name === 'mail' ? 'email inbox gmail apple mail' : '', run: () => navigate(name) });
   registerCommand({ label: 'Open memory viewer', kind: 'Screen', key: '2', keywords: 'open3d 3d second brain', run: () => window.location.assign('/memory-viewer') });
   registerCommand({ label: 'Check capabilities', kind: 'Action', keywords: 'ledger status', run: async () => { const c = await api('/capabilities'); toast(`Ollama ${c.ollama?.reachable ? 'reachable' : 'unreachable'} · Notion ${c.notion?.status || 'DISCONNECTED'} · ${c.filesystem?.granted_roots?.length || 0} folder grants`); navigate('system'); } });
@@ -259,6 +259,74 @@
     stopBtn.addEventListener('click', () => askState.controller?.abort());
     textarea.focus();
     return { teardown: () => askState.controller?.abort() };
+  });
+
+  // =====================================================================
+  // PERSONALIZE / IMPORT LLM HISTORY
+  // =====================================================================
+  route('personalize', async ({ view, inspector, setTitle, setInspectorTitle }) => {
+    setTitle('Personalize'); setInspectorTitle('Import privacy');
+    $('#viewCrumb').textContent = 'Bring your existing AI history into PODA';
+
+    const fileInput = el('input', { class: 'input', type: 'file', accept: '.zip,application/zip', 'aria-label': 'ChatGPT or Claude data export ZIP' });
+    const profileToggle = el('input', { type: 'checkbox', checked: true });
+    const importBtn = el('button', { class: 'btn btn-primary', type: 'button' }, 'Import into PODA');
+    const resultBox = el('div', { class: 'stack-sm' });
+    const historyBox = el('div', { class: 'stack-sm' });
+
+    const refreshHistory = async () => {
+      historyBox.innerHTML = '';
+      try {
+        const r = await api('/imports/history');
+        const items = r.imports || [];
+        if (!items.length) { historyBox.appendChild(el('p', { class: 'faint small' }, 'No LLM archives imported yet.')); return; }
+        const table = el('table', { class: 'table' }, el('thead', {}, el('tr', {}, ...['Provider','Archive','Conversations','Memories','Clouds','Imported'].map((h) => el('th', {}, h)))));
+        const body = el('tbody');
+        for (const item of items) body.appendChild(el('tr', {}, el('td', {}, item.provider || ''), el('td', {}, item.source_filename || ''), el('td', {}, String(item.conversation_count || 0)), el('td', {}, String(item.memory_count || 0)), el('td', {}, String(item.cloud_count || 0)), el('td', {}, fmtTime(item.created_at))));
+        table.appendChild(body); historyBox.appendChild(table);
+      } catch (err) { historyBox.appendChild(errorNode(err)); }
+    };
+
+    importBtn.onclick = async () => {
+      const file = fileInput.files?.[0];
+      if (!file) { toast('Choose a ChatGPT or Claude export ZIP first.', 'danger'); return; }
+      if (!(await confirmDialog({ title: 'Import this private conversation archive?', body: 'PODA will parse it locally, convert conversations into visible second-brain memories, organize them into semantic topic clouds, and then delete the temporary ZIP. The raw ZIP is not retained. This can permanently personalize future answers.', confirmLabel: 'Import locally' }))) return;
+      importBtn.disabled = true; importBtn.textContent = 'IMPORTING…'; resultBox.innerHTML = '';
+      const form = new FormData(); form.append('file', file); form.append('apply_profile', profileToggle.checked ? 'true' : 'false');
+      try {
+        const res = await fetch('/imports/llm-export', { method: 'POST', body: form, credentials: 'same-origin', cache: 'no-store' });
+        const text = await res.text(); let data = null; try { data = text ? JSON.parse(text) : {}; } catch { data = { detail: text }; }
+        if (!res.ok) throw new ApiError(res.status, data?.detail ?? data);
+        if (data.status === 'already_imported') {
+          resultBox.appendChild(el('div', { class: 'notice notice-warn' }, `This exact archive was already imported. Existing import: ${data.conversations || 0} conversations, ${data.memories || 0} memories.`));
+        } else {
+          resultBox.appendChild(el('div', { class: 'notice notice-ok' }, `Imported ${data.conversations || 0} conversations / ${data.messages || 0} messages into ${data.memories || 0} visible memories and ${(data.clouds || []).length} topic clouds.`));
+          if (data.profile?.summary) resultBox.appendChild(section('Personalization learned', data.profile.source || '', el('p', {}, data.profile.summary), el('p', { class: 'faint small' }, 'This derived profile is visible in the second brain and is supplied to PODA as fallible personalization context.')));
+          resultBox.appendChild(el('div', { class: 'row' }, el('button', { class: 'btn', onclick: () => window.location.assign('/memory-viewer') }, 'Open second brain')));
+          toast('LLM history imported locally', 'ok');
+        }
+        await refreshHistory();
+      } catch (err) { resultBox.appendChild(errorNode(err)); }
+      finally { importBtn.disabled = false; importBtn.textContent = 'Import into PODA'; }
+    };
+
+    view.appendChild(el('div', { class: 'screen stack' },
+      section('Import your main AI data export', 'ChatGPT · Claude',
+        el('div', { class: 'import-hero' },
+          el('div', {}, el('h3', {}, 'Turn old AI conversations into your PODA second brain'), el('p', { class: 'muted' }, 'Upload the ZIP from the provider’s official data export. PODA parses it on this Mac, preserves user/assistant provenance, creates visible memory points, groups conversations into high-level semantic clouds, and can derive a bounded workflow/response profile from user-authored text.')),
+          el('div', { class: 'field' }, el('label', { class: 'label' }, 'Data export ZIP'), fileInput),
+          el('label', { class: 'check' }, profileToggle, 'Use user-authored history to personalize workflow and response style'),
+          el('div', { class: 'row' }, importBtn))),
+      resultBox,
+      section('Import history', 'local metadata only', historyBox)));
+
+    inspector.append(
+      el('div', { class: 'notice notice-ok' }, 'Local processing only. The uploaded ZIP is staged with 0600 permissions and deleted after parsing.'),
+      el('div', { class: 'stack-sm' }, el('h3', {}, 'What becomes memory'),
+        el('p', { class: 'small muted' }, 'User + assistant turns become visible exchange nodes. Assistant text remains contextual rather than authoritative. Imported profile claims are derived only from user-authored messages.')),
+      el('div', { class: 'stack-sm' }, el('h3', {}, 'Supported exports'),
+        el('p', { class: 'small muted' }, 'Official ChatGPT exports with conversations.json and Claude exports containing conversations/chat_messages. Nested JSON exports are detected heuristically. Attachments are ignored.')));
+    await refreshHistory();
   });
 
   // =====================================================================
