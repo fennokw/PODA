@@ -13,7 +13,7 @@ jobs:
         with:
           python-version: '3.13'
       - name: Install core test dependencies (no macOS-specific packages)
-        run: python -m pip install fastapi==0.141.1 'uvicorn[standard]==0.53.0' httpx==0.28.1 requests==2.32.3 pydantic==2.13.5 python-dateutil==2.9.0.post0 cryptography==50.0.2 'numpy>=2,<3' pytest==9.1.1
+        run: python -m pip install fastapi==0.141.1 'uvicorn[standard]==0.53.0' httpx==0.28.1 requests==2.32.3 pydantic==2.13.5 python-dateutil==2.9.0.post0 cryptography==50.0.2 python-multipart==0.0.20 'numpy>=2,<3' pytest==9.1.1
       - name: Audit shipping source and scrubbed identifiers
         run: python tools/release_guard.py --check
       - name: Compile Python modules
