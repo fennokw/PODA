@@ -1,0 +1,40 @@
+name: One-time unpack public release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/unpack-public-release.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Replace ZIP-only upload with source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive="PODA-v0.5.1-PUBLIC-GITHUB-READY.zip"
+          test -f "$archive"
+
+          work="$(mktemp -d)"
+          unzip -q "$archive" -d "$work"
+          test -d "$work/PODA"
+
+          cp -a "$work/PODA/." .
+          rm -f "$archive"
+          rm -f .github/workflows/unpack-public-release.yml
+
+          git config user.name "PODA Repository Bootstrap"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Expand PODA source tree and remove bootstrap"
+          git push origin HEAD:main
