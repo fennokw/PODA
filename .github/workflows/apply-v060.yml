@@ -1,6 +1,7 @@
 name: Apply PODA v0.6.0 personalization
 
 # Retry after completing and verifying every staged payload part.
+# Triggered after GitHub connector access was confirmed.
 on:
   push:
     branches: [main]
