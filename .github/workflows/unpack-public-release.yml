@@ -1,0 +1,49 @@
+name: One-time unpack public release
+
+on:
+  push:
+    branches:
+      - bootstrap-unpack-public-release
+    paths:
+      - ".github/workflows/unpack-public-release.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Replace accidental ZIP-only upload with repository files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive="PODA-v0.5.1-PUBLIC-GITHUB-READY.zip"
+          test -f "$archive"
+
+          work="$(mktemp -d)"
+          unzip -q "$archive" -d "$work"
+          test -d "$work/PODA"
+
+          cp -a "$work/PODA/." .
+          rm -f "$archive"
+
+          git config user.name "PODA Repository Bootstrap"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit \
+            -m "Fix accidental ZIP-only repository upload" \
+            -m "I accidentally uploaded only the full PODA release ZIP in the initial repository commit. This replaces that archive with the actual unzipped GitHub-ready source tree and removes the ZIP so the project can be browsed, cloned, tested, and developed normally."
+          git push origin HEAD:main
+
+      - name: Remove temporary bootstrap branch
+        if: success()
+        shell: bash
+        run: git push origin --delete bootstrap-unpack-public-release || true
