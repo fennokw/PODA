@@ -47,9 +47,8 @@
   // =====================================================================
   // ASK
   // =====================================================================
-  // Every page load is a fresh conversation (no session id is persisted); the transcript below only lives while this
-  // page is open so switching screens and back keeps the current chat. Older conversations are never replayed here;
-  // they live in the memory web and reach PODA only through semantic recall when they are relevant.
+  // Each explicit New chat starts a fresh session. Only session/run IDs persist through
+  // hard navigation; the transcript is restored from PODA's encrypted local store.
   const askState = {
     sessionId: sessionStorage.getItem('poda_session_id') || null,
     runId: sessionStorage.getItem('poda_active_run') || null,
@@ -202,7 +201,8 @@
       const paint = () => { raf = 0; bubble.innerHTML = md.render(full); messages.scrollTop = messages.scrollHeight; };
       const schedule = () => { if (!raf) raf = requestAnimationFrame(paint); };
       const setStatus = (t, live) => { statusLine.innerHTML = ''; if (live) statusLine.appendChild(el('span', { class: 'live' })); statusLine.appendChild(el('span', {}, t)); };
-      askState.controller = new AbortController();
+      const subscription = new AbortController();
+      askState.controller = subscription;
       sendBtn.disabled = true; stopBtn.hidden = false; setStatus('Contacting PODA…', true);
       const body = { message: text, mode: askState.mode, thinking_level: askState.thinking, use_memory: askState.useMemory, session_id: askState.sessionId };
       if (continuationOf) body.continuation_of = continuationOf;
@@ -217,7 +217,7 @@
         }
         // Subscriber can be aborted by route change; server-owned generation continues.
         const res = await api('/chat/runs/' + encodeURIComponent(askState.runId) + '/stream?after=0',
-          { method: 'GET', signal: askState.controller.signal, raw: true });
+          { method: 'GET', signal: subscription.signal, raw: true });
         if (!res.ok || !res.body) { let d = null; try { d = await res.json(); } catch { /* ignore */ } throw new window.PODA.ApiError(res.status, d?.detail || `HTTP ${res.status}`); }
         const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
         for (;;) {
@@ -265,7 +265,7 @@
         if (err.name === 'AbortError') { bubble.innerHTML = md.render(full) + (full ? '' : '<p class="faint">Cancelled.</p>'); setStatus('Cancelled', false); }
         else { bubble.innerHTML = ''; bubble.appendChild(errorNode(err)); setStatus('Failed', false); }
       } finally {
-        bubble.classList.remove('streaming'); askState.controller = null; sendBtn.disabled = false; stopBtn.hidden = true; messages.scrollTop = messages.scrollHeight;
+        bubble.classList.remove('streaming'); if (askState.controller === subscription) askState.controller = null; sendBtn.disabled = false; stopBtn.hidden = true; messages.scrollTop = messages.scrollHeight;
         if (finished) { askState.runId = null; persistSession(); }
         if (!thoughtText) thoughts.remove(); else $('.live', thoughts)?.remove();
       }
@@ -300,7 +300,7 @@
     });
     if (askState.runId) send('', null, askState.runId);
     textarea.focus();
-    return { teardown: () => askState.controller?.abort() }; // This only detaches the UI, never cancels server generation.
+    return { teardown: () => { const subscriber = askState.controller; askState.controller = null; subscriber?.abort(); } }; // Detaches the viewer, not Ollama.
   });
 
   // =====================================================================
