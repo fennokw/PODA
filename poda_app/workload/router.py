@@ -100,6 +100,23 @@ def task_breakdown(item_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.get("/{item_id}/analysis")
+def analyze_workload(item_id: str) -> dict[str, Any]:
+    from .analyzer import analyze
+    try:
+        return analyze(item_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/{item_id}")
+def work_item_details(item_id: str) -> dict[str, Any]:
+    result = service.get_item(item_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Work item not found")
+    return result
+
+
 @router.get("/settings/preferences")
 def get_preferences() -> dict[str, Any]:
     return service.preferences()
