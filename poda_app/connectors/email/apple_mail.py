@@ -83,18 +83,28 @@ function run(argv){
   const mb = findMailbox(acct, args.mailbox).ref;
   const limit = Math.max(1, Math.min(args.limit || 50, 100)); const offset = Math.max(0, args.offset || 0);
   const msgs = mb.messages; const total = msgs.length;
-  const window = Math.min(total, (args.unread_only || args.query) ? Math.min(total, 1500) : offset + limit);
+  const terms = (args.terms || (args.query ? [args.query] : [])).map(t => String(t).toLowerCase()).filter(Boolean).slice(0, 8);
+  // Header properties are already fetched in bulk; scan all loaded dates for a
+  // dated or searched request rather than silently clipping to the newest 1500.
+  const window = (args.unread_only || terms.length || args.after || args.before) ? total : Math.min(total, offset + limit);
   const rows = [];
   if (window > 0) {
     const ids = msgs.id(); const dates = msgs.dateReceived(); const subs = msgs.subject(); const senders = msgs.sender();
     const reads = msgs.readStatus(); const flags = msgs.flaggedStatus(); const mids = msgs.messageId();
-    const q = (args.query || "").toLowerCase();
+    const after = args.after ? new Date(args.after + "T00:00:00").getTime() : null;
+    const before = args.before ? new Date(args.before + "T00:00:00").getTime() : null;
     let unread = 0;
     for (let i = 0; i < total; i++) { if (reads[i] === false) unread++; }
-    let kept = 0, skipped = 0;
+    let skipped = 0;
     for (let i = 0; i < window && rows.length < limit; i++) {
       if (args.unread_only && reads[i] !== false) continue;
-      if (q && !(String(subs[i] || "").toLowerCase().includes(q) || String(senders[i] || "").toLowerCase().includes(q))) continue;
+      if (after !== null || before !== null) {
+        const ts = new Date(dates[i]).getTime();
+        if (!isFinite(ts) || (after !== null && ts < after) || (before !== null && ts >= before)) continue;
+      }
+      const subj = String(subs[i] || "").toLowerCase();
+      const sender = String(senders[i] || "").toLowerCase();
+      if (terms.length && !terms.some(t => subj.includes(t) || sender.includes(t))) continue;
       if (skipped < offset) { skipped++; continue; }
       rows.push({native_id: ids[i], date: iso(dates[i]), subject: subs[i], sender: senders[i], read: reads[i], flagged: flags[i], message_id: mids[i]});
     }
@@ -282,10 +292,11 @@ def _row(account: str, mailbox: str, r: dict[str, Any], account_id: str) -> dict
 
 
 def list_messages(account: str, account_id: str, mailbox: str = "INBOX", limit: int = 50, offset: int = 0, unread_only: bool = False,
-                  query: str | None = None, snippet_limit: int = 0) -> dict[str, Any]:
+                  query: str | None = None, snippet_limit: int = 0, query_terms: list[str] | None = None,
+                  after: str | None = None, before: str | None = None) -> dict[str, Any]:
     """Headers come from bulk property arrays (~1 s). Bodies cost ~1 s each in Mail and are serialized by the app,
     so snippets are only fetched for the first `snippet_limit` rows; use `snippets()` progressively for the rest."""
-    data = _run("list", {"account": account, "mailbox": mailbox, "limit": limit, "offset": offset, "unread_only": unread_only, "query": query or ""}, timeout=LIST_TIMEOUT)
+    data = _run("list", {"account": account, "mailbox": mailbox, "limit": limit, "offset": offset, "unread_only": unread_only, "query": query or "", "terms": query_terms, "after": after, "before": before}, timeout=LIST_TIMEOUT)
     rows = [_row(account, mailbox, r, account_id) for r in data.get("rows", [])]
     for r in rows:
         r["snippet"] = None  # null = not loaded yet
