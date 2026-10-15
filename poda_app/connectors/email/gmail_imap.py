@@ -9,6 +9,7 @@ import imaplib
 import re
 import smtplib
 import time
+from datetime import datetime
 from email.header import decode_header, make_header
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime, formatdate, make_msgid
@@ -184,6 +185,17 @@ def _date(value: str | None) -> str | None:
         return None
 
 
+def _internal_received_at(meta: str) -> str | None:
+    """Parse server-reported IMAP INTERNALDATE, not sender-controlled Date header."""
+    matched = re.search(r'INTERNALDATE\s+"([^"]+)"', meta)
+    if not matched:
+        return None
+    try:
+        return datetime.strptime(matched.group(1), "%d-%b-%Y %H:%M:%S %z").isoformat()
+    except ValueError:
+        return None
+
+
 def _flags_from(raw: str) -> tuple[bool, bool]:
     return ("\\Seen" in raw), ("\\Flagged" in raw)
 
@@ -223,7 +235,7 @@ def list_messages(address: str, account_id: str, mailbox: str = "INBOX", limit: 
         rows = []
         if page:
             seq = b",".join(page).decode()
-            typ, fetched = s.conn.uid("FETCH", seq, "(FLAGS BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO DATE MESSAGE-ID)] X-GM-MSGID)")
+            typ, fetched = s.conn.uid("FETCH", seq, "(FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO DATE MESSAGE-ID)] X-GM-MSGID)")
             if typ == "OK":
                 for item in fetched:
                     if not isinstance(item, tuple):
@@ -235,7 +247,7 @@ def list_messages(address: str, account_id: str, mailbox: str = "INBOX", limit: 
                     name, addr = split_sender(_hdr(hdr.get("From")))
                     rows.append({"id": encode_id(PROVIDER, address, mailbox, uid.group(1) if uid else "?"), "account_id": account_id, "mailbox": mailbox,
                                  "subject": _hdr(hdr.get("Subject")) or "(no subject)", "from_name": name or mask_address(addr), "from_address_masked": mask_address(addr),
-                                 "to_masked": [mask_address(a) for a in _hdr(hdr.get("To")).split(",") if a.strip()][:5], "date": _date(hdr.get("Date")),
+                                 "to_masked": [mask_address(a) for a in _hdr(hdr.get("To")).split(",") if a.strip()][:5], "date": _internal_received_at(meta) or _date(hdr.get("Date")),
                                  "read": read, "flagged": flagged, "snippet": None, "has_attachments": None, "message_id": (hdr.get("Message-ID") or "").strip()})
         rows.sort(key=lambda r: r["date"] or "", reverse=True)
         return {"messages": rows, "total": len(uids) if query or unread_only else total, "unread": unread, "scanned": len(uids)}
