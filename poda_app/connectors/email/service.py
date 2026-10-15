@@ -308,6 +308,7 @@ def search(query: str, account_id: str | None = None, limit: int = 50,
     candidates = [get_account(account_id)] if account_id else state.list_accounts()
     results: list[dict[str, Any]] = []
     errors: list[str] = []
+    warnings: list[str] = []
     terms = list(dict.fromkeys(t.strip() for t in (terms or [query]) if isinstance(t, str) and t.strip()))[:8]
     for acct in candidates:
         try:
@@ -322,10 +323,24 @@ def search(query: str, account_id: str | None = None, limit: int = 50,
                 except MailError:
                     pass
                 for mb in targets:
-                    results.extend(apple_mail.list_messages(
+                    headers = apple_mail.list_messages(
                         acct["account_name"], acct["id"], mb, limit=limit,
                         query=query or None, query_terms=terms, after=after, before=before
-                    )["messages"])
+                    )["messages"]
+                    results.extend(headers)
+                    if terms:
+                        try:
+                            bodies = apple_mail.search_body(
+                                acct["account_name"], acct["id"], mb, terms,
+                                after=after, before=before,
+                                scan_limit=40 if len(headers) < 6 else 16,
+                                result_limit=min(25, limit)
+                            )
+                            results.extend(bodies["messages"])
+                            if bodies.get("truncated"):
+                                warnings.append(f"{acct['account_name']} {mb}: Apple Mail body search sampled only {bodies.get('scanned')} date-qualified messages.")
+                        except MailError as exc:
+                            warnings.append(f"{acct['account_name']} {mb}: body search incomplete ({exc.message}).")
             else:
                 results.extend(gmail_imap.search(
                     acct["address"], acct["id"], query, limit,
@@ -352,7 +367,7 @@ def search(query: str, account_id: str | None = None, limit: int = 50,
         dedup.append(row)
     dedup.sort(key=lambda row: row.get("date") or "", reverse=True)
     return {"query": query, "after": after, "before": before,
-            "messages": dedup[:limit], "errors": errors}
+            "messages": dedup[:limit], "errors": errors, "warnings": warnings}
 
 
 # ----------------------------------------------------------------------------- receipted actions
