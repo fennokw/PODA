@@ -1,0 +1,25 @@
+/* Workload panel — PODA's existing deep navy / cyan theme, with focused data density. */
+.workload-screen { max-width: 1120px; gap: 22px; }
+.workload-screen .card { border-color: rgba(110,169,228,.18); }
+.workload-screen .card:focus-within { border-color: rgba(79,179,255,.34); transition: border-color .2s ease; }
+.workload-screen .field { display: grid; gap: 6px; min-width: 0; }
+.workload-screen .field > .input { min-width: 0; width: 100%; }
+.workload-screen textarea { resize: vertical; min-height: 85px; }
+.workload-screen .work-item { display: grid; gap: 10px; border: 1px solid var(--line-0);
+  border-radius: var(--r-control); padding: 15px 16px;
+  background: linear-gradient(110deg,rgba(64,137,231,.055),rgba(17,33,65,.05));
+  transition: transform .16s ease, border-color .16s ease; }
+.workload-screen .work-item:hover { transform: translateY(-1px); border-color: rgba(79,179,255,.25); }
+.workload-screen .work-item .row { flex-wrap: wrap; }
+.workload-screen .work-intake-row { display: flex; gap: 12px; align-items: center; justify-content: space-between;
+  padding: 10px 0; border-bottom: 1px solid var(--line-0); }
+.workload-screen .work-intake-row span { flex: 1; }
+.workload-screen .work-session { display: grid; gap: 12px; align-items: center;
+  grid-template-columns: minmax(175px,1fr) minmax(140px,2fr) auto;
+  border-left: 2px solid rgba(79,179,255,.56); padding: 10px 14px;
+  background: rgba(79,179,255,.045); border-radius: 0 8px 8px 0; }
+.workload-screen .work-session:hover { background: rgba(79,179,255,.095); }
+@media(max-width:860px){ .workload-screen .work-session { grid-template-columns: 1fr; gap: 5px; }
+  .workload-screen .grid-3, .workload-screen .grid-2 { grid-template-columns: 1fr; } }
+@media(prefers-reduced-motion: reduce) { .workload-screen .work-item,
+.workload-screen .card, .workload-screen .work-session { transition:none; transform:none !important; } }
