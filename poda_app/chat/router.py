@@ -27,7 +27,7 @@ def should_recall_memory(message: str, enabled: bool = True) -> bool:
     historical = re.search(r"\b(remember|recall|previous|previously|last time|we discussed|you know about me|my preferences|from our chats|based on my history)\b", q)
     if historical:
         return True
-    live = re.search(r"\b(email|emails|e-mail|inbox|mailbox|unread|newsletter|notion|calendar|schedule|agenda|connected|connect to|capabilities|can you access|can you connect)\b", q)
+    live = re.search(r"\b(email|emails|e-mail|inbox|mailbox|unread|newsletter|notion|calendar|schedule|agenda|workload|tasks?|assignments?|deadlines?|time estimate|study plan|connected|connect to|capabilities|can you access|can you connect)\b", q)
     return not bool(live)
 
 
