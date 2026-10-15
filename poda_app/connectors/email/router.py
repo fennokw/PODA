@@ -146,11 +146,13 @@ def snippets(req: SnippetRequest) -> dict[str, Any]:
 
 
 @router.get("/mail/search")
-def search(q: str, account_id: str | None = None, limit: int = 50) -> dict[str, Any]:
-    if not q.strip():
-        raise HTTPException(status_code=400, detail={"code": "VALIDATION", "message": "q is required"})
+def search(q: str = "", account_id: str | None = None, limit: int = 50,
+           after: str | None = None, before: str | None = None) -> dict[str, Any]:
+    """Search live mail; after inclusive, before exclusive, both local YYYY-MM-DD."""
+    if not (q.strip() or after or before):
+        raise HTTPException(status_code=400, detail={"code": "VALIDATION", "message": "q or a date bound is required"})
     try:
-        return service.search(q.strip(), account_id, max(1, min(limit, 100)))
+        return service.search(q.strip(), account_id, max(1, min(limit, 100)), after=after, before=before)
     except MailError as exc:
         raise _http(exc)
 
