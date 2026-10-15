@@ -190,6 +190,22 @@ async def chat_stream(req: ChatRequest, request: Request):
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
+@router.get("/chat/session/{session_id}/messages")
+def session_messages(session_id: str, limit: int = 100) -> dict[str, Any]:
+    """Restore visible conversation after full-page navigation without browser-stored chat text."""
+    from ..runtime.db import connect, rows
+    if len(session_id) > 100:
+        return {"messages": []}
+    conn = connect()
+    try:
+        records = rows(conn, "SELECT id, role, content, model, created_at FROM messages WHERE session_id=? ORDER BY created_at DESC LIMIT ?",
+                       (session_id, max(1, min(limit, 200))))
+    finally:
+        conn.close()
+    records.reverse()
+    return {"messages": records}
+
+
 @router.get("/chat/history")
 def chat_history(limit: int = 60) -> dict[str, Any]:
     return {"messages": store.recent_messages(max(1, min(limit, 500)))}
