@@ -92,6 +92,25 @@
           itemsBox.appendChild(paragraph('No work items yet. Add one manually or upload an assignment above.'));
           return;
         }
+        const byProject = new Map();
+        for (const item of itemCache) {
+          const label = item.project?.trim() || 'Ungrouped work';
+          const group = byProject.get(label) || { name: label, total: 0, completed: 0, remaining: 0, soonest: null };
+          group.total++;
+          if (item.status === 'done') group.completed++;
+          group.remaining += Number(item.estimate?.remaining_minutes || 0);
+          if (item.deadline && (!group.soonest || item.deadline < group.soonest)) group.soonest = item.deadline;
+          byProject.set(label, group);
+        }
+        const overview = el('div', { class: 'work-project-overview' });
+        for (const summary of [...byProject.values()].sort((a, b) => b.remaining - a.remaining)) {
+          overview.appendChild(el('div', { class: 'work-project-card' },
+            el('strong', {}, summary.name),
+            el('span', { class: 'small muted' }, summary.completed + '/' + summary.total + ' tasks finished'),
+            el('span', { class: 'mono' }, fmt(summary.remaining) + ' remaining'),
+            summary.soonest ? el('span', { class: 'small faint' }, 'Next due: ' + summary.soonest) : null));
+        }
+        itemsBox.appendChild(overview);
         const sorted = [...itemCache].sort((a, b) => String(a.deadline || '9999').localeCompare(String(b.deadline || '9999'))
           || b.importance - a.importance);
         for (const item of sorted) {
