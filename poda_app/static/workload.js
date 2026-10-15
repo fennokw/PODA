@@ -116,10 +116,18 @@
           const steps = el('button', { class: 'btn btn-sm', type: 'button' }, 'Break down');
           steps.onclick = async () => {
             try {
-              const data = await api('/workload/' + encodeURIComponent(item.id) + '/breakdown');
-              const text = data.phases.map((p) => p.title + ': ' + fmt(p.minutes)).join(' · ');
-              const msg = el('p', { class: 'small muted' }, text);
-              row.appendChild(msg);
+              const data = await api('/workload/' + encodeURIComponent(item.id) + '/analysis');
+              const existing = row.querySelector('.work-breakdown');
+              if (existing) existing.remove();
+              const details = el('div', { class: 'work-breakdown stack-sm' },
+                el('div', { class: 'small muted' }, data.mode === 'local_model' ? 'Locally analyzed by ' + data.model : 'Generic breakdown (model unavailable)'));
+              for (const step of data.steps || []) {
+                details.appendChild(el('div', { class: 'work-phase' },
+                  el('div', { class: 'row-between' }, el('strong', {}, step.title),
+                    el('span', { class: 'chip' }, fmt(step.minutes))),
+                  step.details ? el('p', { class: 'small muted' }, step.details) : null));
+              }
+              row.appendChild(details);
             } catch (err) { toast(errorDetail(err).message, 'danger'); }
           };
           const remove = el('button', { class: 'btn btn-sm btn-danger', type: 'button' }, 'Delete');
