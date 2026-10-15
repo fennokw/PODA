@@ -301,3 +301,11 @@ def test_apple_body_search_combines_with_header_results(apple):
     assert "Unrelated title" in subjects
     assert data["warnings"] and "sampled" in data["warnings"][0]
     assert any("internship" in (m.get("snippet") or "") for m in data["messages"])
+
+
+
+def test_imap_internaldate_uses_received_time_not_untrusted_sender_date():
+    assert gmail_imap._internal_received_at(
+        '1 (UID 7 FLAGS () INTERNALDATE "15-Oct-2026 10:45:00 -0400")'
+    ) == "2026-10-15T10:45:00-04:00"
+    assert gmail_imap._internal_received_at('1 (UID 7 FLAGS ())') is None
