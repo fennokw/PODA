@@ -215,7 +215,7 @@ def estimate(item: dict[str, Any]) -> dict[str, Any]:
         predicted = max(5, round(base * adjust["multiplier"] / 5) * 5)
         source = "calibrated baseline" if adjust["examples"] else "category/difficulty heuristic"
     # Treat remaining time as a conservative linear approximation; never imply exact precision.
-    remaining = max(0, math.ceil(predicted * (1 - int(item.get("progress") or 0) / 100) / 5) * 5)
+    remaining = max(0, math.ceil(predicted * (1 - int(item.get("progress") or 0) / 100)))
     if item.get("status") == "done":
         remaining = 0
     uncertainty = 0.2 if personal or adjust["confidence"] == "high" else 0.35 if adjust["confidence"] == "medium" else 0.5
