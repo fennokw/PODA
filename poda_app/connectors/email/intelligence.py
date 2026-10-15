@@ -91,7 +91,8 @@ def extract_topic(request: str) -> str:
     text = _DATE.sub(" ", request)
     text = _RELATIVE.sub(" ", text)
     text = re.sub(r"\b(?:this|last|past)\s+(?:week|month)\b|\b(?:today|yesterday)\b", " ", text, flags=re.I)
-    words = [w for w in re.findall(r"[A-Za-z][A-Za-z0-9.-]{1,}", text) if w.lower() not in _STOP]
+    words = [token for raw in re.findall(r"[A-Za-z][A-Za-z0-9.-]{1,}", text)
+             if (token := raw.strip(".-")).lower() not in _STOP]
     return " ".join(words[:10])[:140]
 
 
