@@ -27,3 +27,10 @@
 .workload-screen .work-breakdown { padding: 13px; border-radius: 10px;
   border: 1px solid rgba(125,166,230,.2); background: rgba(40,72,115,.12); }
 .workload-screen .work-phase { padding: 10px 0; border-top: 1px solid var(--line-0); display: grid; gap: 4px; }
+
+.workload-screen .work-project-overview { display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:10px; }
+.workload-screen .work-project-card { display:grid; align-content:start; gap:5px; padding:14px;
+  border:1px solid rgba(79,179,255,.16); border-radius:var(--r-control);
+  background:linear-gradient(135deg,rgba(79,179,255,.09),rgba(128,118,233,.035)); }
+.workload-screen .work-project-card strong { font-size:var(--fs-14); }
