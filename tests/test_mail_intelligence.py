@@ -130,3 +130,34 @@ def test_live_mail_chat_does_not_recall_unrelated_memory(client, monkeypatch):
     assert tool_calls and tool_calls[0][0] == "mail_research"
     assert "event: tool" in response.text and "event: recall" not in response.text
     assert "One verified email" in response.text
+
+
+
+def test_semantic_reranking_selects_only_verified_candidate_indices(monkeypatch):
+    monkeypatch.setattr(intelligence.ollama, "status", lambda: {"models": ["qwen3:8b"]})
+    requests = []
+    def fake_chat(messages, model, **kwargs):
+        requests.append(messages)
+        return {"message": {"content": '{"ids":[1,0,999,-1,1,"garbage"]}'}}
+    monkeypatch.setattr(intelligence.ollama, "chat", fake_chat)
+    rows = [
+        {"id": "a", "subject": "Shop newsletter", "snippet": "Unsubscribe to this newsletter"},
+        {"id": "b", "subject": "Project interview tomorrow", "snippet": "Please confirm your interview slot"},
+    ]
+    ranked = intelligence._semantic_rank("Give me important emails", rows, "")
+    assert ranked == [1, 0]
+    assert "UNTRUSTED DATA" in requests[0][0]["content"]
+    assert intelligence._digest_importance(rows[1]) > intelligence._digest_importance(rows[0])
+
+
+def test_search_tool_date_filter_without_query(client, monkeypatch):
+    from poda_app.connectors.email import router as mail_router
+    observed = {}
+    def fake_search(q, account_id, limit, after=None, before=None):
+        observed.update(q=q, after=after, before=before)
+        return {"query": q, "messages": [], "errors": []}
+    monkeypatch.setattr(mail_router.service, "search", fake_search)
+    r = client.get("/mail/search?after=2026-10-01&before=2026-10-16")
+    assert r.status_code == 200
+    assert observed == {"q": "", "after": "2026-10-01", "before": "2026-10-16"}
+    assert client.get("/mail/search").status_code == 400
