@@ -1,9 +1,9 @@
-/* Workload & time personalization — separate from chat, backed by encrypted local storage. */
+/* Workload & time personalization - separate from chat, backed by encrypted local storage. */
 (function () {
   'use strict';
   const { route, el, api, toast, confirmDialog, promptDialog, errorDetail, pill } = window.PODA;
   const CATEGORIES = ['general', 'homework', 'study', 'writing', 'coding', 'research', 'admin', 'creative', 'reading'];
-  const fmt = (minutes) => !Number.isFinite(Number(minutes)) ? '—' :
+  const fmt = (minutes) => !Number.isFinite(Number(minutes)) ? '-' :
     (minutes < 60 ? minutes + 'm' : Math.floor(minutes / 60) + 'h ' + (minutes % 60 ? minutes % 60 + 'm' : '')).trim();
   const field = (label, node) => el('label', { class: 'field' }, el('span', { class: 'label' }, label), node);
   const input = (name, type = 'text', value = '', extra = {}) => el('input', { class: 'input', name, type, value: value ?? '', ...extra });
