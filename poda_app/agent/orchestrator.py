@@ -66,6 +66,11 @@ def _parse_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
 def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", session_id: str | None = None, profile_model: str | None = None) -> dict[str, Any]:
     """Return {needs_tools, steps, rationale, executed:[{step, receipt, result}], flagged:[...], proposal_id|None}."""
     specs = tools.ollama_tool_specs(snapshot)
+    # Memory tools should not be available as incidental fallbacks on live-data tasks.
+    # A deliberate reference to earlier discussions, preferences, or history enables them.
+    from ..chat.context_policy import should_recall
+    if not should_recall(message):
+        specs = [s for s in specs if s["function"]["name"] not in {"memory_search", "memory_dive"}]
     out: dict[str, Any] = {"needs_tools": False, "steps": [], "rationale": "", "executed": [], "flagged": [], "proposal_id": None, "model": None}
     if not specs:
         out["rationale"] = "no tools are currently available"

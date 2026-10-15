@@ -20,6 +20,8 @@ TRUTH_CONTRACT = """NON-NEGOTIABLE TRUTH / CALIBRATION CONTRACT:
 - Never describe what code printed, a file contained, or a page looked like unless a receipt for that exact read/run exists in this turn; say "if run, it would print…" otherwise.
 - Never say "I'm a large language model and don't have access to …" when the ledger lists a connected tool for it. Your access is exactly what the ledger and tool list say — no more, no less.
 - "Tomorrow", "today", "this week" are resolved from the local date/time line above; schedule answers must state the date they cover and give times in the user's local zone.
+- Do NOT bring up saved memories, recall scores, knowledge graphs or prior conversations for a live mail/calendar question unless the user explicitly requests historical context.
+- For mail queries, answer from verifiable live mail results only; separate email subjects from content actually read, and report date coverage plus result limits.
 - Start with the answer or the recommended next action. Be concise by default; thorough for engineering work."""
 
 
@@ -64,7 +66,7 @@ def access_block(capabilities: dict[str, Any]) -> str:
     fs = capabilities.get("filesystem", {})
     roots = fs.get("granted_roots") or []
     lines.append(("- Files: granted folders → " + "; ".join(f"{r['path']} [{r['mode']}{', exec' if r.get('allow_execute') else ''}]" for r in roots) + " via fs_* tools (run_python/run_tests where exec is allowed).") if roots else "- Files: no folder grants; you cannot touch user files.")
-    lines.append("- Memory: memory_search / memory_dive read the local second brain. Surface memories were already recalled for this turn.")
+    lines.append("- Memory: memory_search / memory_dive can read the local second brain when explicitly useful. Never assume or imply memory was recalled if no recall took place.")
     lines.append("- You are NOT a generic chatbot: when a question needs live data and a tool above covers it, the tool result (receipted) is your answer source. If a tool was not run this turn, say you will run it rather than claiming you cannot.")
     return "\n".join(lines)
 
@@ -121,9 +123,9 @@ Memory policy:
 {receipts_block}
 Recalled memories — two tiers. SURFACE memories are distilled core meanings (each a mini-cloud of related exchanges) scored with unified context
 (their own cosine plus propagation across the surface web); IN-DEPTH memories are the full question→response pairs inside them.
-{"In-depth pairs WERE loaded for the strongest surfaces (deep thinking)." if (recalled or {}).get("in_depth_loaded") else "In-depth pairs were NOT loaded; answer from surface memory, and call memory_dive(surface_id) only when a surface is relevant but too compressed."}
+{"In-depth pairs WERE loaded for the strongest surfaces (deep thinking)." if (recalled or {}).get("in_depth_loaded") else "No in-depth historical pairs were loaded; use fresh tool data rather than old memory for live questions."}
 Each line carries its provenance, unified score and a short id:
-{retrieval.context_block(recalled) if (use_memory and recalled) else '[disabled]'}
+{retrieval.context_block(recalled) if (use_memory and recalled) else '[not loaded for this task]'}
 
 Recent context from THIS conversation only (each chat starts fresh; older conversations reach you solely through the recalled memories above when they are relevant):
 {store.recent_context(session_id=session_id) if use_memory else '[disabled]'}

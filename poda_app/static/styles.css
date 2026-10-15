@@ -358,6 +358,8 @@ dialog::backdrop { background: rgba(2, 6, 16, 0.66); backdrop-filter: blur(6px);
 .mail-list-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-3); flex-wrap: wrap; padding: var(--s-3) var(--s-4); border-bottom: 1px solid var(--line-0); }
 .mail-search { max-width: 240px; min-height: 32px; padding: 5px 10px; font-size: var(--fs-12); }
 .mail-acct-select { max-width: 160px; min-height: 32px; padding: 5px 28px 5px 10px; font-size: var(--fs-12); }
+.mail-date-filter { display: inline-flex; align-items: center; gap: 5px; color: var(--text-3); font-size: var(--fs-11); white-space: nowrap; }
+.mail-date-filter .input { width: 142px; min-height: 32px; padding: 5px 7px; font-size: var(--fs-12); }
 .mail-list { overflow: auto; display: grid; align-content: start; }
 .mail-row { display: grid; grid-template-columns: 10px 32px minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 9px var(--s-4); border-bottom: 1px solid var(--line-0); cursor: pointer; color: var(--text-1); transition: background var(--d-fast) var(--ease-out); }
 .mail-row:hover { background: rgba(255,255,255,0.025); }

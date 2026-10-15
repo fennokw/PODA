@@ -286,36 +286,88 @@ def read_message(account_id: str | None, message_id: str) -> dict[str, Any]:
         raise
 
 
-def search(query: str, account_id: str | None = None, limit: int = 50) -> dict[str, Any]:
-    accounts = [get_account(account_id)] if account_id else [a for a in state.list_accounts()]
+def search(query: str, account_id: str | None = None, limit: int = 50,
+           after: str | None = None, before: str | None = None,
+           terms: list[str] | None = None) -> dict[str, Any]:
+    """Search read-only across connected accounts, with inclusive/exclusive local dates.
+
+    Query terms are alternatives, not a requirement that every expansion matches.
+    Provider results are cross-checked against their reported dates before being returned.
+    """
+    from datetime import date, datetime
+
+    for value in (after, before):
+        if value:
+            try:
+                date.fromisoformat(value)
+            except ValueError as exc:
+                raise MailError("validation", "Dates must be YYYY-MM-DD.", status=400) from exc
+    if after and before and after >= before:
+        raise MailError("validation", "before must be later than after.", status=400)
+    limit = max(1, min(int(limit), 120))
+    candidates = [get_account(account_id)] if account_id else state.list_accounts()
     results: list[dict[str, Any]] = []
     errors: list[str] = []
-    for acct in accounts:
+    warnings: list[str] = []
+    terms = list(dict.fromkeys(t.strip() for t in (terms or [query]) if isinstance(t, str) and t.strip()))[:8]
+    for acct in candidates:
         try:
             _require_read(acct)
             if acct["provider"] == "apple_mail":
                 names = [m["name"] for m in apple_mail.mailboxes(acct["account_name"])]
                 targets = ["INBOX"]
                 try:
-                    targets.append(apple_mail.archive_target(acct.get("provider_type"), names))
+                    archive = apple_mail.archive_target(acct.get("provider_type"), names)
+                    if archive not in targets:
+                        targets.append(archive)
                 except MailError:
                     pass
                 for mb in targets:
-                    results.extend(apple_mail.list_messages(acct["account_name"], acct["id"], mb, limit=limit, query=query)["messages"])
+                    headers = apple_mail.list_messages(
+                        acct["account_name"], acct["id"], mb, limit=limit,
+                        query=query or None, query_terms=terms, after=after, before=before
+                    )["messages"]
+                    results.extend(headers)
+                    if terms:
+                        try:
+                            bodies = apple_mail.search_body(
+                                acct["account_name"], acct["id"], mb, terms,
+                                after=after, before=before,
+                                scan_limit=40 if len(headers) < 6 else 16,
+                                result_limit=min(25, limit)
+                            )
+                            results.extend(bodies["messages"])
+                            if bodies.get("truncated"):
+                                warnings.append(f"{acct['account_name']} {mb}: Apple Mail body search sampled only {bodies.get('scanned')} date-qualified messages.")
+                        except MailError as exc:
+                            warnings.append(f"{acct['account_name']} {mb}: body search incomplete ({exc.message}).")
             else:
-                results.extend(gmail_imap.search(acct["address"], acct["id"], query, limit))
+                results.extend(gmail_imap.search(
+                    acct["address"], acct["id"], query, limit,
+                    after=after, before=before, terms=terms
+                ))
             _touch(acct["id"])
         except MailError as exc:
             errors.append(f"{acct['account_name']}: {exc.message}")
-    seen, dedup = set(), []
-    for r in results:
-        key = r.get("message_id") or r["id"]
+    seen: set[str] = set()
+    dedup: list[dict[str, Any]] = []
+    for row in results:
+        key = row.get("account_id", "") + "|" + (row.get("message_id") or row["id"])
         if key in seen:
             continue
+        if after or before:
+            try:
+                stamp = datetime.fromisoformat(str(row.get("date") or "").replace("Z", "+00:00"))
+                day = stamp.astimezone().date().isoformat() if stamp.tzinfo else stamp.date().isoformat()
+                if (after and day < after) or (before and day >= before):
+                    continue
+            except (ValueError, TypeError):
+                continue  # Cannot verify a date-constrained result without a parseable date.
         seen.add(key)
-        dedup.append(r)
-    dedup.sort(key=lambda r: r.get("date") or "", reverse=True)
-    return {"query": query, "messages": dedup[:limit], "errors": errors}
+        dedup.append(row)
+    dedup.sort(key=lambda row: row.get("date") or "", reverse=True)
+    return {"query": query, "after": after, "before": before,
+            "messages": dedup[:limit], "errors": errors, "warnings": warnings}
 
 
 # ----------------------------------------------------------------------------- receipted actions

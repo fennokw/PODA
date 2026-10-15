@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...agent.tools import _schema, _str, _int, _bool
-from . import service, state
+from . import service, state, intelligence
 from .models import MailError, wrap_untrusted
 
 
@@ -42,13 +42,26 @@ def mail_list(mailbox: str = "INBOX", limit: int = 20, unread_only: bool = False
             "error": None, "verification": f"listed {len(out['messages'])} of {out.get('total')} messages in {mailbox} ({out.get('elapsed_ms')} ms)"}
 
 
-def mail_search(query: str, limit: int = 20, account_id: str | None = None) -> dict[str, Any]:
+def mail_search(query: str = "", limit: int = 30, account_id: str | None = None,
+                after: str | None = None, before: str | None = None) -> dict[str, Any]:
+    if not (query.strip() or after or before):
+        return {"ok": False, "result": None, "error": "Provide query or date range", "verification": "no search performed"}
     try:
-        out = service.search(query, account_id or None, max(1, min(int(limit), 30)))
+        out = service.search(query, account_id or None, max(1, min(int(limit), 100)), after=after, before=before)
     except Exception as exc:
         return _err(exc, "search not performed")
-    return {"ok": True, "result": {"query": query, "messages": _wrap_rows(out["messages"]), "errors": out.get("errors", [])}, "error": None,
-            "verification": f"{len(out['messages'])} matches across connected accounts"}
+    return {"ok": not (out.get("errors") and not out["messages"]),
+            "result": {"query": query, "after": after, "before": before, "messages": _wrap_rows(out["messages"]), "errors": out.get("errors", [])},
+            "error": None, "verification": f"{len(out['messages'])} provider matches across connected accounts (bounded)"}
+
+
+def mail_research(request: str, limit: int = 18, account_id: str | None = None,
+                  after: str | None = None, before: str | None = None) -> dict[str, Any]:
+    """Expand a user's information need locally, then rank verified live messages."""
+    try:
+        return intelligence.research(request, account_id or None, max(1, min(int(limit), 25)), after, before)
+    except Exception as exc:
+        return _err(exc, "mail research not performed")
 
 
 def mail_read(message_id: str, account_id: str | None = None) -> dict[str, Any]:
@@ -101,8 +114,10 @@ _ADDRS = {"type": "array", "items": {"type": "string"}, "description": "Recipien
 TOOLS: dict[str, dict[str, Any]] = {
     "mail_list": {"description": "List recent messages in a mailbox of a connected mail account (headers only).", "mutating": False, "requires_confirmation": False, "needs": "email_read",
                   "handler": mail_list, "schema": _schema({"mailbox": _str("Mailbox name, default INBOX"), "limit": _int("Max messages", 1, 30), "unread_only": _bool("Only unread"), "account_id": _ACCOUNT}, [])},
-    "mail_search": {"description": "Search subjects/senders across connected mail accounts.", "mutating": False, "requires_confirmation": False, "needs": "email_read",
-                    "handler": mail_search, "schema": _schema({"query": _str("Search text"), "limit": _int("Max results", 1, 30), "account_id": _ACCOUNT}, ["query"])},
+    "mail_search": {"description": "Search live mail subject/sender/body, optionally constrained by after (inclusive) and before (exclusive) local YYYY-MM-DD. Query can be empty when dates are supplied.", "mutating": False, "requires_confirmation": False, "needs": "email_read",
+                    "handler": mail_search, "schema": _schema({"query": _str("Search terms or empty for date-only"), "after": _str("Inclusive local date YYYY-MM-DD"), "before": _str("Exclusive local date YYYY-MM-DD"), "limit": _int("Max results", 1, 100), "account_id": _ACCOUNT}, [])},
+    "mail_research": {"description": "Best for natural-language mail questions, weekly digests and vague topics. Infers relative dates, expands likely terms using local Ollama, searches connected accounts, returns ranked real email headers and bounded snippets. Read-only.", "mutating": False, "requires_confirmation": False, "needs": "email_read",
+                      "handler": mail_research, "schema": _schema({"request": _str("User's natural-language email retrieval request"), "after": _str("Optional inclusive local YYYY-MM-DD"), "before": _str("Optional exclusive local YYYY-MM-DD"), "limit": _int("Max relevant emails", 1, 25), "account_id": _ACCOUNT}, ["request"])},
     "mail_read": {"description": "Read one email body (returned as untrusted content). Does not change read state.", "mutating": False, "requires_confirmation": False, "needs": "email_read",
                   "handler": mail_read, "schema": _schema({"message_id": _str("Message id from mail_list/mail_search"), "account_id": _ACCOUNT}, ["message_id"])},
     "mail_mark": {"description": "Mark a message read/unread, flag/unflag, or archive it (receipted).", "mutating": True, "requires_confirmation": True, "needs": "email_modify",

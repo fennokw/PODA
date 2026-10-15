@@ -9,6 +9,7 @@ import imaplib
 import re
 import smtplib
 import time
+from datetime import datetime
 from email.header import decode_header, make_header
 from email.message import EmailMessage
 from email.utils import parsedate_to_datetime, formatdate, make_msgid
@@ -184,27 +185,57 @@ def _date(value: str | None) -> str | None:
         return None
 
 
+def _internal_received_at(meta: str) -> str | None:
+    """Parse server-reported IMAP INTERNALDATE, not sender-controlled Date header."""
+    matched = re.search(r'INTERNALDATE\s+"([^"]+)"', meta)
+    if not matched:
+        return None
+    try:
+        return datetime.strptime(matched.group(1), "%d-%b-%Y %H:%M:%S %z").isoformat()
+    except ValueError:
+        return None
+
+
 def _flags_from(raw: str) -> tuple[bool, bool]:
     return ("\\Seen" in raw), ("\\Flagged" in raw)
 
 
-def list_messages(address: str, account_id: str, mailbox: str = "INBOX", limit: int = 50, offset: int = 0, unread_only: bool = False, query: str | None = None) -> dict[str, Any]:
-    limit = max(1, min(limit, 100))
+def list_messages(address: str, account_id: str, mailbox: str = "INBOX", limit: int = 50, offset: int = 0, unread_only: bool = False,
+                  query: str | None = None, after: str | None = None, before: str | None = None,
+                  search_body: bool = False) -> dict[str, Any]:
+    """IMAP server-side search. SINCE is inclusive, BEFORE exclusive (INTERNALDATE).
+
+    BODY.PEEK when reading matched headers/bodies preserves read state.
+    """
+    from datetime import date
+    limit = max(1, min(limit, 120))
     with _Session(address) as s:
         total = s.select(mailbox)
-        criteria = ["UNSEEN"] if unread_only else ["ALL"]
+        criteria = []
+        if after:
+            criteria.extend(["SINCE", date.fromisoformat(after).strftime("%d-%b-%Y")])
+        if before:
+            criteria.extend(["BEFORE", date.fromisoformat(before).strftime("%d-%b-%Y")])
+        if unread_only:
+            criteria.append("UNSEEN")
         if query:
-            q = query.replace('"', "")
-            criteria = ["OR", "SUBJECT", f'"{q}"', "FROM", f'"{q}"'] + (["UNSEEN"] if unread_only else [])
+            q = query.replace("\\", "").replace('"', "").replace("\r", " ").replace("\n", " ")[:100]
+            # RFC 3501 prefix OR: SUBJECT q OR FROM q OR BODY q.
+            criteria += (["OR", "OR", "SUBJECT", f'"{q}"', "FROM", f'"{q}"', "BODY", f'"{q}"']
+                         if search_body else ["OR", "SUBJECT", f'"{q}"', "FROM", f'"{q}"'])
+        if not criteria:
+            criteria = ["ALL"]
         typ, data = s.conn.uid("SEARCH", None, *criteria)
-        uids = data[0].split() if typ == "OK" and data and data[0] else []
+        if typ != "OK":
+            raise MailError("provider", "Gmail IMAP rejected the search criteria.", status=502)
+        uids = data[0].split() if data and data[0] else []
         typ, un = s.conn.uid("SEARCH", None, "UNSEEN")
         unread = len(un[0].split()) if typ == "OK" and un and un[0] else 0
         page = list(reversed(uids))[offset:offset + limit]
         rows = []
         if page:
             seq = b",".join(page).decode()
-            typ, fetched = s.conn.uid("FETCH", seq, "(FLAGS BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO DATE MESSAGE-ID)] X-GM-MSGID)")
+            typ, fetched = s.conn.uid("FETCH", seq, "(FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO DATE MESSAGE-ID)] X-GM-MSGID)")
             if typ == "OK":
                 for item in fetched:
                     if not isinstance(item, tuple):
@@ -216,7 +247,7 @@ def list_messages(address: str, account_id: str, mailbox: str = "INBOX", limit: 
                     name, addr = split_sender(_hdr(hdr.get("From")))
                     rows.append({"id": encode_id(PROVIDER, address, mailbox, uid.group(1) if uid else "?"), "account_id": account_id, "mailbox": mailbox,
                                  "subject": _hdr(hdr.get("Subject")) or "(no subject)", "from_name": name or mask_address(addr), "from_address_masked": mask_address(addr),
-                                 "to_masked": [mask_address(a) for a in _hdr(hdr.get("To")).split(",") if a.strip()][:5], "date": _date(hdr.get("Date")),
+                                 "to_masked": [mask_address(a) for a in _hdr(hdr.get("To")).split(",") if a.strip()][:5], "date": _internal_received_at(meta) or _date(hdr.get("Date")),
                                  "read": read, "flagged": flagged, "snippet": None, "has_attachments": None, "message_id": (hdr.get("Message-ID") or "").strip()})
         rows.sort(key=lambda r: r["date"] or "", reverse=True)
         return {"messages": rows, "total": len(uids) if query or unread_only else total, "unread": unread, "scanned": len(uids)}
@@ -330,19 +361,29 @@ def send(address: str, to: list[str], subject: str, body: str, cc: list[str] | N
     return {"sent": not refused, "refused": {k: str(v) for k, v in (refused or {}).items()}, "message_id": msg["Message-ID"]}
 
 
-def search(address: str, account_id: str, query: str, limit: int = 50) -> list[dict[str, Any]]:
-    out = []
+def search(address: str, account_id: str, query: str, limit: int = 50,
+           after: str | None = None, before: str | None = None,
+           terms: list[str] | None = None) -> list[dict[str, Any]]:
+    """Search across inbox/all-mail and merge bounded semantic alternatives."""
+    out: list[dict[str, Any]] = []
+    candidates = list(dict.fromkeys(t for t in (terms or [query]) if t))[:8] or [None]
+    seen: set[str] = set()
     for mb in ("INBOX", "[Gmail]/All Mail"):
-        try:
-            out.extend(list_messages(address, account_id, mb, limit=limit, query=query)["messages"])
-        except MailError:
-            continue
-    seen, dedup = set(), []
-    for r in out:
-        key = r.get("message_id") or r["id"]
-        if key in seen:
-            continue
-        seen.add(key)
-        dedup.append(r)
-    dedup.sort(key=lambda r: r["date"] or "", reverse=True)
-    return dedup[:limit]
+        for term in candidates:
+            try:
+                messages = list_messages(address, account_id, mb, limit=limit,
+                                         query=term, after=after, before=before,
+                                         search_body=bool(term))["messages"]
+                for row in messages:
+                    key = row.get("message_id") or row["id"]
+                    if key not in seen:
+                        seen.add(key)
+                        out.append(row)
+            except MailError as exc:
+                if mb == "INBOX" or exc.kind not in {"not_found"}:
+                    raise  # Do not misreport an authorization or IMAP failure as zero matching mail.
+                continue
+            if len(out) >= limit * 2:
+                break
+    out.sort(key=lambda r: r.get("date") or "", reverse=True)
+    return out[:limit]

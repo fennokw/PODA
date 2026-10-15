@@ -265,3 +265,47 @@ def test_gmail_egress_blocked_offline(gmail, monkeypatch):
     with pytest.raises(MailError) as exc:
         gmail_imap._check_egress("evil.example.com")
     assert exc.value.kind == "egress_blocked"
+
+
+
+def test_gmail_keyword_body_search_uses_imap_date_bounds(gmail, monkeypatch):
+    gmail_imap.store_password("person@example.test", "good-app-password")
+    seen = []
+    original = FakeIMAP.uid
+
+    def capture(self, cmd, *args):
+        if cmd == "SEARCH":
+            seen.append(args)
+        return original(self, cmd, *args)
+
+    monkeypatch.setattr(FakeIMAP, "uid", capture)
+    out = gmail_imap.list_messages(
+        "person@example.test", "acct", "INBOX", query="lab",
+        after="2026-10-01", before="2026-10-16", search_body=True
+    )
+    assert out["messages"]
+    query = next(args for args in seen if "SINCE" in args)
+    assert "BEFORE" in query and "BODY" in query and "OR" in query
+    assert "01-Oct-2026" in query and "16-Oct-2026" in query
+
+
+def test_apple_body_search_combines_with_header_results(apple):
+    acct = service.connect_apple(["Google"])["accounts"][0]["id"]
+    apple["body_search"] = {"rows": [
+        {"native_id": 19, "date": "2026-10-01T11:00:00Z", "subject": "Unrelated title",
+         "sender": "assistant@example.test", "read": False, "flagged": False,
+         "message_id": "<body-match>", "snippet": "The robotics internship decision is attached."}
+    ], "scanned": 20, "truncated": True}
+    data = service.search("robotics", acct, limit=40, after="2026-10-01", before="2026-10-02", terms=["robotics"])
+    subjects = {m["subject"] for m in data["messages"]}
+    assert "Unrelated title" in subjects
+    assert data["warnings"] and "sampled" in data["warnings"][0]
+    assert any("internship" in (m.get("snippet") or "") for m in data["messages"])
+
+
+
+def test_imap_internaldate_uses_received_time_not_untrusted_sender_date():
+    assert gmail_imap._internal_received_at(
+        '1 (UID 7 FLAGS () INTERNALDATE "15-Oct-2026 10:45:00 -0400")'
+    ) == "2026-10-15T10:45:00-04:00"
+    assert gmail_imap._internal_received_at('1 (UID 7 FLAGS ())') is None
