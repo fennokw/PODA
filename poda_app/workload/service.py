@@ -305,11 +305,13 @@ def schedule(days: int = 14, calendar: bool = True, now: datetime | None = None)
         now = now.astimezone()
     prefs = preferences()
     items = [i for i in all_items(False) if i["estimate"]["remaining_minutes"] > 0 and i["status"] != "paused"]
-    # Deadlines then importance govern order, with a mild effort adjustment.
-    def order(item: dict[str, Any]):
+    # Transparent urgency/importance blend: near deadlines outweigh routine work,
+    # while critical longer-term projects still receive attention before becoming urgent.
+    def score(item: dict[str, Any]) -> float:
         due = _as_local(item["deadline"], now + timedelta(days=365))
-        return (due, -item["importance"], item["estimate"]["remaining_minutes"])
-    items.sort(key=order)
+        days_left = max(0.0, (due - now).total_seconds() / 86400)
+        return item["importance"] * 4.0 + 100.0 / (1.0 + days_left)
+    items.sort(key=lambda item: (-score(item), _as_local(item["deadline"], now + timedelta(days=365))))
     last = now.date() + timedelta(days=days - 1)
     if calendar:
         blocks, calendar_note = _calendar_blocks(now.date(), last)
@@ -355,7 +357,8 @@ def schedule(days: int = 14, calendar: bool = True, now: datetime | None = None)
                     continue
                 sessions.append({"item_id": item["id"], "title": item["title"], "project": item["project"],
                                  "start": cursor.isoformat(), "end": end.isoformat(),
-                                 "minutes": chunk, "deadline": item["deadline"], "importance": item["importance"]})
+                                 "minutes": chunk, "deadline": item["deadline"], "importance": item["importance"],
+                                 "priority_score": round(score(item), 1)})
                 busy.append((cursor, end))
                 remaining -= chunk
                 used += chunk
