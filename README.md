@@ -180,6 +180,16 @@ A 404 may mean **unshared integration permission** as well as a wrong ID. The di
 
 Notion and email services necessarily receive the API requests you approve; "local AI" does not mean offline remote connectors.
 
+### Mail search by date and meaning
+
+The **Mail** screen has optional **From** and **Through** calendar filters alongside keyword search. Displayed dates are inclusive. For API clients, `GET /mail/search?q=...&after=YYYY-MM-DD&before=YYYY-MM-DD` accepts `after` **inclusive** and `before` **exclusive**; `q` may be empty when at least one date bound is supplied.
+
+In chat, questions such as **“Give me a brief overview of my emails from the past week”** trigger an actual read-only mailbox search before PODA answers. The assistant resolves common relative windows (`today`, `yesterday`, `past week`, `last week`, `this week`, a number of days, or an explicit ISO date/range), searches connected accounts, and supplies verified headers and bounded body snippets. A local Ollama model can propose related search terms (e.g., internships → recruiting / interview / application) and rank real candidate messages by relevance. The model's suggestions are *not* evidence that an email exists; all reported emails come from provider reads. Without a suitable local model, keyword and header-based ranking still works.
+
+Gmail's IMAP adapter searches subjects, senders **and bodies** with server-side date criteria. Apple Mail searches dated subject/sender headers and samples matching message excerpts, so **body-only matches in unrelated headers may be missed**. Search and digest results are bounded for performance (chat typically evaluates up to 90 candidates and displays 18). PODA reports the covered window, incomplete searches, and result caps rather than claiming that a limited sample is a complete mailbox inventory. Reading/searching does not mark messages as read or grant modify/send permissions.
+
+Second-brain recall is no longer automatic for every message. Live email questions use live mail evidence; past personal context is queried when the user explicitly refers to a prior conversation, memory, or personal history.
+
 ## Scoped files, coding and external software
 
 PODA begins with **no folder grants**. In Files & Agent, grant individual directories Read or Edit and optionally enable Execute. Read-only file tools list/search within the canonical granted path. Editing requires an authorized root and provides atomic writes with pre-edit backups and read-back receipts. A file edit requested in normal chat goes through the structured tool planner and, when mutating, the explicit action proposal flow.
