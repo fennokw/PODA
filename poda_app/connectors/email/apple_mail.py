@@ -112,6 +112,39 @@ function run(argv){
   }
   return JSON.stringify({total: 0, unread: 0, rows: [], scanned: 0});
 }''',
+    "body_search": r'''
+function run(argv){
+  const args = parseArgs(argv); const Mail = mailApp(); const acct = findAccount(Mail, args.account);
+  const mb = findMailbox(acct, args.mailbox).ref; const msgs = mb.messages;
+  const terms = (args.terms || []).map(t => String(t).toLowerCase()).filter(Boolean).slice(0, 6);
+  const scanLimit = Math.max(1, Math.min(args.scan_limit || 40, 50));
+  const resultLimit = Math.max(1, Math.min(args.limit || 25, 35));
+  if (!terms.length) return JSON.stringify({rows: [], scanned: 0, scan_limit: scanLimit});
+  const ids = msgs.id(); const dates = msgs.dateReceived(); const subs = msgs.subject(); const senders = msgs.sender();
+  const reads = msgs.readStatus(); const flags = msgs.flaggedStatus(); const mids = msgs.messageId();
+  const after = args.after ? new Date(args.after + "T00:00:00").getTime() : null;
+  const before = args.before ? new Date(args.before + "T00:00:00").getTime() : null;
+  const rows = [];
+  let scanned = 0;
+  for (let i = 0; i < ids.length && scanned < scanLimit && rows.length < resultLimit; i++) {
+    const ts = new Date(dates[i]).getTime();
+    if ((after !== null || before !== null) &&
+        (!isFinite(ts) || (after !== null && ts < after) || (before !== null && ts >= before))) continue;
+    scanned++;
+    try {
+      // Avoid unbounded JXA 'whose' queries, which can hang on large Mail mailboxes.
+      const content = String(msgs.byId(Number(ids[i])).content() || "");
+      const lower = content.toLowerCase();
+      const match = terms.find(t => lower.includes(t));
+      if (!match) continue;
+      const index = lower.indexOf(match);
+      const excerpt = content.slice(Math.max(0, index - 55), Math.min(content.length, index + match.length + 145));
+      rows.push({native_id: ids[i], date: iso(dates[i]), subject: subs[i], sender: senders[i],
+                 read: reads[i], flagged: flags[i], message_id: mids[i], snippet: excerpt});
+    } catch (e) { /* A single unreadable body must not fail the whole search. */ }
+  }
+  return JSON.stringify({rows, scanned, scan_limit: scanLimit, truncated: scanned >= scanLimit});
+}''',
     "read": r'''
 function run(argv){
   const args = parseArgs(argv); const Mail = mailApp(); const acct = findAccount(Mail, args.account);
@@ -310,6 +343,28 @@ def list_messages(account: str, account_id: str, mailbox: str = "INBOX", limit: 
     for r in rows:
         r.pop("native_id", None)
     return {"messages": rows, "total": data.get("total", len(rows)), "unread": data.get("unread"), "scanned": data.get("scanned")}
+
+
+def search_body(account: str, account_id: str, mailbox: str, terms: list[str],
+                after: str | None = None, before: str | None = None,
+                scan_limit: int = 40, result_limit: int = 25) -> dict[str, Any]:
+    """Bounded body scan of date-qualified Apple Mail messages.
+
+    This is a fallback, not an exhaustive provider-side full-text search.
+    """
+    data = _run("body_search", {
+        "account": account, "mailbox": mailbox, "terms": terms[:6],
+        "after": after, "before": before, "scan_limit": max(1, min(scan_limit, 50)),
+        "limit": max(1, min(result_limit, 35))
+    }, timeout=60)
+    found = []
+    for item in data.get("rows", []):
+        row = _row(account, mailbox, item, account_id)
+        row.pop("native_id", None)
+        row["snippet"] = snippet(item.get("snippet") or "", 220)
+        found.append(row)
+    return {"messages": found, "scanned": data.get("scanned", 0),
+            "truncated": bool(data.get("truncated"))}
 
 
 def snippets(account: str, mailbox: str, native_ids: list[str]) -> dict[str, str]:
