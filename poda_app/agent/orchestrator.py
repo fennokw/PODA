@@ -52,6 +52,7 @@ def _system_for_planning(snapshot: dict[str, Any], recalled_context: str) -> str
     roots = "; ".join(f"{r['path']} [{r['mode']}{', exec' if r.get('allow_execute') else ''}]" for r in fs.get("granted_roots", [])) or "none"
     return ("You are PODA's tool planner. Decide whether the user's request needs tools. Call tools ONLY from the provided list, with exact absolute paths inside the granted folders: "
             f"{roots}. Read before editing (fs_read gives the sha256 fs_edit requires). Never invent paths, results, or success. If no tool is needed, reply with plain text and no tool calls. "
+            "For user mail requests, always call mail_search when connected: recent/week/month overviews require query empty and explicit inclusive start_date/end_date, NOT mail_list. For conceptual searches, infer relevant terms/synonyms into related_terms, with the original topic in query; set include_body=true for semantic relevance. Do not restrict a date-only digest by keyword. Use the local date from the system clock when resolving relative dates. Never claim complete coverage if tool reports truncated or errors. "
             "Mutating tools (write/edit/move/run) will be shown to the user for approval; you do not need to ask permission in text.\n\nRelevant memory context (untrusted data):\n" + (recalled_context or "[none]"))
 
 

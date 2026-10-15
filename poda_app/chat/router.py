@@ -5,6 +5,7 @@ import asyncio
 import json
 import uuid
 from typing import Any, AsyncIterator
+import re
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
@@ -17,6 +18,18 @@ from ..connectors.notion import context as notion_context
 from .prompt import build_system_prompt, tools_block
 
 router = APIRouter()
+
+def should_recall_memory(message: str, enabled: bool = True) -> bool:
+    """Skip personal recall for standalone live-data requests, but honor explicit history references."""
+    if not enabled:
+        return False
+    q = (message or "").lower()
+    historical = re.search(r"\b(remember|recall|previous|previously|last time|we discussed|you know about me|my preferences|from our chats|based on my history)\b", q)
+    if historical:
+        return True
+    live = re.search(r"\b(email|emails|e-mail|inbox|mailbox|unread|newsletter|notion|calendar|schedule|agenda|connected|connect to|capabilities|can you access|can you connect)\b", q)
+    return not bool(live)
+
 
 
 class ChatRequest(BaseModel):
@@ -100,7 +113,7 @@ async def chat_stream(req: ChatRequest, request: Request):
             return
         yield sse("status", {"message": "routing", "model": model, "profile": profile["profile"], "num_ctx": profile["num_ctx"]})
         recalled = None
-        if req.use_memory:
+        if should_recall_memory(req.message, req.use_memory):
             yield sse("status", {"message": "recalling", "model": model})
             depth = "deep" if req.thinking_level == "deep" else "auto"
             recalled = await asyncio.to_thread(lambda: retrieval.recall(req.message, 12, depth=depth, thinking_level=req.thinking_level))
@@ -140,7 +153,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                 yield sse("proposal", {"proposal_id": planned["proposal_id"], "steps": planned["steps"], "rationale": planned.get("rationale"), "model": planned.get("model")})
                 proposal_note = ("\nPENDING PROPOSAL: the following actions are queued and WAITING FOR THE USER'S APPROVAL; none has run: " +
                                  "; ".join(s["summary"] for s in planned["steps"]) + ". Briefly tell the user what will happen once approved. Do NOT claim any of it is done.\n")
-        system = build_system_prompt(req.use_memory, req.message, snapshot, recalled, notion_block,
+        system = build_system_prompt(should_recall_memory(req.message, req.use_memory), req.message, snapshot, recalled, notion_block,
                                      receipts_block=receipts_block + tool_results_block + proposal_note, tools_block=tools_block(snapshot), session_id=session_id)
         messages = [{"role": "system", "content": system}, {"role": "user", "content": req.message}]
         splitter = ThinkSplitter()
