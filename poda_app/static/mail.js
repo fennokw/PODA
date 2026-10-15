@@ -7,7 +7,7 @@
 
   const state = {
     status: null, accountId: null, mailbox: 'INBOX', offset: 0, limit: 50, total: 0, unread: 0, messages: [], selected: null,
-    unreadOnly: false, query: '', loadingList: false, receipts: [], extraction: null, mailboxes: [],
+    unreadOnly: false, query: '', searchAfter: '', searchThrough: '', loadingList: false, receipts: [], extraction: null, mailboxes: [],
   };
 
   // ---------- helpers ----------
@@ -215,24 +215,37 @@
     }
 
     // ---------- list ----------
+    function isMailSearch() { return Boolean(state.query || state.searchAfter || state.searchThrough); }
+    function dayAfter(iso) { const d = new Date(iso + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); }
     function drawListHead() {
       listHead.innerHTML = '';
       const accounts = state.status?.accounts || [];
-      const search = el('input', { class: 'input mail-search', type: 'search', placeholder: 'Search this account', value: state.query, 'aria-label': 'Search mail' });
+      const search = el('input', { class: 'input mail-search', type: 'search', placeholder: 'Keywords (optional)', value: state.query, 'aria-label': 'Search mail' });
       let timer = 0; search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => { state.query = search.value.trim(); state.selected = null; const head = listHead.querySelector('strong'); if (head) head.textContent = state.query ? `Search: ${state.query}` : state.mailbox; loadMessages(true); }, 320); });
+      const sinceInput = el('input', { class: 'input', type: 'date', value: state.searchAfter, 'aria-label': 'Search emails from date (inclusive)', title: 'From this date (inclusive)' });
+      const throughInput = el('input', { class: 'input', type: 'date', value: state.searchThrough, 'aria-label': 'Search emails through date (inclusive)', title: 'Through this date (inclusive)' });
+      sinceInput.addEventListener('change', () => { state.searchAfter = sinceInput.value; drawListHead(); loadMessages(true); });
+      throughInput.addEventListener('change', () => { state.searchThrough = throughInput.value; drawListHead(); loadMessages(true); });
+      const clearDates = el('button', { type: 'button', class: 'btn btn-sm btn-ghost', title: 'Clear search date filters', onclick: () => { state.searchAfter = ''; state.searchThrough = ''; drawListHead(); loadMessages(true); } }, 'Clear dates');
       const unread = el('button', { type: 'button', class: 'btn btn-sm', 'aria-pressed': state.unreadOnly ? 'true' : 'false', onclick: () => { state.unreadOnly = !state.unreadOnly; drawListHead(); loadMessages(true); } }, state.unreadOnly ? 'Unread only' : 'All');
       const compose = el('button', { type: 'button', class: 'btn btn-sm btn-primary', disabled: !currentAccount()?.allow_modify, title: currentAccount()?.allow_modify ? 'Write a new draft' : 'Enable edits for this account to write drafts', onclick: () => openComposer({}) }, 'New draft');
       const acct = accounts.length > 1 ? el('select', { class: 'input mail-acct-select', 'aria-label': 'Account', onchange: async (e) => { state.accountId = e.target.value; state.mailbox = 'INBOX'; state.selected = null; drawConnections(); drawPermissions(); drawListHead(); await drawMailboxes(); loadMessages(true); } }, ...accounts.map((a) => el('option', { value: a.id, selected: a.id === state.accountId }, a.account_name))) : null;
-      listHead.append(el('div', { class: 'row' }, el('strong', {}, state.query ? `Search: ${state.query}` : state.mailbox), el('span', { class: 'faint small mono', id: 'mailCount' }, '')), el('div', { class: 'row' }, acct, search, unread, el('button', { type: 'button', class: 'btn btn-sm btn-ghost', 'aria-label': 'Refresh', onclick: () => loadMessages(true) }, 'Refresh'), compose));
+      listHead.append(el('div', { class: 'row' }, el('strong', {}, isMailSearch() ? `Search: ${state.query || 'date range'}` : state.mailbox), el('span', { class: 'faint small mono', id: 'mailCount' }, '')), el('div', { class: 'row' }, acct, search, sinceInput, throughInput, clearDates, unread, el('button', { type: 'button', class: 'btn btn-sm btn-ghost', 'aria-label': 'Refresh', onclick: () => loadMessages(true) }, 'Refresh'), compose));
     }
 
     async function loadMessages(reset) {
       if (!state.accountId || state.loadingList) return;
       state.loadingList = true;
-      if (reset) { state.offset = 0; state.messages = []; listBox.innerHTML = ''; snippetQueue.seen.clear(); if (state.query) listBox.appendChild(el('div', { class: 'mail-searching' }, el('span', { class: 'live' }), `Searching Mail for “${state.query}”… this walks INBOX and the archive and can take around ten seconds.`)); listBox.appendChild(skeleton(6)); }
+      if (reset) { state.offset = 0; state.messages = []; listBox.innerHTML = ''; snippetQueue.seen.clear(); if (isMailSearch()) listBox.appendChild(el('div', { class: 'mail-searching' }, el('span', { class: 'live' }), `Searching Mail for “${state.query || 'date range'}”… scanning inbox and archive.`)); listBox.appendChild(skeleton(6)); }
       try {
         let r;
-        if (state.query) { r = await enqueue(() => api(`/mail/search?q=${encodeURIComponent(state.query)}&account_id=${encodeURIComponent(state.accountId)}&limit=${state.limit}`), { front: true }); r.total = r.total ?? (r.messages || []).length; }
+        if (isMailSearch()) {
+          const since = state.searchAfter ? `&after=${encodeURIComponent(state.searchAfter)}` : '';
+          const until = state.searchThrough ? `&before=${encodeURIComponent(dayAfter(state.searchThrough))}` : '';
+          r = await enqueue(() => api(`/mail/search?q=${encodeURIComponent(state.query)}&account_id=${encodeURIComponent(state.accountId)}&limit=${state.limit}${since}${until}`), { front: true });
+          if (state.unreadOnly) r.messages = (r.messages || []).filter((m) => !m.read);
+          r.total = (r.messages || []).length;
+        }
         else r = await enqueue(() => api(`/mail/messages?account_id=${encodeURIComponent(state.accountId)}&mailbox=${encodeURIComponent(state.mailbox)}&limit=${state.limit}&offset=${state.offset}${state.unreadOnly ? '&unread_only=true' : ''}`), { front: true });
         const batch = r.messages || [];
         state.messages = reset ? batch : state.messages.concat(batch);
@@ -246,9 +259,9 @@
 
     function drawList(r) {
       listBox.innerHTML = '';
-      if (!state.messages.length) { listBox.appendChild(emptyState(state.query ? 'No matches' : 'Nothing here', state.unreadOnly ? 'No unread messages in this mailbox.' : 'This mailbox is empty or still loading in Mail.')); return; }
+      if (!state.messages.length) { listBox.appendChild(emptyState(isMailSearch() ? 'No matches' : 'Nothing here', state.unreadOnly ? 'No unread messages in this mailbox.' : 'This mailbox is empty or still loading in Mail.')); return; }
       for (const m of state.messages) listBox.appendChild(messageRow(m));
-      if (state.total > state.messages.length && !state.query) listBox.appendChild(el('button', { type: 'button', class: 'btn btn-ghost mail-more', onclick: () => loadMessages(false) }, `Load more (${state.total - state.messages.length} remaining)`));
+      if (state.total > state.messages.length && !isMailSearch()) listBox.appendChild(el('button', { type: 'button', class: 'btn btn-ghost mail-more', onclick: () => loadMessages(false) }, `Load more (${state.total - state.messages.length} remaining)`));
       loadSnippets();
     }
 
