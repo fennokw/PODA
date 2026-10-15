@@ -100,3 +100,32 @@ def test_workload_rename_persists(client):
         assert upd.json()["title"] == "Final essay"
     finally:
         client.delete("/workload/" + tid)
+
+
+def test_local_model_analysis_respects_calibrated_total(client, monkeypatch):
+    import json
+    from poda_app.workload import analyzer
+    result = client.post("/workload", json={
+        "title": "Research paper", "category": "writing", "difficulty": 7,
+        "user_minutes": 97, "description": "Read three sources, write an outline, draft and revise a paper."
+    })
+    assert result.status_code == 200
+    item_id = result.json()["id"]
+    monkeypatch.setattr(analyzer.ollama, "status", lambda: {"reachable": True, "models": ["qwen3:14b"]})
+    def fake_chat(*args, **kwargs):
+        return {"message": {"content": json.dumps({"steps": [
+            {"title": "Read sources", "details": "Identify relevant arguments.", "weight": 2},
+            {"title": "Draft the essay", "details": "Build paragraphs from the outline.", "weight": 5},
+            {"title": "Revise", "details": "Check evidence and structure.", "weight": 2}
+        ], "assumptions": ["Sources available"]})}}
+    monkeypatch.setattr(analyzer.ollama, "chat", fake_chat)
+    try:
+        analyzed = client.get("/workload/" + item_id + "/analysis")
+        assert analyzed.status_code == 200, analyzed.text
+        data = analyzed.json()
+        assert data["mode"] == "local_model"
+        assert len(data["steps"]) == 3
+        assert sum(step["minutes"] for step in data["steps"]) == 97
+        assert data["estimate"]["source"] == "user-provided estimate"
+    finally:
+        client.delete("/workload/" + item_id)
