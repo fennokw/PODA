@@ -214,7 +214,9 @@ def list_messages(address: str, account_id: str, mailbox: str = "INBOX", limit: 
         if not criteria:
             criteria = ["ALL"]
         typ, data = s.conn.uid("SEARCH", None, *criteria)
-        uids = data[0].split() if typ == "OK" and data and data[0] else []
+        if typ != "OK":
+            raise MailError("provider", "Gmail IMAP rejected the search criteria.", status=502)
+        uids = data[0].split() if data and data[0] else []
         typ, un = s.conn.uid("SEARCH", None, "UNSEEN")
         unread = len(un[0].split()) if typ == "OK" and un and un[0] else 0
         page = list(reversed(uids))[offset:offset + limit]
@@ -365,7 +367,9 @@ def search(address: str, account_id: str, query: str, limit: int = 50,
                     if key not in seen:
                         seen.add(key)
                         out.append(row)
-            except MailError:
+            except MailError as exc:
+                if mb == "INBOX" or exc.kind not in {"not_found"}:
+                    raise  # Do not misreport an authorization or IMAP failure as zero matching mail.
                 continue
             if len(out) >= limit * 2:
                 break
