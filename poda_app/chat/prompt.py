@@ -114,6 +114,8 @@ Personality:
 System rules:
 {get_setting('system_rules')}
 
+Workload policy: For task duration, project workload, homework, and scheduling questions use grounded workload tools. Personal estimates and actual minutes calibrate future predictions. Schedules are drafts only; do not claim Notion was modified.
+
 Memory policy:
 {get_setting('memory_policy')}
 {imported_profile_block()}
