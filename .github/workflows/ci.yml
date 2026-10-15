@@ -18,6 +18,8 @@ jobs:
         run: python tools/release_guard.py --check
       - name: Compile Python modules
         run: python -m compileall -q poda_app tests
+      - name: Validate interactive Mail JavaScript syntax
+        run: node --check poda_app/static/mail.js
       - name: Run local unit tests without external accounts or Ollama
         run: python -m pytest -q tests
       - name: Build public archive and inspect entries
