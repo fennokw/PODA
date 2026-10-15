@@ -188,14 +188,31 @@ def _flags_from(raw: str) -> tuple[bool, bool]:
     return ("\\Seen" in raw), ("\\Flagged" in raw)
 
 
-def list_messages(address: str, account_id: str, mailbox: str = "INBOX", limit: int = 50, offset: int = 0, unread_only: bool = False, query: str | None = None) -> dict[str, Any]:
-    limit = max(1, min(limit, 100))
+def list_messages(address: str, account_id: str, mailbox: str = "INBOX", limit: int = 50, offset: int = 0, unread_only: bool = False,
+                  query: str | None = None, after: str | None = None, before: str | None = None,
+                  search_body: bool = False) -> dict[str, Any]:
+    """IMAP server-side search. SINCE is inclusive, BEFORE exclusive (INTERNALDATE).
+
+    BODY.PEEK when reading matched headers/bodies preserves read state.
+    """
+    from datetime import date
+    limit = max(1, min(limit, 120))
     with _Session(address) as s:
         total = s.select(mailbox)
-        criteria = ["UNSEEN"] if unread_only else ["ALL"]
+        criteria = []
+        if after:
+            criteria.extend(["SINCE", date.fromisoformat(after).strftime("%d-%b-%Y")])
+        if before:
+            criteria.extend(["BEFORE", date.fromisoformat(before).strftime("%d-%b-%Y")])
+        if unread_only:
+            criteria.append("UNSEEN")
         if query:
-            q = query.replace('"', "")
-            criteria = ["OR", "SUBJECT", f'"{q}"', "FROM", f'"{q}"'] + (["UNSEEN"] if unread_only else [])
+            q = query.replace("\\", "").replace('"', "").replace("\r", " ").replace("\n", " ")[:100]
+            # RFC 3501 prefix OR: SUBJECT q OR FROM q OR BODY q.
+            criteria += (["OR", "OR", "SUBJECT", f'"{q}"', "FROM", f'"{q}"', "BODY", f'"{q}"']
+                         if search_body else ["OR", "SUBJECT", f'"{q}"', "FROM", f'"{q}"'])
+        if not criteria:
+            criteria = ["ALL"]
         typ, data = s.conn.uid("SEARCH", None, *criteria)
         uids = data[0].split() if typ == "OK" and data and data[0] else []
         typ, un = s.conn.uid("SEARCH", None, "UNSEEN")
@@ -330,19 +347,27 @@ def send(address: str, to: list[str], subject: str, body: str, cc: list[str] | N
     return {"sent": not refused, "refused": {k: str(v) for k, v in (refused or {}).items()}, "message_id": msg["Message-ID"]}
 
 
-def search(address: str, account_id: str, query: str, limit: int = 50) -> list[dict[str, Any]]:
-    out = []
+def search(address: str, account_id: str, query: str, limit: int = 50,
+           after: str | None = None, before: str | None = None,
+           terms: list[str] | None = None) -> list[dict[str, Any]]:
+    """Search across inbox/all-mail and merge bounded semantic alternatives."""
+    out: list[dict[str, Any]] = []
+    candidates = list(dict.fromkeys(t for t in (terms or [query]) if t))[:8] or [None]
+    seen: set[str] = set()
     for mb in ("INBOX", "[Gmail]/All Mail"):
-        try:
-            out.extend(list_messages(address, account_id, mb, limit=limit, query=query)["messages"])
-        except MailError:
-            continue
-    seen, dedup = set(), []
-    for r in out:
-        key = r.get("message_id") or r["id"]
-        if key in seen:
-            continue
-        seen.add(key)
-        dedup.append(r)
-    dedup.sort(key=lambda r: r["date"] or "", reverse=True)
-    return dedup[:limit]
+        for term in candidates:
+            try:
+                messages = list_messages(address, account_id, mb, limit=limit,
+                                         query=term, after=after, before=before,
+                                         search_body=bool(term))["messages"]
+                for row in messages:
+                    key = row.get("message_id") or row["id"]
+                    if key not in seen:
+                        seen.add(key)
+                        out.append(row)
+            except MailError:
+                continue
+            if len(out) >= limit * 2:
+                break
+    out.sort(key=lambda r: r.get("date") or "", reverse=True)
+    return out[:limit]
