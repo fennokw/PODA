@@ -171,7 +171,8 @@ def _suggest(text: str, filename: str) -> list[dict[str, Any]]:
     """Extract candidate work items; never silently create tasks from uploaded content."""
     suggestions = []
     seen = set()
-    for line in text.splitlines()[:1000]:
+    lines = text.splitlines()[:1000]
+    for index, line in enumerate(lines):
         clean = re.sub(r"^\s*(?:[-*•]|\[ ?\]|\d{1,3}[.)])\s*", "", line).strip()
         if not clean or len(clean) < 9 or len(clean) > 170:
             continue
@@ -183,7 +184,8 @@ def _suggest(text: str, filename: str) -> list[dict[str, Any]]:
         seen.add(clean.lower())
         category = ("homework" if re.search("question|problem|homework|assignment|pset", clean, re.I)
                     else "study" if re.search("study|exam|quiz|review", clean, re.I) else "general")
-        suggestions.append({"title": clean[:180], "description": "",
+        excerpt = "\\n".join(lines[max(0, index - 2):min(len(lines), index + 5)])[:3000]
+        suggestions.append({"title": clean[:180], "description": excerpt,
                             "category": category, "importance": 5, "difficulty": 5,
                             "source_type": "uploaded_document"})
         if len(suggestions) == 35:
