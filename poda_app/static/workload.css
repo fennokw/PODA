@@ -1,4 +1,4 @@
-/* Workload panel — PODA's existing deep navy / cyan theme, with focused data density. */
+/* Workload panel - PODA's existing deep navy / cyan theme, with focused data density. */
 .workload-screen { max-width: 1120px; gap: 22px; }
 .workload-screen .card { border-color: rgba(110,169,228,.18); }
 .workload-screen .card:focus-within { border-color: rgba(79,179,255,.34); transition: border-color .2s ease; }
