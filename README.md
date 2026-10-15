@@ -260,3 +260,46 @@ docs/                      architecture, threats, permissions, benchmarks and re
 ```
 
 **License:** MIT. See [LICENSE](LICENSE).
+
+
+## Adaptive workload and personal time estimation (v0.7.0)
+
+PODA now provides a dedicated **Workload** tab, separate from Ask and the older project-priority screen. It is designed for assignments, study plans, software projects, research deliverables, and to-do sheets.
+
+### Enter work and train your personal pace
+
+Create a work item with a task title, detailed instructions, course/project grouping, work category, difficulty (1–10), priority (1–10), deadline, progress, and status. You may specify your **own predicted minutes** and, after working, **actual minutes**. The personal estimate takes precedence for that item; future predictions for similar work are adjusted using the examples you provide.
+
+Personalization is not fine-tuning or a hidden model-weight modification. It is **explicit, local, inspectable calibration**: for each example PODA compares the provided duration with a category/difficulty reference estimate. It combines ratios on a weighted logarithmic scale, giving more influence to examples in the same work category and at nearby difficulty levels. Actual completed-time measurements carry more weight than initial guesses. Sparse data receives a conservative prior centered on the baseline; extreme ratios are bounded. The UI displays estimate ranges, source labels, example counts and confidence levels so estimates are not misrepresented as exact.
+
+The initial heuristics are deliberately rough. For better estimates, record both predicted and actual durations over several tasks. The whole feature runs on your encrypted local PODA database and does not send task content to a remote service.
+
+### Upload assignments or to-do sheets
+
+In **Workload > Homework & to-do sheet intake**, upload a `.pdf`, `.docx`, `.txt`, `.md`, or `.csv` document (up to 8 MB). PODA extracts text on the local Mac, proposes candidate tasks based on lines and numbered/bulleted instructions, and presents an editable **review before saving**. The uploaded file is not silently added to the project list, and the original binary upload is not persisted. A saved task retains a nearby excerpt of its instructions so the local assistant has context for its analysis.
+
+PDFs use `pypdf` (installed with the normal requirements). Scanned, image-only PDFs require text extraction/OCR before uploading; PODA does not run cloud OCR. The importer is a heuristic task extractor, not a guaranteed perfect parser: review every suggested work item and its deadlines before accepting it.
+
+### Get a task-specific plan from the local model
+
+Choose **Break down** on a saved item. PODA asks a locally installed Ollama model to propose actionable phases grounded in the saved instructions. The phase durations are normalized to the item's *personally calibrated total*. If Ollama is offline, a transparent category-based fallback is shown instead. The task text is treated as data, not as instructions to the model. Task analysis never executes homework, modifies files, or schedules events by itself.
+
+The same capabilities are available from regular Ask conversation using the `workload_list`, `workload_details`, `workload_estimate`, `workload_analyze`, `workload_breakdown`, and `workload_schedule` tools. Creating/updating items from chat uses PODA's existing explicit proposal approval and action receipts.
+
+### Schedule by deadline, priority and available time
+
+Configure your personal working window, preferred focus block duration, short breaks, daily planned-minute limit, and weekend preference. Choose **Plan next 7 days** or **Plan next 14 days**. PODA blends importance with deadline urgency, then divides remaining work into practical sessions. Where the Notion calendar data source is connected and readable, draft sessions avoid existing calendar events. Deadlines and item statuses are respected; work that does not fit is reported as **unscheduled**, not silently omitted.
+
+**Important:** these are *suggested blocks only*, not changes to Notion Calendar. If the live Notion read fails or Notion is disconnected, PODA explicitly reports that calendar conflicts were **not checked**. Do not interpret an unverified schedule as free time. Dates use the Mac's local time zone.
+
+### Chat continues during navigation
+
+PODA's Ask view now starts a server-owned chat run rather than tying generation to one browser connection. You can open **Workload**, **Mail**, **Notion**, another tab, or the dedicated **3D Memory** page while Ollama is responding. When you return, the Ask page reattaches to the existing run and replays its generated events; completed conversation turns are restored from the encrypted PODA database. Only opaque session/run IDs are kept in browser session storage, not plaintext conversation transcripts.
+
+Pressing **Stop** cancels the server task explicitly. Choosing **New chat** starts a fresh session. Runs continue **only while the PODA backend process is running**: if PODA or the Mac restarts, an in-progress inference is interrupted. Completed chat messages remain stored locally; running stream buffers are intentionally ephemeral and retained for a bounded period.
+
+### Local API and quality checks
+
+The workload API exposes `GET/POST /workload`, `PUT/DELETE /workload/{item_id}`, `POST /workload/intake`, `GET /workload/{item_id}/analysis`, `GET /workload/schedule`, and `GET/PUT /workload/settings/preferences`. The resumable chat API uses `POST /chat/runs`, `GET /chat/runs/{run_id}/stream` and `POST /chat/runs/{run_id}/cancel`.
+
+Run `python3 -m pytest -q tests/test_workload.py tests/test_resumable_chat.py` for focused tests or `./VERIFY_PODA.command` for broader verification. As with the rest of PODA, live Notion availability and Apple Silicon Ollama inference should also be validated on macOS.

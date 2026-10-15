@@ -15,6 +15,8 @@ from .security.auth import security_middleware
 from .runtime.router import router as runtime_router
 from .memory.router import router as memory_router
 from .chat.router import router as chat_router
+from .chat.runs import router as chat_runs_router
+from .workload.router import router as workload_router
 from .agent.router import router as agent_router
 from .planner.router import router as planner_router
 from .security.router import router as privacy_router
@@ -46,7 +48,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=config.APP_NAME, version=config.VERSION, lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.middleware("http")(security_middleware)
 
-for r in (runtime_router, memory_router, chat_router, agent_router, planner_router, privacy_router, notion_router, email_router, software_router, imports_router):
+for r in (runtime_router, memory_router, chat_router, chat_runs_router, agent_router, planner_router, workload_router, privacy_router, notion_router, email_router, software_router, imports_router):
     app.include_router(r)
 
 

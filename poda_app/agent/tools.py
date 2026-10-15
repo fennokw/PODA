@@ -146,6 +146,8 @@ def _load_extensions() -> None:
         register_extension(getattr(email_tools, "TOOLS", {}), getattr(email_tools, "NEEDS", {}))
     except Exception:
         pass
+    from ..workload import tools as workload_tools
+    register_extension(workload_tools.TOOLS)
 
 
 _TYPE_MAP = {"string": str, "integer": int, "boolean": bool, "array": list, "object": dict}

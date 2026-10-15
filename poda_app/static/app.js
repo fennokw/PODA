@@ -15,11 +15,11 @@
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const tag = document.activeElement?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || document.activeElement?.isContentEditable) return;
-    const map = { 1: 'ask', 2: 'memory', 3: 'plan', 4: 'notion', 5: 'mail', 6: 'files', 7: 'privacy', 8: 'system', 9: 'personalize' };
+    const map = { 0: 'workload', 1: 'ask', 2: 'memory', 3: 'plan', 4: 'notion', 5: 'mail', 6: 'files', 7: 'privacy', 8: 'system', 9: 'personalize' };
     if (map[e.key]) { e.preventDefault(); if (map[e.key] === 'memory') window.location.assign('/memory-viewer'); else navigate(map[e.key]); }
   });
 
-  const screens = [['ask', 'Ask', '1'], ['personalize', 'Personalize', '9'], ['plan', 'Plan', '3'], ['notion', 'Notion', '4'], ['mail', 'Mail', '5'], ['files', 'Files & Agent', '6'], ['privacy', 'Privacy', '7'], ['system', 'System', '8']];
+  const screens = [['ask', 'Ask', '1'], ['personalize', 'Personalize', '9'], ['workload', 'Workload', '0'], ['plan', 'Plan', '3'], ['notion', 'Notion', '4'], ['mail', 'Mail', '5'], ['files', 'Files & Agent', '6'], ['privacy', 'Privacy', '7'], ['system', 'System', '8']];
   for (const [name, label, key] of screens) registerCommand({ label: `Go to ${label}`, kind: 'Screen', key, keywords: name === 'mail' ? 'email inbox gmail apple mail' : '', run: () => navigate(name) });
   registerCommand({ label: 'Open memory viewer', kind: 'Screen', key: '2', keywords: 'open3d 3d second brain', run: () => window.location.assign('/memory-viewer') });
   registerCommand({ label: 'Check capabilities', kind: 'Action', keywords: 'ledger status', run: async () => { const c = await api('/capabilities'); toast(`Ollama ${c.ollama?.reachable ? 'reachable' : 'unreachable'} · Notion ${c.notion?.status || 'DISCONNECTED'} · ${c.filesystem?.granted_roots?.length || 0} folder grants`); navigate('system'); } });
@@ -47,10 +47,21 @@
   // =====================================================================
   // ASK
   // =====================================================================
-  // Every page load is a fresh conversation (no session id is persisted); the transcript below only lives while this
-  // page is open so switching screens and back keeps the current chat. Older conversations are never replayed here;
-  // they live in the memory web and reach PODA only through semantic recall when they are relevant.
-  const askState = { sessionId: null, mode: 'auto', thinking: 'balanced', useMemory: true, controller: null, transcript: [] };
+  // Each explicit New chat starts a fresh session. Only session/run IDs persist through
+  // hard navigation; the transcript is restored from PODA's encrypted local store.
+  const askState = {
+    sessionId: sessionStorage.getItem('poda_session_id') || null,
+    runId: sessionStorage.getItem('poda_active_run') || null,
+    mode: 'auto', thinking: 'balanced', useMemory: true,
+    controller: null, transcript: []
+  };
+  // Only opaque identifiers go in browser storage. Full conversations remain in encrypted SQLite.
+  const persistSession = () => {
+    if (askState.sessionId) sessionStorage.setItem('poda_session_id', askState.sessionId);
+    else sessionStorage.removeItem('poda_session_id');
+    if (askState.runId) sessionStorage.setItem('poda_active_run', askState.runId);
+    else sessionStorage.removeItem('poda_active_run');
+  };
 
   route('ask', async ({ view, inspector, setTitle, setInspectorTitle }) => {
     setTitle('Ask'); setInspectorTitle('Context');
@@ -104,13 +115,27 @@
         el('div', { class: 'suggest' }, ...suggestions.map((s) => el('button', { class: 'btn btn-sm', type: 'button', onclick: () => { textarea.value = s; composer.requestSubmit(); } }, s)))));
     }
 
-    // Current conversation only (kept while this page is open); no stored history is replayed.
+    // Restore only THIS local session from PODA's encrypted store after a full page navigation.
+    // We intentionally do not save conversation text to browser localStorage/sessionStorage.
+    if (!askState.transcript.length && askState.sessionId) {
+      try {
+        const history = await api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/messages?limit=120');
+        askState.transcript = (history.messages || []).filter((m) => m.role === 'user' || m.role === 'assistant')
+          .map((m) => ({ role: m.role, content: m.content, at: m.created_at }));
+        if (askState.runId && askState.transcript.at(-1)?.role === 'assistant') {
+          const run = await api('/chat/runs/' + encodeURIComponent(askState.runId)).catch(() => null);
+          if (!run || run.state !== 'running') { askState.runId = null; persistSession(); }
+        }
+      } catch { /* Server might have restarted; active run status will report that accurately. */ }
+    }
     if (askState.transcript.length) for (const m of askState.transcript) addMessage(m.role, m.content, m.at);
     else showEmpty();
     messages.scrollTop = messages.scrollHeight;
     function newChat() {
+      if (askState.runId) api('/chat/runs/' + encodeURIComponent(askState.runId) + '/cancel', { method: 'POST' }).catch(() => {});
       askState.controller?.abort();
-      askState.sessionId = null; askState.transcript = [];
+      askState.sessionId = null; askState.runId = null; askState.transcript = [];
+      persistSession();
       messages.innerHTML = ''; showEmpty(); statusLine.innerHTML = ''; recallBox.innerHTML = ''; sessionBox.innerHTML = '';
       recallBox.appendChild(el('p', { class: 'faint small' }, 'Send a message to see which memories were recalled and why.'));
       toast('Fresh conversation started', 'ok'); textarea.focus();
@@ -163,9 +188,9 @@
       }
     }
 
-    async function send(text, continuationOf) {
+    async function send(text, continuationOf, resumeId = null) {
       if (askState.controller) return;
-      if (!continuationOf) { const at = new Date().toISOString(); addMessage('user', text, at); askState.transcript.push({ role: 'user', content: text, at }); }
+      if (!continuationOf && !resumeId) { const at = new Date().toISOString(); addMessage('user', text, at); askState.transcript.push({ role: 'user', content: text, at }); }
       const empty = $('.hero-empty', messages); if (empty) empty.remove();
       const { wrap, bubble, metaRow } = addMessage('assistant', '', null);
       bubble.classList.add('streaming');
@@ -176,12 +201,23 @@
       const paint = () => { raf = 0; bubble.innerHTML = md.render(full); messages.scrollTop = messages.scrollHeight; };
       const schedule = () => { if (!raf) raf = requestAnimationFrame(paint); };
       const setStatus = (t, live) => { statusLine.innerHTML = ''; if (live) statusLine.appendChild(el('span', { class: 'live' })); statusLine.appendChild(el('span', {}, t)); };
-      askState.controller = new AbortController();
+      const subscription = new AbortController();
+      askState.controller = subscription;
       sendBtn.disabled = true; stopBtn.hidden = false; setStatus('Contacting PODA…', true);
       const body = { message: text, mode: askState.mode, thinking_level: askState.thinking, use_memory: askState.useMemory, session_id: askState.sessionId };
       if (continuationOf) body.continuation_of = continuationOf;
       try {
-        const res = await api('/chat/stream', { method: 'POST', body, signal: askState.controller.signal, raw: true });
+        if (!resumeId) {
+          const started = await api('/chat/runs', { method: 'POST', body });
+          askState.runId = started.run_id;
+          askState.sessionId = started.session_id || askState.sessionId;
+          persistSession();
+        } else {
+          askState.runId = resumeId;
+        }
+        // Subscriber can be aborted by route change; server-owned generation continues.
+        const res = await api('/chat/runs/' + encodeURIComponent(askState.runId) + '/stream?after=0',
+          { method: 'GET', signal: subscription.signal, raw: true });
         if (!res.ok || !res.body) { let d = null; try { d = await res.json(); } catch { /* ignore */ } throw new window.PODA.ApiError(res.status, d?.detail || `HTTP ${res.status}`); }
         const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
         for (;;) {
@@ -195,8 +231,8 @@
             if (!dataText) continue;
             let data; try { data = JSON.parse(dataText); } catch { continue; }
             switch (event) {
-              case 'session': if (data.session_id) askState.sessionId = data.session_id; break;
-              case 'status': setStatus(data.message === 'routing' ? `Routing to ${data.model} (${data.profile || ''}, ${data.num_ctx ? data.num_ctx / 1024 + 'K ctx' : ''})` : data.message === 'recalling' ? 'Recalling memories…' : data.message === 'cancelled' ? 'Cancelled' : `${data.message} · ${data.model || ''}`, data.message !== 'cancelled'); break;
+              case 'session': if (data.session_id) { askState.sessionId = data.session_id; persistSession(); } break;
+              case 'status': if (data.message === 'cancelled') finished = true; setStatus(data.message === 'routing' ? `Routing to ${data.model} (${data.profile || ''}, ${data.num_ctx ? data.num_ctx / 1024 + 'K ctx' : ''})` : data.message === 'recalling' ? 'Recalling memories…' : data.message === 'cancelled' ? 'Cancelled' : `${data.message} · ${data.model || ''}`, data.message !== 'cancelled'); break;
               case 'recall': renderRecall(data); badges.appendChild(pill(`${(data.surfaces || (data.results || []).filter((r) => r.tier === 'surface')).length ? `${(data.surfaces || (data.results || []).filter((r) => r.tier === 'surface')).length} surface · ` : ''}${(data.results || []).filter((r) => r.tier !== 'surface').length} memories recalled`, 'lav')); if (data.depth_used === 'deep') badges.appendChild(pill('deep dive', 'lav')); break;
               case 'thought': thoughtText += data.token || ''; thoughts.hidden = false; $('pre', thoughts).textContent = thoughtText.slice(-6000); break;
               case 'token': full += data.token || ''; schedule(); break;
@@ -229,7 +265,8 @@
         if (err.name === 'AbortError') { bubble.innerHTML = md.render(full) + (full ? '' : '<p class="faint">Cancelled.</p>'); setStatus('Cancelled', false); }
         else { bubble.innerHTML = ''; bubble.appendChild(errorNode(err)); setStatus('Failed', false); }
       } finally {
-        bubble.classList.remove('streaming'); askState.controller = null; sendBtn.disabled = false; stopBtn.hidden = true; messages.scrollTop = messages.scrollHeight;
+        bubble.classList.remove('streaming'); if (askState.controller === subscription) askState.controller = null; sendBtn.disabled = false; stopBtn.hidden = true; messages.scrollTop = messages.scrollHeight;
+        if (finished) { askState.runId = null; persistSession(); }
         if (!thoughtText) thoughts.remove(); else $('.live', thoughts)?.remove();
       }
     }
@@ -256,9 +293,14 @@
     }
 
     composer.addEventListener('submit', (e) => { e.preventDefault(); const text = textarea.value.trim(); if (!text) return; textarea.value = ''; textarea.style.height = 'auto'; send(text); });
-    stopBtn.addEventListener('click', () => askState.controller?.abort());
+    stopBtn.addEventListener('click', async () => {
+      if (!askState.runId) return;
+      try { await api('/chat/runs/' + encodeURIComponent(askState.runId) + '/cancel', { method: 'POST' }); }
+      catch (err) { toast(errorDetail(err).message, 'danger'); }
+    });
+    if (askState.runId) send('', null, askState.runId);
     textarea.focus();
-    return { teardown: () => askState.controller?.abort() };
+    return { teardown: () => { const subscriber = askState.controller; askState.controller = null; subscriber?.abort(); } }; // Detaches the viewer, not Ollama.
   });
 
   // =====================================================================

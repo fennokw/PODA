@@ -27,7 +27,7 @@ def should_recall_memory(message: str, enabled: bool = True) -> bool:
     historical = re.search(r"\b(remember|recall|previous|previously|last time|we discussed|you know about me|my preferences|from our chats|based on my history)\b", q)
     if historical:
         return True
-    live = re.search(r"\b(email|emails|e-mail|inbox|mailbox|unread|newsletter|notion|calendar|schedule|agenda|connected|connect to|capabilities|can you access|can you connect)\b", q)
+    live = re.search(r"\b(email|emails|e-mail|inbox|mailbox|unread|newsletter|notion|calendar|schedule|agenda|workload|tasks?|assignments?|deadlines?|time estimate|study plan|connected|connect to|capabilities|can you access|can you connect)\b", q)
     return not bool(live)
 
 
@@ -188,6 +188,22 @@ async def chat_stream(req: ChatRequest, request: Request):
             yield sse("error", {"message": f"PODA ERROR: {exc}"})
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+@router.get("/chat/session/{session_id}/messages")
+def session_messages(session_id: str, limit: int = 100) -> dict[str, Any]:
+    """Restore visible conversation after full-page navigation without browser-stored chat text."""
+    from ..runtime.db import connect, rows
+    if len(session_id) > 100:
+        return {"messages": []}
+    conn = connect()
+    try:
+        records = rows(conn, "SELECT id, role, content, model, created_at FROM messages WHERE session_id=? ORDER BY created_at DESC LIMIT ?",
+                       (session_id, max(1, min(limit, 200))))
+    finally:
+        conn.close()
+    records.reverse()
+    return {"messages": records}
 
 
 @router.get("/chat/history")
