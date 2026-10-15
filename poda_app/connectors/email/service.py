@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from ...agent import receipts
@@ -286,10 +287,57 @@ def read_message(account_id: str | None, message_id: str) -> dict[str, Any]:
         raise
 
 
-def search(query: str, account_id: str | None = None, limit: int = 50) -> dict[str, Any]:
-    accounts = [get_account(account_id)] if account_id else [a for a in state.list_accounts()]
+def _date_bound(value: str | None, name: str) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except (ValueError, TypeError) as exc:
+        raise MailError("validation", f"{name} must be YYYY-MM-DD", status=400) from exc
+
+
+def _in_range(row: dict[str, Any], start: date | None, end: date | None) -> bool:
+    if not start and not end:
+        return True
+    try:
+        received = datetime.fromisoformat(str(row.get("date") or "").replace("Z", "+00:00")).date()
+    except ValueError:
+        return False
+    return (start is None or received >= start) and (end is None or received <= end)
+
+
+def _score(row: dict[str, Any], terms: list[str], content: str = "") -> int:
+    if not terms:
+        return 0
+    subject = (row.get("subject") or "").lower()
+    sender = ((row.get("from_name") or "") + " " + (row.get("from_address_masked") or "")).lower()
+    body = ((row.get("snippet") or "") + " " + content).lower()
+    return sum((5 if term in subject else 0) + (3 if term in sender else 0) + (2 if term in body else 0)
+               for term in terms if term)
+
+
+def search(query: str = "", account_id: str | None = None, limit: int = 50,
+           start_date: str | None = None, end_date: str | None = None,
+           related_terms: list[str] | None = None, include_body: bool = False) -> dict[str, Any]:
+    """Search date-bounded mail across connected accounts, then rank candidates by relevance.
+
+    Keyword variants are OR alternatives, not AND requirements. Date-only requests scan
+    recent headers without a keyword filter, allowing 'summarize last week's emails'.
+    A bounded header scan is explicit in the response; never claim exhaustive coverage.
+    """
+    begin = _date_bound(start_date, "start_date")
+    end = _date_bound(end_date, "end_date")
+    if begin and end and begin > end:
+        raise MailError("validation", "start_date must not be after end_date", status=400)
+    limit = max(1, min(int(limit), 100))
+    terms = list(dict.fromkeys([str(t).strip() for t in [query, *(related_terms or [])]
+                               if isinstance(t, str) and t.strip()]))[:8]
+    # Broad date-first sampling catches messages without literal keywords in sender/subject.
+    accounts = [get_account(account_id)] if account_id else state.list_accounts()
     results: list[dict[str, Any]] = []
     errors: list[str] = []
+    scanned = 0
+    truncated = False
     for acct in accounts:
         try:
             _require_read(acct)
@@ -300,22 +348,75 @@ def search(query: str, account_id: str | None = None, limit: int = 50) -> dict[s
                     targets.append(apple_mail.archive_target(acct.get("provider_type"), names))
                 except MailError:
                     pass
-                for mb in targets:
-                    results.extend(apple_mail.list_messages(acct["account_name"], acct["id"], mb, limit=limit, query=query)["messages"])
             else:
-                results.extend(gmail_imap.search(acct["address"], acct["id"], query, limit))
+                targets = ["INBOX", "[Gmail]/All Mail"]
+            for mb in dict.fromkeys(targets):
+                # Provider-side literal search for each related phrase.
+                for term in terms:
+                    try:
+                        if acct["provider"] == "apple_mail":
+                            chunk = apple_mail.list_messages(acct["account_name"], acct["id"], mb, limit=100, query=term)
+                        else:
+                            chunk = gmail_imap.list_messages(acct["address"], acct["id"], mb, limit=100, query=term)
+                        scanned += len(chunk.get("messages", []))
+                        results.extend(r for r in chunk.get("messages", []) if _in_range(r, begin, end))
+                    except MailError as exc:
+                        errors.append(f"{acct['account_name']} / {mb}: {exc.message}")
+                # Always examine recent headers when a date range is specified, or when
+                # no literal keyword was supplied; allows topic/body-only discovery.
+                if begin or end or not terms:
+                    offset = 0
+                    for _page in range(6):
+                        try:
+                            if acct["provider"] == "apple_mail":
+                                chunk = apple_mail.list_messages(acct["account_name"], acct["id"], mb,
+                                                                 limit=100, offset=offset)
+                            else:
+                                chunk = gmail_imap.list_messages(acct["address"], acct["id"], mb,
+                                                                 limit=100, offset=offset)
+                        except MailError as exc:
+                            errors.append(f"{acct['account_name']} / {mb}: {exc.message}")
+                            break
+                        messages = chunk.get("messages", [])
+                        scanned += len(messages)
+                        results.extend(r for r in messages if _in_range(r, begin, end))
+                        offset += len(messages)
+                        if not messages or len(messages) < 100 or offset >= int(chunk.get("total") or 0):
+                            break
+                        if begin and all((r.get("date") and not _in_range(r, begin, None)) for r in messages):
+                            break
+                    else:
+                        truncated = True
             _touch(acct["id"])
         except MailError as exc:
             errors.append(f"{acct['account_name']}: {exc.message}")
     seen, dedup = set(), []
     for r in results:
-        key = r.get("message_id") or r["id"]
+        # RFC Message-ID may be identical across distinct connected accounts.
+        key = (r.get("account_id"), r.get("message_id") or r["id"])
         if key in seen:
             continue
         seen.add(key)
         dedup.append(r)
     dedup.sort(key=lambda r: r.get("date") or "", reverse=True)
-    return {"query": query, "messages": dedup[:limit], "errors": errors}
+    body_count = 0
+    if terms and include_body:
+        # Fetch only bounded candidates, preserving no-write read permissions.
+        for row in dedup[:min(len(dedup), 30)]:
+            try:
+                full = read_message(row.get("account_id"), row["id"])
+                row["snippet"] = (full.get("body_text") or "")[:1200]
+                body_count += 1
+            except MailError:
+                pass
+    if terms:
+        dedup.sort(key=lambda r: (_score(r, [t.lower() for t in terms]), r.get("date") or ""), reverse=True)
+        # Date-first candidates may have no literal hits; retain some for semantic
+        # evaluation by the model instead of treating zero lexical score as irrelevant.
+    return {"query": query, "related_terms": terms[1:], "start_date": start_date,
+            "end_date": end_date, "messages": dedup[:limit], "errors": errors,
+            "scanned_headers": scanned, "read_bodies": body_count,
+            "truncated": truncated or len(dedup) > limit, "matched_candidates": len(dedup)}
 
 
 # ----------------------------------------------------------------------------- receipted actions
