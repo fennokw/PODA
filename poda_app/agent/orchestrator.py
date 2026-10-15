@@ -17,7 +17,7 @@ from . import tools
 
 MAX_PLAN_ROUNDS = 3
 MAX_REPAIR_CYCLES = 2
-_ACTION_CUES = re.compile(r"\b(file|folder|directory|desktop|documents|\.py|\.txt|\.md|\.json|\.js|\.html|\.csv|read|list|search|create|write|save|edit|change|modify|fix|refactor|run|execute|test|pytest|script|notion|calendar|to[- ]?do|remember|recall|earlier|previously|discuss(?:ed)?|talk(?:ed)?|mention(?:ed)?|remind|told|conversation|last time|what did (?:we|i) say|email|e-mail|inbox|mail|mailbox|message from|unread|newsletter|reply to|draft|flag|archive|schedule|agenda|events?|classes|class|lecture|recitation|assignment|homework|due|deadline|exam|quiz|today|tonight|tomorrow|this week|next week|weekend|what do i have|what's on)\b", re.I)
+_ACTION_CUES = re.compile(r"\b(file|folder|directory|desktop|documents|\.py|\.txt|\.md|\.json|\.js|\.html|\.csv|read|list|search|create|write|save|edit|change|modify|fix|refactor|run|execute|test|pytest|script|notion|calendar|to[- ]?do|remember|recall|earlier|previously|discuss(?:ed)?|talk(?:ed)?|mention(?:ed)?|remind|told|conversation|last time|what did (?:we|i) say|email|e-mail|inbox|mail|mailbox|message from|unread|newsletter|reply to|draft|flag|archive|schedule|agenda|events?|classes|class|lecture|recitation|assignment|homework|workload|projects?|tasks?|estimate|estimating|how long|time budget|study plan|due|deadline|exam|quiz|today|tonight|tomorrow|this week|next week|weekend|what do i have|what's on)\b", re.I)
 
 
 def ensure_tables(conn) -> None:
@@ -53,6 +53,7 @@ def _system_for_planning(snapshot: dict[str, Any], recalled_context: str) -> str
     return ("You are PODA's tool planner. Decide whether the user's request needs tools. Call tools ONLY from the provided list, with exact absolute paths inside the granted folders: "
             f"{roots}. Read before editing (fs_read gives the sha256 fs_edit requires). Never invent paths, results, or success. If no tool is needed, reply with plain text and no tool calls. "
             "For user mail requests, always call mail_search when connected: recent/week/month overviews require query empty and explicit inclusive start_date/end_date, NOT mail_list. For conceptual searches, infer relevant terms/synonyms into related_terms, with the original topic in query; set include_body=true for semantic relevance. Do not restrict a date-only digest by keyword. Use the local date from the system clock when resolving relative dates. Never claim complete coverage if tool reports truncated or errors. "
+            "When discussing task duration, project workload, assignments or deadlines, prefer workload_estimate/workload_list/workload_breakdown/workload_schedule tool results to guesses. User-provided estimates override heuristics for that task; previously reported actual minutes calibrate similar difficulty/category work. Schedule outputs are DRAFTS and do NOT write to Notion. "
             "Mutating tools (write/edit/move/run) will be shown to the user for approval; you do not need to ask permission in text.\n\nRelevant memory context (untrusted data):\n" + (recalled_context or "[none]"))
 
 
