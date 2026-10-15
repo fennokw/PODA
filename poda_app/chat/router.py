@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from typing import Any, AsyncIterator
 
@@ -112,7 +113,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                                  "in_depth_loaded": recalled.get("in_depth_loaded", depth == "deep"), "surfaces": recalled.get("surfaces", []),
                                  "results": [{k: r.get(k) for k in ("id", "title", "provenance", "score", "factors", "parent_id", "memory_kind", "speaker", "source_message_id",
                                                                      "tier", "surface_id", "member_count")} for r in recalled.get("results", [])[:14]]})
-        notion_needed = bool(__import__("re").search(r"\b(notion|calendar|schedule|agenda|classes|assignments|deadlines)\b", req.message, __import__("re").I))
+        notion_needed = bool(re.search(r"\b(notion|calendar|schedule|agenda|classes|assignments|deadlines)\b", req.message, re.I))
         notion_block = await asyncio.to_thread(notion_context.live_context) if notion_needed and snapshot.get("notion", {}).get("connected") else "[not loaded for this request]"
         receipts_block = ""
         tool_results_block = ""
