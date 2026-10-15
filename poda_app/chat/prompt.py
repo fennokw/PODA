@@ -56,7 +56,7 @@ def access_block(capabilities: dict[str, Any]) -> str:
     em = capabilities.get("email", {})
     if em.get("can_read"):
         accts = "; ".join(f"{a.get('account_name')} ({a.get('address_masked')})" for a in em.get("accounts", []))
-        lines.append(f"- Mail: you HAVE access to {accts} through mail_list / mail_search / mail_read (pass account_id when the user names an account or address domain, e.g. school.example.test → a matching connected school account, gmail.com → the Google account). "
+        lines.append(f"- Mail: you HAVE access to {accts} through mail_list / mail_search / mail_read. For date-bounded requests, call mail_search with start_date/end_date YYYY-MM-DD, query empty when asking for all mail; add related_terms for semantic topic search and inspect returned results for relevance. Do not assume search is complete when truncated/errors are reported. (pass account_id when the user names an account or address domain, e.g. school.example.test → a matching connected school account, gmail.com → the Google account). "
                      + ("Edits (mark/flag/archive/move/draft) are allowed via mail_mark/mail_move/mail_draft and go through approval. " if em.get("can_modify_mailbox") else "Edits are not allowed yet. ")
                      + ("Sending is enabled with confirmation." if em.get("can_send") else "Sending is OFF."))
     else:
@@ -64,7 +64,7 @@ def access_block(capabilities: dict[str, Any]) -> str:
     fs = capabilities.get("filesystem", {})
     roots = fs.get("granted_roots") or []
     lines.append(("- Files: granted folders → " + "; ".join(f"{r['path']} [{r['mode']}{', exec' if r.get('allow_execute') else ''}]" for r in roots) + " via fs_* tools (run_python/run_tests where exec is allowed).") if roots else "- Files: no folder grants; you cannot touch user files.")
-    lines.append("- Memory: memory_search / memory_dive read the local second brain. Surface memories were already recalled for this turn.")
+    lines.append("- Memory: memory_search / memory_dive are optional; do not rely on memories for live mail facts.")
     lines.append("- You are NOT a generic chatbot: when a question needs live data and a tool above covers it, the tool result (receipted) is your answer source. If a tool was not run this turn, say you will run it rather than claiming you cannot.")
     return "\n".join(lines)
 
