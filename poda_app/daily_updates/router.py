@@ -19,10 +19,11 @@ class DailyPrompt(BaseModel):
     timezone: str = Field(min_length=2,max_length=80)
     enabled: bool = True
     permissions: list[dict[str,Any]] = []
+    mail_account_id: str | None = None
 
 def _save(data:DailyPrompt,id:str|None=None):
     try:return service.save(data.title,data.prompt,data.times,data.timezone,data.enabled,id,
-                            permissions=data.permissions)
+                            permissions=data.permissions,mail_account_id=data.mail_account_id)
     except KeyError as exc:raise HTTPException(status_code=404,detail=str(exc)) from exc
     except ValueError as exc:raise HTTPException(status_code=422,detail=str(exc)) from exc
 
