@@ -17,7 +17,7 @@ def test_schedule_default_cannot_write_to_notion(client):
 
 def test_unverified_background_write_is_rejected(client):
     payload = {"title":"No bypass","prompt":"Create a calendar event",
-               "times":["08:00"],"timezone":"UTC","allow_calendar_writes":True}
+               "times":["08:00"],"timezone":"UTC","permissions":[{"tool":"notion_calendar_create","scope":{}}]}
     result = client.post("/daily-updates", json=payload)
     assert result.status_code == 422
 
