@@ -67,8 +67,13 @@ def prepare(grants: list[dict[str, Any]]) -> list[dict[str, Any]]:
             raise ValueError(f"Tool {tool} is not currently available for authorization")
         spec_fields = PERMISSION_SPECS[tool][1]
         raw = grant["scope"]
-        if not isinstance(raw, dict) or set(raw) != set(spec_fields):
+        if not isinstance(raw, dict) or not (set(raw) == set(spec_fields) or (
+            tool.startswith("notion_calendar_") and set(raw) == {"data_source_id"})):
             raise ValueError(f"Permission {tool} requires exactly: {', '.join(spec_fields) or 'no fields'}")
+        if tool.startswith("notion_calendar_") and raw.get("data_source_id"):
+            cfg = state.get_config() or {}
+            if raw["data_source_id"] != cfg.get("data_source_id"):
+                raise ValueError("Existing Notion permission targets another data source")
         scope = {}
         for key in spec_fields:
             val = raw[key]
