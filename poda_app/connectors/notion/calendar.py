@@ -40,6 +40,7 @@ def resolve_fields(cfg: dict[str, Any], active: dict[str, Any] | None) -> dict[s
         "type": pick(mapped.get("type"), ("Type", "Category", "Kind"), "select", "multi_select", "status"),
         "status": pick(mapped.get("status"), ("Status", "Source Status"), "status", "select"),
         "commitment": typed("Commitment", "select"),
+        "commitment_options": [o.get("name") for o in ((schema.get("Commitment") or {}).get("select") or {}).get("options",[]) if o.get("name")],
         "area": pick(None, ("Area", "Project", "Project Domain", "Domain"), "multi_select", "select"),
         "source": pick(None, ("Import Source", "Source"), "select"),
         "notes": typed(mapped.get("notes"), "rich_text") or typed("Notes", "rich_text"),
