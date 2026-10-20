@@ -19,7 +19,7 @@
     if (map[e.key]) { e.preventDefault(); if (map[e.key] === 'memory') window.location.assign('/memory-viewer'); else navigate(map[e.key]); }
   });
 
-  const screens = [['ask', 'Ask', '1'], ['personalize', 'Personalize', '9'], ['projects', 'Project Manager', '3'], ['notion', 'Notion', '4'], ['mail', 'Mail', '5'], ['files', 'Files & Agent', '6'], ['privacy', 'Privacy', '7'], ['daily', 'Daily Updates', '0'], ['system', 'System', '8']];
+  const screens = [['ask', 'Ask', '1'], ['personalize', 'Personalize', '9'], ['projects', 'Project Manager', '3'], ['notion', 'Notion', '4'], ['mail', 'Mail', '5'], ['files', 'Files & Agent', '6'], ['privacy', 'Privacy', '7'], ['daily', 'Daily Automation', '0'], ['system', 'System', '8']];
   for (const [name, label, key] of screens) registerCommand({ label: `Go to ${label}`, kind: 'Screen', key, keywords: name === 'mail' ? 'email inbox gmail apple mail' : '', run: () => navigate(name) });
   registerCommand({ label: 'Open memory viewer', kind: 'Screen', key: '2', keywords: 'open3d 3d second brain', run: () => window.location.assign('/memory-viewer') });
   registerCommand({ label: 'Check capabilities', kind: 'Action', keywords: 'ledger status', run: async () => { const c = await api('/capabilities'); toast(`Ollama ${c.ollama?.reachable ? 'reachable' : 'unreachable'} · Notion ${c.notion?.status || 'DISCONNECTED'} · ${c.filesystem?.granted_roots?.length || 0} folder grants`); navigate('system'); } });
@@ -510,6 +510,25 @@
       calDetail.append(el('div', { class: 'row' }, el('strong', {}, ev.title), ev.type ? el('span', { class: `cal-type ${typeClass(ev.type)}` }, ev.type) : null),
         kv([['When', when], ['Status', ev.status], ['Commitment', ev.commitment], ['Area', (ev.area || []).join(', ')], ['Source', ev.source], ['Notes', ev.notes], ['Edited', fmtTime(ev.last_edited_time)]]),
         el('div', { class: 'row' }, ev.url ? el('a', { class: 'btn btn-sm', href: ev.url, target: '_blank', rel: 'noopener' }, 'Open in Notion') : null, ev.source_url ? el('a', { class: 'btn btn-sm btn-ghost', href: ev.source_url, target: '_blank', rel: 'noopener' }, 'Open source') : null));
+      const options = (window.podaCalendarFields?.commitment_options || []);
+      if (ev.page_id && options.length) {
+        const selection = el('select', { class: 'input', 'aria-label': 'Commitment level' },
+          el('option', { value: '' }, 'Not set'),
+          ...options.map(v => el('option', { value: v, selected: v === ev.commitment }, v)));
+        selection.value = ev.commitment || '';
+        const save = el('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: async () => {
+          save.disabled = true;
+          try {
+            const result = await api('/notion/calendar/' + encodeURIComponent(ev.page_id) + '/commitment',
+              { method: 'POST', body: { commitment: selection.value || null,
+                expected_last_edited_time: ev.last_edited_time } });
+            ev.commitment = result.commitment; ev.last_edited_time = result.last_edited_time;
+            toast('Commitment synced with Notion', 'ok'); drawCalendar();
+          } catch (err) { toast(errorDetail(err).message, 'danger'); }
+          finally { save.disabled = false; }
+        } }, 'Save commitment');
+        calDetail.append(el('div', { class: 'stack-sm' }, el('label', { class: 'label' }, 'Update commitment in PODA'), selection, save));
+      }
     }
     function eventNode(ev, compact) {
       const s = parseWhen(ev.start);
@@ -537,6 +556,7 @@
       function persist() { try { sessionStorage.setItem('poda_notion_cal', JSON.stringify({ view: calState.view, cursor: calState.cursor.toISOString() })); } catch { /* ignore */ } }
       load(body, async () => {
         const r = await api(`/notion/calendar?start=${dayKey(range.start)}&end=${dayKey(range.end)}`);
+        window.podaCalendarFields = r.fields || {};
         const events = r.events || [];
         const byDay = new Map();
         for (const ev of events) {

@@ -86,8 +86,18 @@ class ThinkSplitter:
 
 @router.post("/chat/stream")
 async def chat_stream(req: ChatRequest, request: Request):
+    return await run_chat(req, request)
+
+
+async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = False,
+                   unattended_target: str | None = None, unattended_revision: str | None = None):
+    """Internal execution path. Only the trusted scheduler supplies unattended_target.
+
+    Never expose these privileges as ChatRequest fields or HTTP query parameters.
+    """
     session_id = req.session_id or str(uuid.uuid4())
-    user_message_id = await asyncio.to_thread(store.save_message, "user", req.message, None, session_id, "chat", None, True)
+    user_message_id = None if ephemeral else await asyncio.to_thread(
+        store.save_message, "user", req.message, None, session_id, "chat", None, True)
     snapshot = await asyncio.to_thread(capability.sync_ledger)
     profile = await asyncio.to_thread(models.resolve, req.message, req.mode, req.thinking_level)
     blocked = gate.unsupported_action_response(req.message, snapshot)
@@ -98,13 +108,15 @@ async def chat_stream(req: ChatRequest, request: Request):
         if blocked:
             yield sse("status", {"message": "capability_action_gate", "model": "PODA capability ledger"})
             yield sse("token", {"token": blocked})
-            await asyncio.to_thread(store.save_message, "assistant", blocked, "capability-action-gate", session_id, "chat", None, True)
+            if not ephemeral:
+                await asyncio.to_thread(store.save_message, "assistant", blocked, "capability-action-gate", session_id, "chat", None, True)
             yield sse("done", {"model": "capability-action-gate", "profile": "gate"})
             return
         if capability_reply:
             yield sse("status", {"message": "verified_runtime_status", "model": "PODA capability ledger"})
             yield sse("token", {"token": capability_reply})
-            await asyncio.to_thread(store.save_message, "assistant", capability_reply, "capability-ledger", session_id, "chat", None, True)
+            if not ephemeral:
+                await asyncio.to_thread(store.save_message, "assistant", capability_reply, "capability-ledger", session_id, "chat", None, True)
             yield sse("done", {"model": "capability-ledger", "profile": "ledger"})
             return
         model = profile.get("model")
@@ -125,7 +137,8 @@ async def chat_stream(req: ChatRequest, request: Request):
                                "outcome": receipt.get("outcome"),
                                "verification": receipt.get("verification")})
             yield sse("token", {"token": summary})
-            await asyncio.to_thread(store.save_message, "assistant", summary, "mail-report", session_id, "chat", None, True)
+            if not ephemeral:
+                await asyncio.to_thread(store.save_message, "assistant", summary, "mail-report", session_id, "chat", None, True)
             yield sse("done", {"model": "mail-report", "profile": "verified-tools"})
             return
         recalled = None
@@ -146,12 +159,13 @@ async def chat_stream(req: ChatRequest, request: Request):
         elif orchestrator.tool_prerequisites_exist(snapshot) and orchestrator.looks_like_tool_task(req.message):
             yield sse("status", {"message": "planning_tools", "model": model})
             recalled_ctx = retrieval.context_block(recalled) if recalled else ""
-            recent_dialogue = await asyncio.to_thread(working_context.recent, session_id, user_message_id, 10)
+            recent_dialogue = "" if ephemeral else await asyncio.to_thread(working_context.recent, session_id, user_message_id, 10)
             # Previous turns are cheap encrypted short-term context; the model
             # still must resolve concrete message IDs with verified tools.
             planner_ctx = ("RECENT ACTIVE CONVERSATION (not tool evidence):\n" + recent_dialogue +
                            "\n\n" + recalled_ctx)
-            planned = await asyncio.to_thread(orchestrator.plan, req.message, snapshot, planner_ctx, session_id, model)
+            planned = await asyncio.to_thread(orchestrator.plan, req.message, snapshot, planner_ctx, session_id, model,
+                                              ephemeral, unattended_target, unattended_revision)
             if (planned.get("executed") or planned.get("proposal_id")) and profile.get("profile") == "fast":
                 # Grounded answers over tool results need the stronger model; swap before composing the final reply.
                 upgraded = await asyncio.to_thread(models.resolve, req.message, "advanced", req.thinking_level)
@@ -161,6 +175,11 @@ async def chat_stream(req: ChatRequest, request: Request):
             for item in planned.get("executed", []):
                 rc = item["receipt"]
                 yield sse("tool", {"name": item["step"]["tool"], "args_summary": item["step"]["summary"], "receipt_id": rc.get("id"), "outcome": rc.get("outcome"), "verification": rc.get("verification")})
+            if ephemeral and planned.get("flagged"):
+                pending_names = ", ".join(str(x.get("name") or "action") for x in planned["flagged"] if x.get("reason") == "requires interactive approval")
+                if pending_names:
+                    proposal_note += ("\nUNATTENDED ACTIONS BLOCKED: " + pending_names +
+                                      " require interactive approval or a narrower schedule authorization. They were NOT performed.\n")
             for flagged in planned.get("flagged", []):
                 yield sse("status", {"message": "tool_call_rejected", "model": model, "detail": f"{flagged.get('name')}: {flagged.get('reason')}"})
             if planned.get("executed"):
@@ -175,7 +194,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                 proposal_note = ("\nPENDING PROPOSAL: the following actions are queued and WAITING FOR THE USER'S APPROVAL; none has run: " +
                                  "; ".join(s["summary"] for s in planned["steps"]) + ". Briefly tell the user what will happen once approved. Do NOT claim any of it is done.\n")
         system = build_system_prompt(should_recall_memory(req.message, req.use_memory), req.message, snapshot, recalled, notion_block,
-                                     receipts_block=receipts_block + tool_results_block + proposal_note, tools_block=tools_block(snapshot), session_id=session_id, exclude_message_id=user_message_id)
+                                     receipts_block=receipts_block + tool_results_block + proposal_note, tools_block=tools_block(snapshot), session_id=None if ephemeral else session_id, exclude_message_id=user_message_id)
         messages = [{"role": "system", "content": system}, {"role": "user", "content": req.message}]
         splitter = ThinkSplitter()
         think_flag = profile.get("think") if model.startswith("qwen3") else None
@@ -185,7 +204,8 @@ async def chat_stream(req: ChatRequest, request: Request):
                     yield sse("status", {"message": "cancelled", "model": model})
                     partial = "".join(splitter.final).strip()
                     if partial:
-                        await asyncio.to_thread(store.save_message, "assistant", partial + "\n\n[response cancelled by user]", model, session_id, "chat", None, True)
+                        if not ephemeral:
+                            await asyncio.to_thread(store.save_message, "assistant", partial + "\n\n[response cancelled by user]", model, session_id, "chat", None, True)
                     return
                 msg = chunk.get("message", {})
                 thinking = msg.get("thinking")
@@ -198,10 +218,12 @@ async def chat_stream(req: ChatRequest, request: Request):
                         yield sse(kind, {"token": piece})
                 if done:
                     final = "".join(splitter.final).strip()
-                    await asyncio.to_thread(store.save_message, "assistant", final, model, session_id, "chat", None, True)
+                    if not ephemeral:
+                        await asyncio.to_thread(store.save_message, "assistant", final, model, session_id, "chat", None, True)
                     yield sse("done", {"model": model, "profile": profile["profile"], "eval_count": chunk.get("eval_count"), "eval_duration_ms": round((chunk.get("eval_duration") or 0) / 1e6),
                                        "prompt_eval_count": chunk.get("prompt_eval_count")})
-                    asyncio.get_running_loop().run_in_executor(None, summaries.maybe_compact, session_id)
+                    if not ephemeral:
+                        asyncio.get_running_loop().run_in_executor(None, summaries.maybe_compact, session_id)
                     return
         except ollama.OllamaError as exc:
             yield sse("error", {"message": f"PODA ERROR: {exc}. Confirm Ollama is running and the model is installed."})

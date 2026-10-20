@@ -249,22 +249,20 @@
         prefsBox.innerHTML = '';
         const settingsForm = el('form', { class: 'stack-sm' });
         const settings = [
-          ['start_hour', 'Start working (24h hour)', 0, 23],
-          ['end_hour', 'Stop working (24h hour)', 1, 24],
-          ['session_minutes', 'Preferred focus block (minutes)', 15, 180],
-          ['break_minutes', 'Break after each block (minutes)', 0, 60],
-          ['max_daily_minutes', 'Max planned focus time per day (minutes)', 30, 900]];
+          ['sleep_hours', 'Sleep per night (hours)', 4, 12],
+          ['meal_minutes', 'Meals per day (minutes)', 0, 360],
+          ['free_minutes', 'Free time per day (minutes)', 0, 600]];
         for (const [key, label, min, max] of settings) {
           settingsForm.appendChild(field(label, input(key, 'number', prefs[key], { min, max })));
         }
-        settingsForm.appendChild(field('Include weekends', el('input', { name: 'include_weekends', type: 'checkbox', checked: prefs.include_weekends })));
+        settingsForm.appendChild(paragraph('Sleep, meals, free time and calendar commitments determine suggested availability.'));
         const save = el('button', { class: 'btn btn-primary', type: 'submit' }, 'Save work preferences');
         settingsForm.appendChild(save);
         settingsForm.onsubmit = async (e) => {
           e.preventDefault();
           const changed = Object.fromEntries(new FormData(settingsForm).entries());
           for (const [key] of settings) changed[key] = Number(changed[key]);
-          changed.include_weekends = Boolean(changed.include_weekends);
+          // Work block lengths use internal defaults.
           try { await api('/workload/settings/preferences', { method: 'PUT', body: changed }); toast('Work preferences saved', 'ok'); }
           catch (err) { toast(errorDetail(err).message, 'danger'); }
         };

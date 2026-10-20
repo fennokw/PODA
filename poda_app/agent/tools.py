@@ -150,6 +150,20 @@ def _load_extensions() -> None:
     register_extension(workload_tools.TOOLS)
     from ..project_manager import tools as project_tools
     register_extension(project_tools.TOOLS)
+    from ..connectors.notion.automation import create_calendar_event, update_calendar_event, archive_calendar_event
+    register_extension({"notion_calendar_create":{
+        "description":"Create one future event in the connected Notion calendar. Requires approval in chat; unattended only for a schedule explicitly authorized to create calendar entries. Times must include UTC offset. Never invent an event.",
+        "mutating":True,"requires_confirmation":True,"needs":"notion_read",
+        "handler":create_calendar_event,
+        "schema":_schema({"title":_str("Event title"),"start":_str("ISO 8601 datetime with timezone offset"),
+            "end":_str("Optional ISO 8601 end datetime with offset"),"notes":_str("Optional details")},["title","start"])}
+    })
+    register_extension({
+        "notion_calendar_update":{"description":"Update title and/or date of a Notion calendar event by page ID; confirmation is required outside explicitly authorized automation.","mutating":True,"requires_confirmation":True,"needs":"notion_read",
+           "handler":update_calendar_event,"schema":_schema({"page_id":_str("Existing Notion page ID"),"title":_str("Optional title"),"start":_str("Optional timezone-aware ISO date"),"end":_str("Optional timezone-aware end")},["page_id"])},
+        "notion_calendar_archive":{"description":"Archive a Notion calendar event by page ID; confirmation is required outside explicitly authorized automation.","mutating":True,"requires_confirmation":True,"needs":"notion_read",
+           "handler":archive_calendar_event,"schema":_schema({"page_id":_str("Existing Notion page ID")},["page_id"])}
+    })
     from ..daily_updates import tools as daily_tools
     register_extension(daily_tools.TOOLS)
 

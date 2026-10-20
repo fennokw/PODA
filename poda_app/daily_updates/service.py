@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from ..runtime.db import connect, now_iso, one, rows
+from ..runtime.db import connect, now_iso, one, rows, add_column
 
 MAX_GRACE_SECONDS = 600
 _RUNNING: set[str] = set()
@@ -34,6 +34,8 @@ def ensure_tables(conn):
         status TEXT NOT NULL, response TEXT NOT NULL DEFAULT '', error TEXT,
         notified INTEGER NOT NULL DEFAULT 0,
         UNIQUE(prompt_id, slot_key))""")
+    add_column(conn, "daily_prompts", "calendar_write_target", "TEXT")
+    add_column(conn, "daily_prompts", "permissions_json", "TEXT NOT NULL DEFAULT '[]'")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_runs_recent ON daily_prompt_runs(scheduled_for DESC)")
 
 
@@ -66,24 +68,37 @@ def tasks() -> list[dict[str,Any]]:
     finally: db.close()
 
 
-def save(title:str,prompt:str,times:list[str],timezone_name:str,enabled:bool=True,id:str|None=None) -> dict[str,Any]:
+def save(title:str,prompt:str,times:list[str],timezone_name:str,enabled:bool=True,id:str|None=None,
+         allow_calendar_writes:bool=False, permissions:list[dict[str,Any]]|None=None) -> dict[str,Any]:
     title=title.strip()
     prompt=prompt.strip()
     if not 1 <= len(title) <= 120 or not 1 <= len(prompt) <= 12000:
         raise ValueError("Title must be 1-120 chars; prompt must be 1-12000 chars")
     clean=clean_times(times); tz=clean_timezone(timezone_name); stamp=now_iso()
+    # Persist the exact data-source identity approved at creation/edit time.
+    target = None
+    if allow_calendar_writes:
+        from ..connectors.notion import state
+        cfg = state.get_config() or {}
+        if not (cfg.get("data_source_id") and cfg.get("insert_verified") and state.token_present()):
+            raise ValueError("Verify Notion insert permission before enabling unattended calendar additions")
+        target = cfg["data_source_id"]
+    from .permissions import prepare
+    authorized = prepare(permissions or ([{"tool":"notion_calendar_create","scope":{}}] if allow_calendar_writes else []))
     db=connect()
     try:
         ensure_tables(db)
         if id:
             if not one(db,"SELECT id FROM daily_prompts WHERE id=?",(id,)):
                 raise KeyError("Daily prompt not found")
-            db.execute("UPDATE daily_prompts SET title=?,prompt=?,times_json=?,timezone=?,enabled=?,updated_at=? WHERE id=?",
-                       (title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,id))
+            db.execute("UPDATE daily_prompts SET title=?,prompt=?,times_json=?,timezone=?,enabled=?,updated_at=?,calendar_write_target=?,permissions_json=? WHERE id=?",
+                       (title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,target,json.dumps(authorized),id))
         else:
             id=str(uuid.uuid4())
-            db.execute("INSERT INTO daily_prompts VALUES (?,?,?,?,?,?,?,?)",
-                       (id,title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,stamp))
+            db.execute("""INSERT INTO daily_prompts
+                      (id,title,prompt,times_json,timezone,enabled,created_at,updated_at,calendar_write_target,permissions_json)
+                      VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                       (id,title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,stamp,target,json.dumps(authorized)))
         db.commit()
         return {**one(db,"SELECT * FROM daily_prompts WHERE id=?",(id,)), "times":clean,"enabled":bool(enabled)}
     finally: db.close()
@@ -168,7 +183,7 @@ def _notify(title:str,body:str)->bool:
         return False
     def quote(s):
         return '"' + s.replace("\\","\\\\").replace('"','\\"').replace("\n"," ")[:240] + '"'
-    script=f"display notification {quote(body)} with title {quote('PODA Daily Updates')} subtitle {quote(title)}"
+    script=f"display notification {quote(body)} with title {quote('PODA Daily Automation')} subtitle {quote(title)}"
     try:
         result=subprocess.run(["osascript","-e",script],capture_output=True,text=True,timeout=12)
         return result.returncode==0
@@ -177,8 +192,7 @@ def _notify(title:str,body:str)->bool:
 
 
 async def execute(run_id:str,task:dict[str,Any]):
-    from ..chat.router import chat_stream,ChatRequest
-    from ..memory import store
+    from ..chat.router import run_chat, ChatRequest
     class BackgroundRequest:
         async def is_disconnected(self): return False
     _RUNNING.add(run_id)
@@ -187,11 +201,13 @@ async def execute(run_id:str,task:dict[str,Any]):
     error=None
     session_id="daily-"+run_id
     try:
-        # Uses existing local chat and permitted read-only tools. Mutating tools
-        # only queue approval proposals; no unattended writes are authorized.
+        # The same chat tools and model are used, but messages never enter
+        # chat history, working context, summaries or the second-brain graph.
+        # Only the explicitly authorized calendar target may be mutated.
         req=ChatRequest(message=task["prompt"],session_id=session_id,
                         mode="auto",thinking_level="balanced",use_memory=False)
-        result=await chat_stream(req,BackgroundRequest())
+        result=await run_chat(req,BackgroundRequest(),ephemeral=True,
+                              unattended_target=task.get("id"), unattended_revision=task.get("updated_at"))
         async def collect():
             nonlocal error
             async for frame in result.body_iterator:
@@ -219,8 +235,6 @@ async def execute(run_id:str,task:dict[str,Any]):
     except Exception as exc:
         mark(run_id,"failed","".join(captured),f"{type(exc).__name__}: {exc}")
     finally:
-        try: await asyncio.to_thread(store.flush_session_to_graph,session_id,0)
-        except Exception: pass
         _RUNNING.discard(run_id)
 
 

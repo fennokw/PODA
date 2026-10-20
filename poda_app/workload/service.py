@@ -18,7 +18,8 @@ CATEGORIES = {"general", "homework", "study", "writing", "coding", "research", "
 STATES = {"todo", "active", "paused", "done"}
 BASE = {"general": 55, "homework": 65, "study": 60, "writing": 80, "coding": 95,
         "research": 85, "admin": 30, "creative": 100, "reading": 45}
-DEFAULT_PREFS = {"start_hour": 9, "end_hour": 21, "session_minutes": 70,
+DEFAULT_PREFS = {"sleep_hours": 8, "meal_minutes": 90, "free_minutes": 120,
+                 "start_hour": 9, "end_hour": 21, "session_minutes": 70,
                  "break_minutes": 10, "max_daily_minutes": 300, "include_weekends": True}
 
 
@@ -233,6 +234,9 @@ def preferences(new: dict[str, Any] | None = None) -> dict[str, Any]:
         if new is not None:
             merged = {**DEFAULT_PREFS, **stored, **new}
             validated = {
+                "sleep_hours": _bounded(merged["sleep_hours"], 4, 12, "sleep_hours"),
+                "meal_minutes": _bounded(merged["meal_minutes"], 0, 360, "meal_minutes"),
+                "free_minutes": _bounded(merged["free_minutes"], 0, 600, "free_minutes"),
                 "start_hour": _bounded(merged["start_hour"], 0, 23, "start_hour"),
                 "end_hour": _bounded(merged["end_hour"], 1, 24, "end_hour"),
                 "session_minutes": _bounded(merged["session_minutes"], 15, 180, "session_minutes"),
@@ -272,7 +276,7 @@ def _calendar_blocks(first: date, last: date) -> tuple[list[tuple[datetime, date
         blocks: list[tuple[datetime, datetime]] = []
         now = datetime.now().astimezone()
         for item in outcome.get("items", []):
-            if item.get("is_deadline"):
+            if item.get("is_deadline") or str(item.get("commitment") or "").lower() in {"no","declined","cancelled","canceled"}:
                 continue
             start = str(item.get("date_start") or "")
             finish = str(item.get("date_end") or start)
@@ -319,6 +323,7 @@ def schedule(days: int = 14, calendar: bool = True, now: datetime | None = None)
         blocks, calendar_note = [], "Calendar check disabled; conflicts NOT checked"
     busy = list(blocks)
     daily_minutes: dict[str, int] = {}
+    daily_budget = max(0, 1440 - prefs["sleep_hours"] * 60 - prefs["meal_minutes"] - prefs["free_minutes"])
     sessions: list[dict[str, Any]] = []
     overdue: list[str] = []
     unscheduled: list[dict[str, Any]] = []
@@ -331,20 +336,17 @@ def schedule(days: int = 14, calendar: bool = True, now: datetime | None = None)
             if remaining <= 0:
                 break
             day = now.date() + timedelta(days=offset)
-            if not prefs["include_weekends"] and day.weekday() >= 5:
-                continue
+            # Every day is eligible; calendar determines conflicts.
             daykey = day.isoformat()
             used = daily_minutes.get(daykey, 0)
-            cursor = datetime.combine(day, time(prefs["start_hour"], 0), now.tzinfo)
-            finish = datetime.combine(day, time(prefs["end_hour"] % 24, 0), now.tzinfo)
-            if prefs["end_hour"] == 24:
-                finish += timedelta(days=1)
+            cursor = datetime.combine(day, time.min, now.tzinfo) + timedelta(hours=prefs["sleep_hours"])
+            finish = datetime.combine(day, time(23, 59), now.tzinfo)
             cursor = max(cursor, now)
             while remaining > 0 and cursor < min(finish, cutoff):
-                capacity = prefs["max_daily_minutes"] - used
+                capacity = daily_budget - used
                 if capacity < 15:
                     break
-                chunk = min(remaining, prefs["session_minutes"], capacity)
+                chunk = min(remaining, 70, capacity)
                 end = cursor + timedelta(minutes=chunk)
                 if end > finish or end > cutoff:
                     chunk = int((min(finish, cutoff) - cursor).total_seconds() // 60)
@@ -363,7 +365,7 @@ def schedule(days: int = 14, calendar: bool = True, now: datetime | None = None)
                 remaining -= chunk
                 used += chunk
                 daily_minutes[daykey] = used
-                cursor = end + timedelta(minutes=prefs["break_minutes"])
+                cursor = end + timedelta(minutes=10)
         if remaining:
             unscheduled.append({"item_id": item["id"], "title": item["title"],
                                 "remaining_minutes": remaining, "deadline": item["deadline"],
@@ -371,6 +373,8 @@ def schedule(days: int = 14, calendar: bool = True, now: datetime | None = None)
     sessions.sort(key=lambda x: x["start"])
     return {"sessions": sessions, "unscheduled": unscheduled, "overdue_ids": overdue,
             "calendar": calendar_note, "preferences": prefs, "horizon_days": days,
+            "daily_work_budget_minutes": daily_budget,
+            "availability_assumptions": "Sleep provisionally reserved from midnight for the specified duration; meals and personal time reduce daily work capacity, without specifying exact time blocks. Calendar conflicts are excluded.",
             "total_minutes": sum(s["minutes"] for s in sessions),
             "note": "Local suggestions only. Time blocks are NOT added to Notion. Estimates and free-time assumptions may be wrong."}
 

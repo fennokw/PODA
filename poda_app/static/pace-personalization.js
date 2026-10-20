@@ -32,7 +32,7 @@
     const feedback=el('div',{class:'stack-sm'}),history=el('div',{class:'stack-sm'});
     wrap.append(feedback,el('h3',{},'What PODA has learned'),history);
     const prefsCard=el('section',{class:'card stack pace-personalize'},el('h2',{},'Scheduling preferences'),
-      note('Configure your normal work window and session length. These settings feed into the Project Manager scheduling engine.'));
+      note('Enter only sleep, meals, and free time. PODA infers open work blocks from connected calendar commitments.'));
     view.querySelector('.screen')?.append(prefsCard);
     async function refresh() {
       let data;
@@ -56,20 +56,18 @@
       prefsCard.querySelector('form')?.remove();
       const pf=el('form',{class:'stack'});
       const controls=[];
-      for(const [key,label,min,max] of [['start_hour','Workday begins (24h)',0,23],['end_hour','Workday ends (24h)',1,24],
-          ['session_minutes','Focus block (minutes)',15,180],['break_minutes','Rest between blocks (minutes)',0,60],
-          ['max_daily_minutes','Maximum work minutes per day',30,900]]){
+      for(const [key,label,min,max] of [['sleep_hours','Sleep per night (hours)',4,12],['meal_minutes','Meals per day (minutes)',0,360],
+          ['free_minutes','Free time per day (minutes)',0,600]]){
         const control=input(key,prefs[key],'number',{min,max});
         controls.push([key,control]);pf.append(field(label,control));
       }
-      const week=el('input',{type:'checkbox',checked:!!prefs.include_weekends});
-      pf.append(el('label',{class:'check'},week,'Include weekends'));
+      pf.append(note('Sleep provisionally begins at midnight; meals and free time are daily allowances, not fixed appointments.'));
       const savePrefs=el('button',{class:'btn btn-primary',type:'submit'},'Save schedule preferences');
       pf.append(savePrefs);
       pf.onsubmit=async e=>{
         e.preventDefault();
         const next=Object.fromEntries(controls.map(([k,v])=>[k,+v.value]));
-        next.include_weekends=week.checked;
+        // Internal focus block defaults remain automatic.
         try{await api('/workload/settings/preferences',{method:'PUT',body:next});
           toast('Planning preferences saved','ok');}
         catch(err){toast(errorDetail(err).message,'danger');}
