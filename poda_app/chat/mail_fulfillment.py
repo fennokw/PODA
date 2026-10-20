@@ -19,6 +19,16 @@ MAIL_TOPIC = re.compile(r"\b(email|emails|e-mail|inbox|mailbox|messages|meeting 
 MAIL_ACTION = re.compile(r"\b(send|draft|reply to|forward|delete|archive|move|mark (?:as )?read|flag)\b", re.I)
 MAIL_SEARCH = re.compile(r"\b(search|find|look through|check|review|summari[sz]e|overview|anything|which|what|did you find|show|list)\b", re.I)
 FOLLOWUP = re.compile(r"\b(did you find|what did you find|any emails|anything i should|what about those|any results|did it find)\b", re.I)
+CROSS_APP_WRITE = re.compile(
+    r"\b(?:add|create|put|record|book|schedule|write|insert|update|move|change|sync|send)\b"
+    r".{0,160}\b(?:calendar|notion|event|meetings?|appointments?|tasks?|projects?)\b"
+    r"|\b(?:calendar|notion|events?)\b.{0,90}\b(?:add|create|update|sync|schedule)\b",
+    re.I | re.S,
+)
+
+def is_compound_request(message: str) -> bool:
+    """Keep read-only mail shortcut out of multi-stage read-then-write requests."""
+    return bool(MAIL_TOPIC.search(message or "") and CROSS_APP_WRITE.search(message or ""))
 
 TOPIC_CUES = {
     "meeting": ("meeting", "calendar invitation", "invite", "availability", "scheduling", "zoom"),
@@ -92,7 +102,7 @@ def _previous_search(session_id: str | None) -> dict[str, Any]:
 
 
 def is_mail_request(message: str, session_id: str | None = None) -> bool:
-    if MAIL_ACTION.search(message):
+    if MAIL_ACTION.search(message) or is_compound_request(message):
         return False  # existing proposal/approval workflow owns write requests
     if MAIL_TOPIC.search(message) and MAIL_SEARCH.search(message):
         return True
