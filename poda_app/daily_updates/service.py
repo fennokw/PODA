@@ -35,6 +35,7 @@ def ensure_tables(conn):
         notified INTEGER NOT NULL DEFAULT 0,
         UNIQUE(prompt_id, slot_key))""")
     add_column(conn, "daily_prompts", "calendar_write_target", "TEXT")
+    add_column(conn, "daily_prompts", "permissions_json", "TEXT NOT NULL DEFAULT '[]'")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_runs_recent ON daily_prompt_runs(scheduled_for DESC)")
 
 
@@ -68,7 +69,7 @@ def tasks() -> list[dict[str,Any]]:
 
 
 def save(title:str,prompt:str,times:list[str],timezone_name:str,enabled:bool=True,id:str|None=None,
-         allow_calendar_writes:bool=False) -> dict[str,Any]:
+         allow_calendar_writes:bool=False, permissions:list[dict[str,Any]]|None=None) -> dict[str,Any]:
     title=title.strip()
     prompt=prompt.strip()
     if not 1 <= len(title) <= 120 or not 1 <= len(prompt) <= 12000:
@@ -82,20 +83,22 @@ def save(title:str,prompt:str,times:list[str],timezone_name:str,enabled:bool=Tru
         if not (cfg.get("data_source_id") and cfg.get("insert_verified") and state.token_present()):
             raise ValueError("Verify Notion insert permission before enabling unattended calendar additions")
         target = cfg["data_source_id"]
+    from .permissions import prepare
+    authorized = prepare(permissions or ([{"tool":"notion_calendar_create","scope":{}}] if allow_calendar_writes else []))
     db=connect()
     try:
         ensure_tables(db)
         if id:
             if not one(db,"SELECT id FROM daily_prompts WHERE id=?",(id,)):
                 raise KeyError("Daily prompt not found")
-            db.execute("UPDATE daily_prompts SET title=?,prompt=?,times_json=?,timezone=?,enabled=?,updated_at=?,calendar_write_target=? WHERE id=?",
-                       (title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,target,id))
+            db.execute("UPDATE daily_prompts SET title=?,prompt=?,times_json=?,timezone=?,enabled=?,updated_at=?,calendar_write_target=?,permissions_json=? WHERE id=?",
+                       (title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,target,json.dumps(authorized),id))
         else:
             id=str(uuid.uuid4())
             db.execute("""INSERT INTO daily_prompts
-                      (id,title,prompt,times_json,timezone,enabled,created_at,updated_at,calendar_write_target)
-                      VALUES (?,?,?,?,?,?,?,?,?)""",
-                       (id,title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,stamp,target))
+                      (id,title,prompt,times_json,timezone,enabled,created_at,updated_at,calendar_write_target,permissions_json)
+                      VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                       (id,title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,stamp,target,json.dumps(authorized)))
         db.commit()
         return {**one(db,"SELECT * FROM daily_prompts WHERE id=?",(id,)), "times":clean,"enabled":bool(enabled)}
     finally: db.close()
@@ -204,7 +207,7 @@ async def execute(run_id:str,task:dict[str,Any]):
         req=ChatRequest(message=task["prompt"],session_id=session_id,
                         mode="auto",thinking_level="balanced",use_memory=False)
         result=await run_chat(req,BackgroundRequest(),ephemeral=True,
-                              unattended_target=task.get("calendar_write_target"))
+                              unattended_target=task.get("id"), unattended_revision=task.get("updated_at"))
         async def collect():
             nonlocal error
             async for frame in result.body_iterator:
