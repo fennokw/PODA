@@ -111,7 +111,7 @@
       messages.appendChild(el('div', { class: 'hero-empty' },
         el('h2', {}, 'Private, grounded, local.'),
         el('p', { class: 'muted', style: { maxWidth: '54ch' } }, 'PODA answers from a verified runtime ledger, your visible memory graph, and tools you have explicitly authorized. Nothing leaves this Mac except allowlisted Notion calls.'),
-        el('p', { class: 'faint small', style: { maxWidth: '54ch' } }, 'Each visit starts a fresh conversation. Earlier chats are not replayed here; they live in your memory web and are pulled in only when they are relevant to what you ask.'),
+        el('p', { class: 'faint small', style: { maxWidth: '54ch' } }, 'PODA remembers the last several turns in this active chat without graph search. Older turns graduate into the visible memory web for selective long-term recall.'),
         el('div', { class: 'suggest' }, ...suggestions.map((s) => el('button', { class: 'btn btn-sm', type: 'button', onclick: () => { textarea.value = s; composer.requestSubmit(); } }, s)))));
     }
 
@@ -134,6 +134,8 @@
     function newChat() {
       if (askState.runId) api('/chat/runs/' + encodeURIComponent(askState.runId) + '/cancel', { method: 'POST' }).catch(() => {});
       askState.controller?.abort();
+      // Finalize rolling short-term turns into visible second-brain memories.
+      if (askState.sessionId) api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/flush', { method: 'POST' }).catch(() => {});
       askState.sessionId = null; askState.runId = null; askState.transcript = [];
       persistSession();
       messages.innerHTML = ''; showEmpty(); statusLine.innerHTML = ''; recallBox.innerHTML = ''; sessionBox.innerHTML = '';
