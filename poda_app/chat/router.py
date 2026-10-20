@@ -16,7 +16,7 @@ from ..memory import store, retrieval, summaries
 from ..agent import gate, orchestrator
 from ..connectors.notion import context as notion_context
 from .prompt import build_system_prompt, tools_block
-from . import mail_fulfillment
+from . import mail_fulfillment, working_context
 
 router = APIRouter()
 
@@ -146,7 +146,12 @@ async def chat_stream(req: ChatRequest, request: Request):
         elif orchestrator.tool_prerequisites_exist(snapshot) and orchestrator.looks_like_tool_task(req.message):
             yield sse("status", {"message": "planning_tools", "model": model})
             recalled_ctx = retrieval.context_block(recalled) if recalled else ""
-            planned = await asyncio.to_thread(orchestrator.plan, req.message, snapshot, recalled_ctx, session_id, model)
+            recent_dialogue = await asyncio.to_thread(working_context.recent, session_id, user_message_id, 10)
+            # Previous turns are cheap encrypted short-term context; the model
+            # still must resolve concrete message IDs with verified tools.
+            planner_ctx = ("RECENT ACTIVE CONVERSATION (not tool evidence):\n" + recent_dialogue +
+                           "\n\n" + recalled_ctx)
+            planned = await asyncio.to_thread(orchestrator.plan, req.message, snapshot, planner_ctx, session_id, model)
             if (planned.get("executed") or planned.get("proposal_id")) and profile.get("profile") == "fast":
                 # Grounded answers over tool results need the stronger model; swap before composing the final reply.
                 upgraded = await asyncio.to_thread(models.resolve, req.message, "advanced", req.thinking_level)
