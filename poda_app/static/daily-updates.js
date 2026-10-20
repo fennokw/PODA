@@ -72,10 +72,6 @@
             };
             ctl.oninput=storeScope;ctl.onchange=storeScope;
           }
-          /* fields synchronize the currently enabled scoped grant */
-          if(false)()=>{
-            /* noop */
-          };
           permissionArea.append(section);
         }
       };
