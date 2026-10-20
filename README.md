@@ -4,7 +4,7 @@
 
 This maintenance release corrects two misleading/failing local smoke checks, improves re-launch behavior when the same checkout has an older server process on port 8787, and makes automated mail-to-calendar prompts continue past mail search. Unattended actions require specific, revocable permissions and independently verified receipts; no fixed three-calendar-item limit or legacy cap checkbox remains. Daily Automation loads connected Mail accounts from Mail settings into a dropdown (no re-entered mail passwords or account IDs). Production databases still require encryption, while synthetic verification databases intentionally run unencrypted.
 
-**Upgrade:** Download the latest source ZIP or pull `main`, quit an old PODA instance via `STOP_PODA.command`, and run `VERIFY_PODA.command` then `start_poda.command`. Existing private state is stored outside the source checkout under Application Support.
+**Upgrade:** Download the latest source ZIP or pull `main`, quit an old PODA instance via `STOP_PODA.command`, and run `VERIFY_PODA.command` then `start_poda.command`. Existing private state is stored outside the source checkout under Application Support. To explicitly restart a still-running build from the SAME checkout, run `PODA_RESTART=1 ./start_poda.command` from Terminal in the PODA source folder. This will not kill other applications or different PODA checkouts.
 
 ## PODA v0.9.0: contextual actions, model choice, and Daily Updates
 
