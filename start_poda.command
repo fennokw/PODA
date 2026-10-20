@@ -23,10 +23,24 @@ if [ -n "$existing_pid" ]; then
     exit 0
   fi
   if echo "$cmd" | grep -qE 'uvicorn.*poda_app\.main|python.*poda_app'; then
-    echo "Another PODA build is already running on port ${PORT} (PID ${existing_pid})."
-    echo 'PODA Public will not stop a separate/private PODA installation automatically.'
-    echo "Stop your other instance explicitly or use: PODA_PORT=8788 ./start_poda.command"
-    exit 1
+    existing_cwd="$(lsof -a -p "$existing_pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1 || true)"
+    if [ -n "$existing_cwd" ] && [ "$existing_cwd" = "$PWD" ]; then
+      echo "Replacing stale PODA build from this installation (PID $existing_pid)..."
+      kill "$existing_pid" 2>/dev/null || true
+      for _ in $(seq 1 40); do
+        lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 || break
+        sleep .25
+      done
+      if lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+        echo "Previous PODA process did not exit. Run ./STOP_PODA.command and retry."
+        exit 1
+      fi
+    else
+      echo "Another PODA installation is running on port $PORT (PID $existing_pid)."
+      echo "Its working directory is: ${existing_cwd:-unknown}"
+      echo "Run ./STOP_PODA.command for that installation or use PODA_PORT=8788."
+      exit 1
+    fi
   else
     echo "ERROR: port ${PORT} is occupied by a process that is NOT PODA:"
     echo "  PID $existing_pid: $cmd"
