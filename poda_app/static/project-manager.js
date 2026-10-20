@@ -79,7 +79,7 @@
       try {p=await api('/project-manager/projects/'+encodeURIComponent(id));}
       catch(err){screen.append(text(errorDetail(err).message));return;}
       const back=btn('← All projects',dashboard);
-      const header=el('div',{class:'pm-header'},el('div',{},back,el('h2',{},p.name),text('Project workspace — update scope, progress, work files and schedule')),
+      const header=el('div',{class:'pm-header'},el('div',{},back,el('h2',{},p.name),text('Project workspace - update scope, progress, work files and schedule')),
           btn('Delete project',async()=>{
             if(!(await confirmDialog({title:'Delete project?',body:'Project documents and links will be removed. Existing workload tasks will be retained as unassigned tasks.',confirmLabel:'Delete project',danger:true})))return;
             try{await api('/project-manager/projects/'+encodeURIComponent(id),{method:'DELETE'});notice('Project removed');dashboard();}catch(err){showError(err);}
