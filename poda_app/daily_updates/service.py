@@ -36,6 +36,7 @@ def ensure_tables(conn):
         UNIQUE(prompt_id, slot_key))""")
     add_column(conn, "daily_prompts", "calendar_write_target", "TEXT")
     add_column(conn, "daily_prompts", "permissions_json", "TEXT NOT NULL DEFAULT '[]'")
+    add_column(conn, "daily_prompts", "mail_account_id", "TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_runs_recent ON daily_prompt_runs(scheduled_for DESC)")
 
 
@@ -69,7 +70,7 @@ def tasks() -> list[dict[str,Any]]:
 
 
 def save(title:str,prompt:str,times:list[str],timezone_name:str,enabled:bool=True,id:str|None=None,
-         permissions:list[dict[str,Any]]|None=None) -> dict[str,Any]:
+         permissions:list[dict[str,Any]]|None=None, mail_account_id:str|None=None) -> dict[str,Any]:
     title=title.strip()
     prompt=prompt.strip()
     if not 1 <= len(title) <= 120 or not 1 <= len(prompt) <= 12000:
@@ -77,20 +78,24 @@ def save(title:str,prompt:str,times:list[str],timezone_name:str,enabled:bool=Tru
     clean=clean_times(times); tz=clean_timezone(timezone_name); stamp=now_iso()
     from .permissions import prepare
     authorized = prepare(permissions or [])
+    if mail_account_id:
+        from ..connectors.email.state import list_accounts
+        if mail_account_id not in {a["id"] for a in list_accounts()}:
+            raise ValueError("Select an existing connected account in the Mail screen")
     db=connect()
     try:
         ensure_tables(db)
         if id:
             if not one(db,"SELECT id FROM daily_prompts WHERE id=?",(id,)):
                 raise KeyError("Daily prompt not found")
-            db.execute("UPDATE daily_prompts SET title=?,prompt=?,times_json=?,timezone=?,enabled=?,updated_at=?,calendar_write_target=?,permissions_json=? WHERE id=?",
-                       (title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,None,json.dumps(authorized),id))
+            db.execute("UPDATE daily_prompts SET title=?,prompt=?,times_json=?,timezone=?,enabled=?,updated_at=?,calendar_write_target=?,permissions_json=?,mail_account_id=? WHERE id=?",
+                       (title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,None,json.dumps(authorized),mail_account_id or None,id))
         else:
             id=str(uuid.uuid4())
             db.execute("""INSERT INTO daily_prompts
-                      (id,title,prompt,times_json,timezone,enabled,created_at,updated_at,calendar_write_target,permissions_json)
-                      VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                       (id,title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,stamp,None,json.dumps(authorized)))
+                      (id,title,prompt,times_json,timezone,enabled,created_at,updated_at,calendar_write_target,permissions_json,mail_account_id)
+                      VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                       (id,title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,stamp,None,json.dumps(authorized),mail_account_id or None))
         db.commit()
         return {**one(db,"SELECT * FROM daily_prompts WHERE id=?",(id,)), "times":clean,"enabled":bool(enabled)}
     finally: db.close()
@@ -199,7 +204,8 @@ async def execute(run_id:str,task:dict[str,Any]):
         req=ChatRequest(message=task["prompt"],session_id=session_id,
                         mode="auto",thinking_level="balanced",use_memory=False)
         result=await run_chat(req,BackgroundRequest(),ephemeral=True,
-                              unattended_target=task.get("id"), unattended_revision=task.get("updated_at"))
+                              unattended_target=task.get("id"), unattended_revision=task.get("updated_at"),
+                              unattended_mail_account=task.get("mail_account_id"))
         async def collect():
             nonlocal error
             async for frame in result.body_iterator:
