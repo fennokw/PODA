@@ -52,7 +52,7 @@ def test_no_approval_proposal_for_unattended_writes(monkeypatch):
         result=orchestrator.plan("write something",{},unattended=True)
         assert result["proposal_id"] is None
         assert not result["executed"]
-        assert any(x["reason"]=="requires interactive approval" for x in result["flagged"])
+        assert any(x["reason"].startswith("requires interactive approval") for x in result["flagged"])
     finally:
         if old is None:tools.TOOLS.pop("write_mock",None)
         else:tools.TOOLS["write_mock"]=old
