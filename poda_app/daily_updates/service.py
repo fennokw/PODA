@@ -20,6 +20,11 @@ from ..runtime.db import connect, now_iso, one, rows, add_column
 
 MAX_GRACE_SECONDS = 600
 _RUNNING: set[str] = set()
+_ACTIVE_SCHEDULES: set[str] = set()
+
+
+def is_running(schedule_id: str) -> bool:
+    return schedule_id in _ACTIVE_SCHEDULES
 _TIME = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
@@ -192,6 +197,10 @@ async def execute(run_id:str,task:dict[str,Any]):
     from ..chat.router import run_chat, ChatRequest
     class BackgroundRequest:
         async def is_disconnected(self): return False
+    if task["id"] in _ACTIVE_SCHEDULES:
+        mark(run_id, "skipped", error="Previous run of this automation is still processing")
+        return
+    _ACTIVE_SCHEDULES.add(task["id"])
     _RUNNING.add(run_id)
     mark(run_id,"running")
     captured=[]
@@ -225,7 +234,7 @@ async def execute(run_id:str,task:dict[str,Any]):
         if error: mark(run_id,"failed",output,error)
         elif not output: mark(run_id,"failed","","No response was generated")
         else:
-            success=_notify(task["title"],output[:190])
+            success=await asyncio.to_thread(_notify,task["title"],output[:190])
             mark(run_id,"completed",output,notified=success)
     except asyncio.CancelledError:
         mark(run_id,"interrupted","".join(captured),"The local PODA server stopped")
@@ -234,6 +243,7 @@ async def execute(run_id:str,task:dict[str,Any]):
         mark(run_id,"failed","".join(captured),f"{type(exc).__name__}: {exc}")
     finally:
         _RUNNING.discard(run_id)
+        _ACTIVE_SCHEDULES.discard(task["id"])
 
 
 async def scheduler():
