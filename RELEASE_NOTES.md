@@ -1,3 +1,17 @@
+# PODA v0.9.1-public — Daily Automation reliability patch
+
+- Fixed the verifier's false encryption failure: the throwaway smoke-test database intentionally uses plaintext SQLite, while normal production remains SQLCipher-required.
+- Run pytest once and preserve the failure traceback rather than masking failures.
+- Permit a stale PODA server from the same checkout to stop cleanly during relaunch; never stop unrelated applications or other PODA installations.
+- Isolated macOS-sandbox-independent process-runner regression testing and made imported topic-cloud assignment assertions robust to overlapping valid clouds.
+- Removed the obsolete three-event calendar-per-run UI and legacy permission field; calendar actions remain individually permission checked without an arbitrary count limit.
+- Added connected Mail account dropdowns to Daily Automation, including account selection for mail reads and account-scoped writes. No re-entry of existing credentials or account IDs.
+- Email-plus-calendar prompts now use grounded mail search followed by continued tool planning; a missing calendar stage is marked incomplete instead of being reported as accomplished.
+- Reduced Notion duplicate scans to the relevant date, prevented overlapping runs of the same daily automation, and moved macOS notification invocation off the event loop.
+- Automated CI does not replace a live macOS Notion/Apple Mail end-to-end test.
+
+---
+
 # PODA v0.6.0-public — LLM-history personalization release
 
 v0.6.0 builds on the hardened v0.5.1 public baseline and adds an opt-in, local-only way to initialize PODA from an existing ChatGPT or Claude data export.
