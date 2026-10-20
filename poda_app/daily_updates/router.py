@@ -58,6 +58,8 @@ def remove(id:str):
 async def run_now(id:str):
     task=next((t for t in service.tasks() if t["id"]==id),None)
     if not task:raise HTTPException(status_code=404,detail="Daily prompt not found")
+    if service.is_running(id):
+        raise HTTPException(status_code=409,detail="This automation is already running. Check its run history.")
     run_id=str(uuid.uuid4())
     db=connect()
     try:
