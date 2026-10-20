@@ -19,10 +19,10 @@ PERMISSION_SPECS = {
     "notion_calendar_create": ("Add Notion calendar events", {}),
     "notion_calendar_update": ("Edit Notion calendar events", {}),
     "notion_calendar_archive": ("Archive Notion calendar events", {}),
-    "mail_mark": ("Mark or archive mail", {"account_id": "Mail account ID", "action": "Exact action: mark_read / mark_unread / flag / unflag / archive"}),
-    "mail_move": ("Move mail to a folder", {"account_id": "Mail account ID", "mailbox": "Exact destination mailbox"}),
-    "mail_draft": ("Save draft emails", {"account_id": "Mail account ID", "recipient": "Exact recipient email address"}),
-    "mail_send": ("Send emails", {"account_id": "Mail account ID", "recipient": "Exact recipient email address"}),
+    "mail_mark": ("Mark or archive mail", {"account_id": "Connected mail account", "action": "Mail action"}),
+    "mail_move": ("Move mail to a folder", {"account_id": "Connected mail account", "mailbox": "Exact destination mailbox"}),
+    "mail_draft": ("Save draft emails", {"account_id": "Connected mail account", "recipient": "Exact recipient email address"}),
+    "mail_send": ("Send emails", {"account_id": "Connected mail account", "recipient": "Exact recipient email address"}),
     "fs_write": ("Create files within folder", {"directory": "Absolute granted folder path"}),
     "fs_edit": ("Edit files within folder", {"directory": "Absolute granted folder path"}),
     "fs_move": ("Move files within folder", {"directory": "Absolute granted folder path"}),
@@ -86,6 +86,16 @@ def prepare(grants: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if not cfg.get("data_source_id") or not cfg.get(needed) or not state.token_present():
                 raise ValueError("Verify the required Notion write permission before authorizing this task")
             scope["data_source_id"] = cfg["data_source_id"]
+        if tool.startswith("mail_"):
+            from ..connectors.email import state as email_state
+            accounts = {a["id"]:a for a in email_state.list_accounts()}
+            selected = accounts.get(scope["account_id"])
+            if not selected:
+                raise ValueError("Choose a currently connected email account from the Mail section")
+            if tool == "mail_send" and not selected.get("allow_send"):
+                raise ValueError("Enable sending for this account in Mail before granting unattended send")
+            if tool in {"mail_mark","mail_move","mail_draft"} and not selected.get("allow_modify"):
+                raise ValueError("Enable mailbox edits for this account in Mail before granting unattended changes")
         if tool == "mail_mark" and scope["action"] not in MAIL_ACTIONS:
             raise ValueError("Invalid mail action")
         if tool in {"mail_send", "mail_draft"} and not MAIL_ADDRESS.fullmatch(scope["recipient"]):
@@ -129,6 +139,16 @@ def _matches(permission: dict[str, Any], tool: str, args: dict[str, Any]) -> boo
         needed = "insert_verified" if tool == "notion_calendar_create" else "update_verified"
         return bool(cfg.get("data_source_id") == scope.get("data_source_id")
                     and cfg.get(needed) and state.token_present())
+    if tool.startswith("mail_"):
+        from ..connectors.email import state as email_state
+        accounts = {a["id"]:a for a in email_state.list_accounts()}
+        acct = accounts.get(scope.get("account_id"))
+        if not acct or not acct.get("enabled"):
+            return False
+        if tool == "mail_send" and not acct.get("allow_send"):
+            return False
+        if tool in {"mail_mark","mail_move","mail_draft"} and not acct.get("allow_modify"):
+            return False
     if tool == "mail_mark":
         return args.get("account_id") == scope.get("account_id") and args.get("action") == scope.get("action")
     if tool == "mail_move":
