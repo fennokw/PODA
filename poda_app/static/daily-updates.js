@@ -76,17 +76,22 @@
         }
       };
       redrawPermissions();
+      const mailSelection=el('select',{class:'input','aria-label':'Mail account for automated email reads'},
+        el('option',{value:''},'Default connected account'),
+        ...mailAccounts.map(a=>el('option',{value:a.id},a.account_name+' · '+a.address_masked)));
       const save=el('button',{class:'btn btn-primary',type:'submit'},'Save automation');
       form.append(el('h3',{},'Create daily automation'),
         field('Name',title),field('Automation prompt',prompt),
         field('Times (24-hour, comma separated)',times),field('Time zone (IANA)',tz),
+        field('Connected mail account for email access',mailSelection),
+        note('Accounts are loaded from the Mail page. No passwords, account IDs or access codes need to be entered here.'),
         el('label',{class:'check'},enabled,'Active'),
         permissionArea,save);
       form.onsubmit=async e=>{
         e.preventDefault();save.disabled=true;
         const payload={title:title.value,prompt:prompt.value,times:times.value.split(',').map(x=>x.trim()).filter(Boolean),
                        timezone:tz.value.trim(),enabled:enabled.checked,
-                       permissions:configuredPermissions};
+                       permissions:configuredPermissions,mail_account_id:mailSelection.value||null};
         try{
           await api(editing?'/daily-updates/'+encodeURIComponent(editing):'/daily-updates',
             {method:editing?'PUT':'POST',body:payload});
@@ -109,14 +114,14 @@
             }),
             button('Edit',()=>{
               editing=s.id;title.value=s.title;prompt.value=s.prompt;times.value=s.times.join(', ');
-              tz.value=s.timezone;enabled.checked=s.enabled;
+              tz.value=s.timezone;enabled.checked=s.enabled;mailSelection.value=s.mail_account_id||'';
               configuredPermissions.splice(0,configuredPermissions.length,...(JSON.parse(s.permissions_json||'[]')));
               redrawPermissions();save.textContent='Save changes';title.focus();
             }),
             button(s.enabled?'Pause':'Resume',async()=>{
               try{
                 await api('/daily-updates/'+encodeURIComponent(s.id),{method:'PUT',
-                  body:{title:s.title,prompt:s.prompt,times:s.times,timezone:s.timezone,enabled:!s.enabled,permissions:JSON.parse(s.permissions_json||'[]')}});
+                  body:{title:s.title,prompt:s.prompt,times:s.times,timezone:s.timezone,enabled:!s.enabled,permissions:JSON.parse(s.permissions_json||'[]'),mail_account_id:s.mail_account_id||null}});
                 render();
               }catch(err){toast(errorDetail(err).message,'danger');}
             }),
