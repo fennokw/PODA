@@ -28,7 +28,13 @@ def create_calendar_event(title: str, start: str, end: str = "", notes: str = ""
         event = {"title":title.strip(), "start":start, "end":end or None, "notes":notes}
         props = mapping.build_properties(active["mapping"], cfg["schema"], event)
         # Always check destination immediately before the write.
-        existing = query_pages(limit=500)
+        # Limit duplicate detection to the relevant calendar DAY; scanning
+        # hundreds of unrelated pages for every creation can saturate Notion
+        # and make the UI appear frozen when many meetings are inserted.
+        existing = query_pages(limit=1000, filter_obj={
+            "property":active["mapping"]["date"],
+            "date":{"equals":dt.date().isoformat()}
+        })
         duplicates = mapping.find_duplicates(event, active["mapping"], existing)
         if duplicates:
             return {"ok": True, "result":{"created":False,"duplicate":True,"matches":duplicates[:3]},
