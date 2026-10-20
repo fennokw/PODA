@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from . import service
@@ -18,12 +19,18 @@ class DailyPrompt(BaseModel):
     timezone: str = Field(min_length=2,max_length=80)
     enabled: bool = True
     allow_calendar_writes: bool = False
+    permissions: list[dict[str,Any]] = []
 
 def _save(data:DailyPrompt,id:str|None=None):
     try:return service.save(data.title,data.prompt,data.times,data.timezone,data.enabled,id,
-                            allow_calendar_writes=data.allow_calendar_writes)
+                            allow_calendar_writes=data.allow_calendar_writes,permissions=data.permissions)
     except KeyError as exc:raise HTTPException(status_code=404,detail=str(exc)) from exc
     except ValueError as exc:raise HTTPException(status_code=422,detail=str(exc)) from exc
+
+@router.get("/permissions/catalog")
+def permission_catalog():
+    from .permissions import catalog
+    return {"permissions":catalog()}
 
 @router.get("")
 def list_updates():
