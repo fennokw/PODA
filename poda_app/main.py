@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=config.APP_NAME, version=config.VERSION, lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.middleware("http")(security_middleware)
 
-for r in (runtime_router, memory_router, chat_router, chat_runs_router, agent_router, planner_router, workload_router, privacy_router, notion_router, email_router, software_router, imports_router, project_manager_router, pace_router):
+for r in (runtime_router, memory_router, chat_router, chat_runs_router, agent_router, planner_router, pace_router, workload_router, privacy_router, notion_router, email_router, software_router, imports_router, project_manager_router):
     app.include_router(r)
 
 
