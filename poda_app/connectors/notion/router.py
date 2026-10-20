@@ -362,7 +362,8 @@ def change_commitment(page_id: str, req: CommitmentChange) -> dict[str, Any]:
         raise HTTPException(422, detail="Connected Notion database requires a Commitment select property.")
     if not cfg.get("update_verified"):
         raise HTTPException(403, detail="Notion update access has not been verified.")
-    choices = {o.get("name") for o in (field.get("select") or {}).get("options", [])}
+    choices = {o if isinstance(o, str) else o.get("name")
+               for o in (field.get("select") or {}).get("options", field.get("options", []))}
     if req.commitment is not None and req.commitment not in choices:
         raise HTTPException(422, detail="Select an existing Notion Commitment option.")
     from .client import NotionClient
