@@ -34,12 +34,9 @@ class WorkItem(BaseModel):
 
 
 class Preferences(BaseModel):
-    start_hour: int = Field(ge=0, le=23)
-    end_hour: int = Field(ge=1, le=24)
-    session_minutes: int = Field(ge=15, le=180)
-    break_minutes: int = Field(ge=0, le=60)
-    max_daily_minutes: int = Field(ge=30, le=900)
-    include_weekends: bool = True
+    sleep_hours: int = Field(default=8, ge=4, le=12)
+    meal_minutes: int = Field(default=90, ge=0, le=360)
+    free_minutes: int = Field(default=120, ge=0, le=600)
 
 
 @router.get("")
