@@ -223,8 +223,10 @@ def report(params: dict[str, Any], outcome: dict[str, Any]) -> str:
     return "\n\n".join(lines)
 
 
-def fulfill(message: str, session_id: str | None) -> tuple[dict[str, Any], dict[str, Any], str]:
+def fulfill(message: str, session_id: str | None, account_id: str | None = None) -> tuple[dict[str, Any], dict[str, Any], str]:
     params = parameters(message, session_id)
+    if account_id:
+        params["account_id"] = account_id
     if params.get("query") and not FOLLOWUP.search(message):
         # Only local Ollama sees the user query; no third-party inference.
         params["related_terms"] = list(dict.fromkeys([
