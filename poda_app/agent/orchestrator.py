@@ -17,7 +17,7 @@ from . import tools
 
 MAX_PLAN_ROUNDS = 3
 MAX_REPAIR_CYCLES = 2
-_ACTION_CUES = re.compile(r"\b(file|folder|directory|desktop|documents|\.py|\.txt|\.md|\.json|\.js|\.html|\.csv|read|list|search|create|write|save|edit|change|modify|fix|refactor|run|execute|test|pytest|script|notion|calendar|to[- ]?do|remember|recall|earlier|previously|discuss(?:ed)?|talk(?:ed)?|mention(?:ed)?|remind|told|conversation|last time|what did (?:we|i) say|email|e-mail|inbox|mail|mailbox|message from|unread|newsletter|reply to|draft|flag|archive|schedule|agenda|events?|classes|class|lecture|recitation|assignment|homework|workload|projects?|tasks?|estimate|estimating|how long|time budget|study plan|due|deadline|exam|quiz|today|tonight|tomorrow|this week|next week|weekend|what do i have|what's on)\b", re.I)
+_ACTION_CUES = re.compile(r"\b(file|folder|directory|desktop|documents|\.py|\.txt|\.md|\.json|\.js|\.html|\.csv|read|list|search|create|write|save|edit|change|modify|fix|refactor|run|execute|test|pytest|script|notion|calendar|to[- ]?do|remember|recall|earlier|previously|discuss(?:ed)?|talk(?:ed)?|mention(?:ed)?|remind|told|conversation|last time|what did (?:we|i) say|email|e-mail|inbox|mail|mailbox|message from|unread|newsletter|reply to|draft|flag|archive|schedule|agenda|events?|classes|class|lecture|recitation|assignment|homework|workload|projects?|tasks?|estimate|estimating|how long|time budget|study plan|due|deadline|exam|quiz|today|tonight|tomorrow|this week|next week|weekend|what do i have|what's on|every day|every morning|every afternoon|every evening|every weekday|daily update|daily brief|recurring|notify me)\b", re.I)
 
 
 def ensure_tables(conn) -> None:
