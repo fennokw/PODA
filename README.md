@@ -1,10 +1,34 @@
 # PODA — Personal Organization Digital Assistant
 
+## What's new in v0.8.0: one Project Manager and better active-chat context
+
+**Project Manager** replaces the separate Workload and Plan navigation entries. The existing work records and the original project records are preserved; no task migration is required. The combined dashboard shows project status, workload counts, deadlines, remaining calibrated minutes, and completion percentage. Select a project to:
+
+- Change its name, priority, difficulty, description, deadline, and progress.
+- Create and edit scoped work items, with the same duration-calibration engine used by PODA's chat agent.
+- Upload PDFs, DOCX, TXT, Markdown, and CSV files (maximum 8 MB each). The original bytes and extracted text are stored in PODA's **local encrypted SQLCipher database**; the source remains untrusted data.
+- Preview or download document contents, or create a suggested task after reviewing extracted work.
+- Link computer files through the existing Files & Agent folder-grant system. Links grant **no new permissions** and are revalidated every time a file is read. Revoking the grant blocks future access.
+- Generate a draft work schedule, constrained by importance, due dates, individual estimates, per-day work preferences, and Notion calendar events **when connected**. No Notion writes occur automatically.
+
+**Personalize → Personal work-speed calibration** now contains example-based pacing controls. Describe an assignment, set its category and difficulty, enter how long you expect it to take, optionally record actual completion time, and optionally upload the relevant work. These examples affect the same category- and difficulty-weighted estimation engine as Project Manager, but they are stored as *calibration examples*, not fabricated outstanding tasks. You can inspect and delete examples at any time. Your workday hours, session duration, breaks, daily workload cap, and weekend preference also live here.
+
+**Short-term working context and second-brain graduation:** PODA uses a rolling six-exchange window from its existing encrypted message store to interpret follow-up questions without an expensive long-term memory query. This is not a second permanent memory database. As the chat grows, older exchanges are promoted to paired, visible second-brain nodes, and selecting **New chat** finalizes the remaining exchanges. A server restart reconciles any pending messages. Explicit historical questions can still retrieve long-term memories through the graph.
+
+**Receipt-grounded mail reviews:** When authorized mail search is appropriate, PODA now runs its read-only search **before** presenting an answer. It reports concrete findings or a clear failure/coverage limitation instead of answering only “I will search.” Date-only inbox requests stay broad; topic queries use bounded lexical alternatives and optional locally generated Ollama synonyms. Its importance and meeting classification is heuristic: it can miss nuances, so it must never label an incomplete scan exhaustive. Every search remains within the connected account permissions and local Ollama inference. No email is sent or modified without the established approval workflow.
+
+### Migrating from v0.7.0
+
+Pull the newest repository files and restart PODA. The existing separate `/projects`, `/workload`, and `/workload/schedule` APIs remain available for backwards compatibility. The new dashboard uses `/project-manager/projects` and works against the same existing project/task records. The new pacing example tables are created automatically and additively in the SQLCipher database. The program stores personal state outside the Git checkout, so a normal Git update does not erase memories, project data, or connections.
+
+The old Plan and Workload screens are no longer displayed in the main navigation. Existing tasks remain accessible in Project Manager when associated with a project name. To assign unlinked tasks, edit their project field through the workload API or the legacy workload screen; they are not silently discarded. The canonical Second Brain visualization and its manual commit workflow are unchanged.
+
+
 **A private, local-first personal AI for people who want their assistant to remember useful context, tell the truth about its abilities, organize their work, and ask before taking consequential action.**
 
 PODA is a self-hosted web application for **one Apple Silicon Mac**. Its chat models, embeddings, memory database, task planner and visual second brain run locally. Instead of relying on a hosted AI service to remember your life, PODA maintains an inspectable, editable local record of the context you choose to retain. It can also connect, with your permission, to **the Notion database behind Notion Calendar**, macOS Apple Mail, and optionally Gmail IMAP/SMTP. Those integrations necessarily contact external services; PODA's AI inference does not.
 
-> **Public source release v0.6.0-public.** This repository intentionally contains **no personal memories, chat transcripts, credentials, connected accounts, historical databases, logs, screenshots or private Git history**. On first run it creates a brand-new, encrypted memory database in `~/Library/Application Support/PODA-Public/`. It does not import or modify another PODA installation. The downloadable ZIP is a source repository, **not a signed Mac app**. See [Security and limitations](#security-and-limitations).
+> **Public source release v0.8.0-public.** This repository intentionally contains **no personal memories, chat transcripts, credentials, connected accounts, historical databases, logs, screenshots or private Git history**. On first run it creates a brand-new, encrypted memory database in `~/Library/Application Support/PODA-Public/`. It does not import or modify another PODA installation. The downloadable ZIP is a source repository, **not a signed Mac app**. See [Security and limitations](#security-and-limitations).
 
 ## Why PODA exists
 

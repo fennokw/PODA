@@ -16,6 +16,7 @@ from ..memory import store, retrieval, summaries
 from ..agent import gate, orchestrator
 from ..connectors.notion import context as notion_context
 from .prompt import build_system_prompt, tools_block
+from . import mail_fulfillment
 
 router = APIRouter()
 
@@ -86,7 +87,7 @@ class ThinkSplitter:
 @router.post("/chat/stream")
 async def chat_stream(req: ChatRequest, request: Request):
     session_id = req.session_id or str(uuid.uuid4())
-    user_message_id = await asyncio.to_thread(store.save_message, "user", req.message, None, session_id)
+    user_message_id = await asyncio.to_thread(store.save_message, "user", req.message, None, session_id, "chat", None, True)
     snapshot = await asyncio.to_thread(capability.sync_ledger)
     profile = await asyncio.to_thread(models.resolve, req.message, req.mode, req.thinking_level)
     blocked = gate.unsupported_action_response(req.message, snapshot)
@@ -97,13 +98,13 @@ async def chat_stream(req: ChatRequest, request: Request):
         if blocked:
             yield sse("status", {"message": "capability_action_gate", "model": "PODA capability ledger"})
             yield sse("token", {"token": blocked})
-            await asyncio.to_thread(store.save_message, "assistant", blocked, "capability-action-gate", session_id)
+            await asyncio.to_thread(store.save_message, "assistant", blocked, "capability-action-gate", session_id, "chat", None, True)
             yield sse("done", {"model": "capability-action-gate", "profile": "gate"})
             return
         if capability_reply:
             yield sse("status", {"message": "verified_runtime_status", "model": "PODA capability ledger"})
             yield sse("token", {"token": capability_reply})
-            await asyncio.to_thread(store.save_message, "assistant", capability_reply, "capability-ledger", session_id)
+            await asyncio.to_thread(store.save_message, "assistant", capability_reply, "capability-ledger", session_id, "chat", None, True)
             yield sse("done", {"model": "capability-ledger", "profile": "ledger"})
             return
         model = profile.get("model")
@@ -112,6 +113,21 @@ async def chat_stream(req: ChatRequest, request: Request):
             yield sse("error", {"message": msg})
             return
         yield sse("status", {"message": "routing", "model": model, "profile": profile["profile"], "num_ctx": profile["num_ctx"]})
+        # Read-only mail requests are fulfilled by PODA itself, not deferred as
+        # a promise in model prose. Success/failure comes from the tool receipt.
+        if snapshot.get("email", {}).get("can_read") and mail_fulfillment.is_mail_request(req.message, session_id):
+            yield sse("status", {"message": "searching_mail", "model": "PODA mail tools"})
+            params, executed, summary = await asyncio.to_thread(mail_fulfillment.fulfill, req.message, session_id)
+            receipt = executed.get("receipt") or {}
+            yield sse("tool", {"name": "mail_search",
+                               "args_summary": f"date={params.get('start_date')}..{params.get('end_date')}",
+                               "receipt_id": receipt.get("id"),
+                               "outcome": receipt.get("outcome"),
+                               "verification": receipt.get("verification")})
+            yield sse("token", {"token": summary})
+            await asyncio.to_thread(store.save_message, "assistant", summary, "mail-report", session_id, "chat", None, True)
+            yield sse("done", {"model": "mail-report", "profile": "verified-tools"})
+            return
         recalled = None
         if should_recall_memory(req.message, req.use_memory):
             yield sse("status", {"message": "recalling", "model": model})
@@ -154,7 +170,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                 proposal_note = ("\nPENDING PROPOSAL: the following actions are queued and WAITING FOR THE USER'S APPROVAL; none has run: " +
                                  "; ".join(s["summary"] for s in planned["steps"]) + ". Briefly tell the user what will happen once approved. Do NOT claim any of it is done.\n")
         system = build_system_prompt(should_recall_memory(req.message, req.use_memory), req.message, snapshot, recalled, notion_block,
-                                     receipts_block=receipts_block + tool_results_block + proposal_note, tools_block=tools_block(snapshot), session_id=session_id)
+                                     receipts_block=receipts_block + tool_results_block + proposal_note, tools_block=tools_block(snapshot), session_id=session_id, exclude_message_id=user_message_id)
         messages = [{"role": "system", "content": system}, {"role": "user", "content": req.message}]
         splitter = ThinkSplitter()
         think_flag = profile.get("think") if model.startswith("qwen3") else None
@@ -164,7 +180,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                     yield sse("status", {"message": "cancelled", "model": model})
                     partial = "".join(splitter.final).strip()
                     if partial:
-                        await asyncio.to_thread(store.save_message, "assistant", partial + "\n\n[response cancelled by user]", model, session_id)
+                        await asyncio.to_thread(store.save_message, "assistant", partial + "\n\n[response cancelled by user]", model, session_id, "chat", None, True)
                     return
                 msg = chunk.get("message", {})
                 thinking = msg.get("thinking")
@@ -177,7 +193,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                         yield sse(kind, {"token": piece})
                 if done:
                     final = "".join(splitter.final).strip()
-                    await asyncio.to_thread(store.save_message, "assistant", final, model, session_id)
+                    await asyncio.to_thread(store.save_message, "assistant", final, model, session_id, "chat", None, True)
                     yield sse("done", {"model": model, "profile": profile["profile"], "eval_count": chunk.get("eval_count"), "eval_duration_ms": round((chunk.get("eval_duration") or 0) / 1e6),
                                        "prompt_eval_count": chunk.get("prompt_eval_count")})
                     asyncio.get_running_loop().run_in_executor(None, summaries.maybe_compact, session_id)
@@ -209,3 +225,12 @@ def session_messages(session_id: str, limit: int = 100) -> dict[str, Any]:
 @router.get("/chat/history")
 def chat_history(limit: int = 60) -> dict[str, Any]:
     return {"messages": store.recent_messages(max(1, min(limit, 500)))}
+
+@router.post("/chat/session/{session_id}/flush")
+def flush_session_memory(session_id: str) -> dict[str, Any]:
+    """Finalize a chat and move all remaining encrypted working turns to the visible memory graph."""
+    if not session_id or len(session_id) > 128:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="Invalid session ID")
+    result = store.flush_session_to_graph(session_id, retain_messages=0)
+    return {"ok": True, "session_id": session_id, **result}

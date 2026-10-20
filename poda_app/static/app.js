@@ -15,11 +15,11 @@
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const tag = document.activeElement?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || document.activeElement?.isContentEditable) return;
-    const map = { 0: 'workload', 1: 'ask', 2: 'memory', 3: 'plan', 4: 'notion', 5: 'mail', 6: 'files', 7: 'privacy', 8: 'system', 9: 'personalize' };
+    const map = { 0: 'projects', 1: 'ask', 2: 'memory', 3: 'projects', 4: 'notion', 5: 'mail', 6: 'files', 7: 'privacy', 8: 'system', 9: 'personalize' };
     if (map[e.key]) { e.preventDefault(); if (map[e.key] === 'memory') window.location.assign('/memory-viewer'); else navigate(map[e.key]); }
   });
 
-  const screens = [['ask', 'Ask', '1'], ['personalize', 'Personalize', '9'], ['workload', 'Workload', '0'], ['plan', 'Plan', '3'], ['notion', 'Notion', '4'], ['mail', 'Mail', '5'], ['files', 'Files & Agent', '6'], ['privacy', 'Privacy', '7'], ['system', 'System', '8']];
+  const screens = [['ask', 'Ask', '1'], ['personalize', 'Personalize', '9'], ['projects', 'Project Manager', '3'], ['notion', 'Notion', '4'], ['mail', 'Mail', '5'], ['files', 'Files & Agent', '6'], ['privacy', 'Privacy', '7'], ['system', 'System', '8']];
   for (const [name, label, key] of screens) registerCommand({ label: `Go to ${label}`, kind: 'Screen', key, keywords: name === 'mail' ? 'email inbox gmail apple mail' : '', run: () => navigate(name) });
   registerCommand({ label: 'Open memory viewer', kind: 'Screen', key: '2', keywords: 'open3d 3d second brain', run: () => window.location.assign('/memory-viewer') });
   registerCommand({ label: 'Check capabilities', kind: 'Action', keywords: 'ledger status', run: async () => { const c = await api('/capabilities'); toast(`Ollama ${c.ollama?.reachable ? 'reachable' : 'unreachable'} · Notion ${c.notion?.status || 'DISCONNECTED'} · ${c.filesystem?.granted_roots?.length || 0} folder grants`); navigate('system'); } });
@@ -111,7 +111,7 @@
       messages.appendChild(el('div', { class: 'hero-empty' },
         el('h2', {}, 'Private, grounded, local.'),
         el('p', { class: 'muted', style: { maxWidth: '54ch' } }, 'PODA answers from a verified runtime ledger, your visible memory graph, and tools you have explicitly authorized. Nothing leaves this Mac except allowlisted Notion calls.'),
-        el('p', { class: 'faint small', style: { maxWidth: '54ch' } }, 'Each visit starts a fresh conversation. Earlier chats are not replayed here; they live in your memory web and are pulled in only when they are relevant to what you ask.'),
+        el('p', { class: 'faint small', style: { maxWidth: '54ch' } }, 'PODA remembers the last several turns in this active chat without graph search. Older turns graduate into the visible memory web for selective long-term recall.'),
         el('div', { class: 'suggest' }, ...suggestions.map((s) => el('button', { class: 'btn btn-sm', type: 'button', onclick: () => { textarea.value = s; composer.requestSubmit(); } }, s)))));
     }
 
@@ -134,6 +134,8 @@
     function newChat() {
       if (askState.runId) api('/chat/runs/' + encodeURIComponent(askState.runId) + '/cancel', { method: 'POST' }).catch(() => {});
       askState.controller?.abort();
+      // Finalize rolling short-term turns into visible second-brain memories.
+      if (askState.sessionId) api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/flush', { method: 'POST' }).catch(() => {});
       askState.sessionId = null; askState.runId = null; askState.transcript = [];
       persistSession();
       messages.innerHTML = ''; showEmpty(); statusLine.innerHTML = ''; recallBox.innerHTML = ''; sessionBox.innerHTML = '';
@@ -369,6 +371,7 @@
       el('div', { class: 'stack-sm' }, el('h3', {}, 'Supported exports'),
         el('p', { class: 'small muted' }, 'Official ChatGPT exports with conversations.json and Claude exports containing conversations/chat_messages. Nested JSON exports are detected heuristically. Attachments are ignored.')));
     await refreshHistory();
+    if (window.PODAPace?.mount) await window.PODAPace.mount(view, inspector);
   });
 
   // =====================================================================

@@ -1,0 +1,41 @@
+/* Project Manager - understated glass, blue gradients, responsive grid. */
+.pm-screen {max-width:1320px;gap:24px;padding-bottom:40px}
+.pm-screen .card {border-color:rgba(110,169,228,.19)}
+.pm-header {display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap}
+.pm-header h2 {font-size:clamp(22px,2.5vw,31px);letter-spacing:-.035em;margin:10px 0 4px}
+.pm-header > div {max-width:760px}
+.pm-stats {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.pm-stat {background:linear-gradient(145deg,rgba(21,64,109,.43),rgba(9,20,43,.55));border:1px solid rgba(87,142,209,.23);
+ border-radius:15px;padding:20px;display:flex;flex-direction:column;gap:9px}
+.pm-stat strong {font-size:clamp(22px,2.3vw,34px);font-weight:630;letter-spacing:-.045em;color:#cceaff}
+.pm-cards {display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:15px}
+.pm-project {cursor:pointer;text-align:left;color:inherit;width:100%;display:flex;flex-direction:column;align-items:stretch;min-height:195px;
+ background:radial-gradient(ellipse at 100% 0%,rgba(58,154,242,.10),transparent 50%),linear-gradient(140deg,rgba(29,55,91,.47),rgba(9,19,35,.8));
+ border:1px solid rgba(106,176,237,.25);border-radius:18px;padding:19px;position:relative;overflow:hidden;
+ transition:transform .2s cubic-bezier(.2,.8,.2,1),border-color .2s,box-shadow .2s}
+.pm-project:hover,.pm-project:focus-visible {transform:translateY(-3px);border-color:rgba(115,194,255,.67);
+ box-shadow:0 11px 38px rgba(0,0,0,.24),0 0 34px rgba(29,134,230,.07)}
+.pm-project-head,.pm-project-foot {display:flex;justify-content:space-between;align-items:center;gap:8px}
+.pm-project-head h3 {font-size:17px;letter-spacing:-.02em;margin:0}
+.pm-project .muted {line-height:1.55;margin:12px 0 auto;min-height:44px}
+.pm-project-foot {font-size:11px;opacity:.8;flex-wrap:wrap;justify-content:flex-start;margin-top:12px;gap:12px}
+.pm-progress {height:5px;border-radius:10px;background:rgba(108,162,207,.13);overflow:hidden;margin-top:14px}
+.pm-progress i {height:100%;display:block;background:linear-gradient(90deg,#3589d6,#7ad9ff);border-radius:inherit;transition:width .35s ease}
+.pm-arrow {position:absolute;right:18px;bottom:14px;color:#6fc8ff}
+.pm-columns {display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:18px;align-items:start}
+.pm-fields {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.pm-fields label {min-width:0}
+.pm-screen .field {display:grid;gap:6px}
+.pm-screen input,.pm-screen textarea,.pace-personalize textarea {min-width:0}
+.pm-task,.pm-attachment,.pace-example {display:flex;align-items:center;justify-content:space-between;gap:14px;
+ padding:13px 0;border-bottom:1px solid rgba(121,163,211,.16)}
+.pm-task > div:first-child,.pm-attachment > div:first-child {min-width:0;word-break:break-word}
+.pm-task-form {display:grid;gap:12px;padding-top:14px}
+.pm-session {border-left:2px solid #58b7ff;padding:9px 12px;background:rgba(75,137,212,.07);border-radius:0 8px 8px 0}
+.pm-screen .row,.pace-personalize .row {flex-wrap:wrap}
+.pace-personalize .field {display:grid;gap:7px}
+.pace-personalize {margin-top:18px}
+.pace-personalize .stack {max-width:780px}
+@media(max-width:1040px){.pm-columns{grid-template-columns:1fr}.pm-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:640px){.pm-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.pm-cards{grid-template-columns:1fr}.pm-header{align-items:stretch}.pm-fields{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){.pm-project,.pm-project:hover,.pm-progress i{transition:none;transform:none}}

@@ -329,14 +329,73 @@ def apply_pair(conn, node: dict[str, Any], response_message_id: str, assistant_t
         conn.execute("UPDATE memory_nodes SET stale=1 WHERE id=?", (node["surface_id"],))
 
 
+def flush_session_to_graph(session_id: str, retain_messages: int = 0) -> dict[str, int]:
+    """Promote old working-context turns into visible memory nodes in paired batches.
+
+    The most recent retain_messages are kept in the short-term encrypted message
+    window; after a new chat starts the remainder is flushed. Idempotent across
+    restarts and retries. Never deletes the underlying conversation transcript.
+    """
+    if not session_id:
+        return {"promoted": 0}
+    conn = connect()
+    promoted = []
+    try:
+        messages = rows(conn, """SELECT id, role, content, created_at
+                                 FROM messages WHERE session_id=?
+                                 ORDER BY rowid ASC""", (session_id,))
+        eligible = messages[:max(0, len(messages) - max(0, retain_messages))]
+        index = 0
+        while index < len(eligible):
+            msg = eligible[index]
+            if one(conn, "SELECT id FROM memory_nodes WHERE source_message_id=? OR response_message_id=? LIMIT 1",
+                   (msg["id"], msg["id"])):
+                index += 1
+                continue
+            role = msg["role"]
+            if role == "user" and index + 1 < len(eligible) and eligible[index + 1]["role"] == "assistant":
+                following = eligible[index + 1]
+                nid = ingest_chat_turn(conn, "user", msg["content"],
+                                       source_message_id=msg["id"], created_at=msg["created_at"])
+                if nid:
+                    node = one(conn, "SELECT * FROM memory_nodes WHERE id=?", (nid,))
+                    apply_pair(conn, node, following["id"], following["content"])
+                    promoted.append(nid)
+                index += 2
+                continue
+            nid = ingest_chat_turn(conn, role, msg["content"], source_message_id=msg["id"],
+                                   created_at=msg["created_at"])
+            if nid:
+                promoted.append(nid)
+            index += 1
+        conn.commit()
+        for nid in promoted:
+            try:
+                from . import surface
+                surface.assign_or_create(conn, nid)
+                conn.commit()
+            except Exception:
+                conn.rollback()  # embeddings or local Ollama being offline must not lose memories
+        return {"promoted": len(promoted)}
+    finally:
+        conn.close()
+
+
 def save_message(role: str, content: str, model: str | None = None, session_id: str | None = None, provenance: str = "chat",
-                 metadata: dict[str, Any] | None = None) -> str:
+                 metadata: dict[str, Any] | None = None, defer_memory: bool = False) -> str:
     conn = connect()
     try:
         message_id = str(uuid.uuid4())
         created_at = now_iso()
         conn.execute("INSERT INTO messages (id, role, content, model, created_at, session_id, provenance, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                      (message_id, role, content, model, created_at, session_id, provenance, json.dumps(metadata) if metadata else None))
+        if defer_memory and session_id:
+            conn.commit()
+            # Keep 6 recent user/assistant exchanges for cheap active-chat context.
+            # Older exchanges become the sole source for long-term recall.
+            if role == "assistant":
+                flush_session_to_graph(session_id, retain_messages=12)
+            return message_id
         node_id = None
         if role == "assistant" and (content or "").strip():
             candidate = find_pair_candidate(conn, session_id, created_at)
