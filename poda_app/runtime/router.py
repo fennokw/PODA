@@ -21,7 +21,8 @@ def system_build() -> dict[str, Any]:
 @router.get("/health")
 def health() -> dict[str, Any]:
     return {"status": "ok", "app": config.APP_NAME, "version": config.VERSION, "build_id": config.BUILD_ID, "local_only": True,
-            "fast_model": config.FAST_MODEL, "advanced_model": config.ADVANCED_MODEL, "embedding_model": config.EMBED_MODEL}
+            "selected_models": {key: p["model"] for key,p in models.registry().get("profiles",{}).items()},
+            "embedding_model": config.EMBED_MODEL}
 
 
 @router.get("/system/manifest")
@@ -29,7 +30,7 @@ def system_manifest() -> dict[str, Any]:
     return {
         "app": config.APP_NAME, "version": config.VERSION, "build_id": config.BUILD_ID, "scope": "single-device local-only Mac",
         "features": {
-            "tiered_models": True, "tiered_thinking": True, "truth_grounding": True, "capability_ledger": True, "unsupported_action_gate": True,
+            "tiered_models": True, "custom_local_model_profiles": True, "quantized_ollama_installer": True, "daily_updates_local_scheduler": True, "mail_bulk_confirmation": True, "tiered_thinking": True, "truth_grounding": True, "capability_ledger": True, "unsupported_action_gate": True,
             "action_receipts": True, "scoped_filesystem_tools": True, "scoped_code_execution": __import__("poda_app.agent.sandbox", fromlist=["execution_mode"]).execution_mode() != "blocked_no_os_sandbox", "project_priority_engine": True,
             "explainable_planner": True, "imap_preview": False, "calendar_text_event_extraction": True, "open3d_memory_geometry": True,
             "webgl2_memory_renderer": True, "open3d_volumetric_clouds": True, "persistent_memory_points": True,
@@ -42,7 +43,7 @@ def system_manifest() -> dict[str, Any]:
             "sqlcipher_encryption_at_rest": encryption_status().get("database_encrypted_on_disk"), "local_session_origin_protection": True,
             "egress_allowlist_audit": True, "offline_mode": True, "encrypted_backups": True, "network_workers": False, "cloud_models": False,
         },
-        "models": {"fast": config.FAST_MODEL, "advanced": config.ADVANCED_MODEL, "deep_optional": config.OPTIONAL_DEEP_MODEL, "embeddings": config.EMBED_MODEL},
+        "models": {key: p["model"] for key,p in models.registry().get("profiles",{}).items()} | {"embeddings": config.EMBED_MODEL},
     }
 
 

@@ -57,19 +57,26 @@ def requested_action_intents(text: str) -> set[str]:
     informational = bool(_INFORMATIONAL_OPENERS.match(lower)) and "?" in lower and not re.search(r"\b(please|now|go ahead)\b", lower)
     if informational or is_capability_query(lower):
         return intents  # questions about ability are not requests to act
-    if _IMPERATIVE_FILE.search(lower):
+    # Domain-aware dispatch: "move those emails to a folder" is a mailbox
+    # operation, NOT an edit of files on the user's Desktop. Generic "file"
+    # mentions alone are never proof of a filesystem side effect.
+    mail_object = bool(re.search(r"\b(e-?mails?|inbox|mailbox|messages? from|senders?|subjects?)\b", lower))
+    local_object = bool(re.search(r"\b(desktop|finder|filesystem|local files?|computer files?|disk|hard drive|source code|directory)\b|(?:~/|/users/)[^\s]+|\b[\w.-]+\.(?:py|txt|md|json|js|csv|pdf)\b", lower))
+    route_to_mail = mail_object and not local_object
+    if not route_to_mail and _IMPERATIVE_FILE.search(lower):
         intents.add("file_create")
-    if _IMPERATIVE_EDIT.search(lower):
+    if not route_to_mail and _IMPERATIVE_EDIT.search(lower):
         intents.add("file_edit")
-    if _IMPERATIVE_READ.search(lower):
+    if not route_to_mail and _IMPERATIVE_READ.search(lower):
         intents.add("file_read")
-    if _IMPERATIVE_DELETE.search(lower):
+    if not route_to_mail and _IMPERATIVE_DELETE.search(lower):
         intents.add("file_delete")
     if any(t in lower for t in ["run this code", "execute this code", "run the script", "execute the script", "run python", "execute python", "run this file", "run the tests", "run pytest"]):
         intents.add("code_execute")
     if any(t in lower for t in ["send an email", "send email", "email them", "reply to", "forward this email"]):
         intents.add("email_send")
-    if any(t in lower for t in ["archive the email", "delete the email", "label the email", "mark as read", "move the email"]):
+    if (mail_object and re.search(r"\b(move|mark|archive|label|file|flag|unflag|delete|trash|organize|sort)\b", lower)
+            or any(t in lower for t in ["archive the email", "delete the email", "label the email", "mark as read", "move the email"])):
         intents.add("email_modify")
     if any(t in lower for t in ["read my email", "read my inbox", "check my inbox", "search my email", "search my inbox"]):
         intents.add("email_read")

@@ -1,0 +1,18 @@
+/* Daily Updates and local model manager use PODA's existing navy/cyan tokens. */
+.daily-screen{max-width:1400px;gap:20px}.daily-top{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}
+.daily-top h2{font-size:clamp(22px,2.3vw,30px);letter-spacing:-.03em}
+.daily-columns{display:grid;grid-template-columns:minmax(0,.95fr) minmax(0,1.05fr);gap:16px;align-items:start}
+.daily-screen .field{display:grid;gap:7px}.daily-screen textarea{min-height:135px;resize:vertical}
+.daily-entry{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;padding:15px 0;border-bottom:1px solid rgba(119,166,212,.16)}
+.daily-entry>div:first-child{min-width:0;overflow-wrap:anywhere}
+.daily-entry .row{display:flex;flex-wrap:wrap;justify-content:end;gap:5px;max-width:200px}
+.daily-result{border:1px solid rgba(111,172,230,.16);border-radius:12px;background:linear-gradient(120deg,rgba(33,75,119,.16),transparent);margin:8px 0}
+.daily-result summary{cursor:pointer;display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:14px}
+.daily-result summary span:first-child{flex:1;font-weight:600}
+.daily-result-body{padding:10px 16px 18px;line-height:1.55;border-top:1px solid rgba(111,172,230,.14);overflow-wrap:anywhere}
+.daily-result-body .markdown{max-height:500px;overflow:auto}
+.model-profile-row{display:grid;grid-template-columns:80px minmax(0,1fr) auto auto;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(119,166,212,.14)}
+.model-install-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.model-install-row select{min-width:min(380px,100%);flex:1}
+@media(max-width:900px){.daily-columns{grid-template-columns:1fr}.model-profile-row{grid-template-columns:75px minmax(0,1fr)}}
+@media(max-width:560px){.daily-entry{flex-direction:column}.daily-entry .row{max-width:100%;justify-content:flex-start}}

@@ -17,7 +17,7 @@ from . import tools
 
 MAX_PLAN_ROUNDS = 3
 MAX_REPAIR_CYCLES = 2
-_ACTION_CUES = re.compile(r"\b(file|folder|directory|desktop|documents|\.py|\.txt|\.md|\.json|\.js|\.html|\.csv|read|list|search|create|write|save|edit|change|modify|fix|refactor|run|execute|test|pytest|script|notion|calendar|to[- ]?do|remember|recall|earlier|previously|discuss(?:ed)?|talk(?:ed)?|mention(?:ed)?|remind|told|conversation|last time|what did (?:we|i) say|email|e-mail|inbox|mail|mailbox|message from|unread|newsletter|reply to|draft|flag|archive|schedule|agenda|events?|classes|class|lecture|recitation|assignment|homework|workload|projects?|tasks?|estimate|estimating|how long|time budget|study plan|due|deadline|exam|quiz|today|tonight|tomorrow|this week|next week|weekend|what do i have|what's on)\b", re.I)
+_ACTION_CUES = re.compile(r"\b(file|folder|directory|desktop|documents|\.py|\.txt|\.md|\.json|\.js|\.html|\.csv|read|list|search|create|write|save|edit|change|modify|fix|refactor|run|execute|test|pytest|script|notion|calendar|to[- ]?do|remember|recall|earlier|previously|discuss(?:ed)?|talk(?:ed)?|mention(?:ed)?|remind|told|conversation|last time|what did (?:we|i) say|email|e-mail|inbox|mail|mailbox|message from|unread|newsletter|reply to|draft|flag|archive|schedule|agenda|events?|classes|class|lecture|recitation|assignment|homework|workload|projects?|tasks?|estimate|estimating|how long|time budget|study plan|due|deadline|exam|quiz|today|tonight|tomorrow|this week|next week|weekend|what do i have|what's on|every day|every morning|every afternoon|every evening|every weekday|daily update|daily brief|recurring|notify me)\b", re.I)
 
 
 def ensure_tables(conn) -> None:
@@ -26,8 +26,10 @@ def ensure_tables(conn) -> None:
 
 
 def tool_prerequisites_exist(snapshot: dict[str, Any]) -> bool:
+    # Tools with no external prerequisite (projects, local Daily Updates) are
+    # real tools too. Do not require a mail/Notion connection to plan with them.
     avail = tools.availability(snapshot)
-    return any(v["available"] for name, v in avail.items() if tools.TOOLS[name]["needs"] is not None)
+    return any(v["available"] for v in avail.values())
 
 
 def looks_like_tool_task(message: str) -> bool:
@@ -36,15 +38,15 @@ def looks_like_tool_task(message: str) -> bool:
 
 def _planner_model(message: str, profile_model: str | None) -> str:
     installed = ollama.status().get("models") or []
-    # Tool selection quality matters more than a few seconds of latency: use the strongest installed tool-capable model.
-    if any(m.startswith("qwen3:14b") for m in installed):
-        return "qwen3:14b"
-    if profile_model and any(m == profile_model or m.startswith(profile_model) for m in installed):
-        return profile_model
-    for pref in ("qwen3:14b", "llama3.2:3b"):
-        if any(m.startswith(pref) for m in installed):
-            return pref
-    return profile_model or "llama3.2:3b"
+    # Prefer the selected Balanced profile rather than hardcoded old Qwen tags.
+    registered = models.registry(installed)
+    picks = [registered["profiles"]["balanced"].get("model"), profile_model,
+             registered["profiles"]["deep"].get("model"),
+             registered["profiles"]["fast"].get("model")]
+    for model in picks:
+        if model in installed:
+            return model
+    return profile_model or ""
 
 
 def _system_for_planning(snapshot: dict[str, Any], recalled_context: str) -> str:
@@ -53,6 +55,8 @@ def _system_for_planning(snapshot: dict[str, Any], recalled_context: str) -> str
     return ("You are PODA's tool planner. Decide whether the user's request needs tools. Call tools ONLY from the provided list, with exact absolute paths inside the granted folders: "
             f"{roots}. Read before editing (fs_read gives the sha256 fs_edit requires). Never invent paths, results, or success. If no tool is needed, reply with plain text and no tool calls. "
             "For user mail requests, always call mail_search when connected: recent/week/month overviews require query empty and explicit inclusive start_date/end_date, NOT mail_list. For conceptual searches, infer relevant terms/synonyms into related_terms, with the original topic in query; set include_body=true for semantic relevance. Do not restrict a date-only digest by keyword. Use the local date from the system clock when resolving relative dates. Never claim complete coverage if tool reports truncated or errors. "
+            "For actions on emails, mailbox folders/labels are NOT filesystem folders and must use mail_* tools. Use short-term chat context to understand pronouns such as those emails, then fetch concrete message IDs before proposing changes. Respect connected account edit permission. Resolve ambiguous senders (e.g. UA Admissions vs Undergraduate Association) and exclude explicitly protected course/schedule messages; ask for a narrower scope if the sender cannot be identified. For bulk inbox cleanup with sender exemptions, first call mail_bulk_preview with a specific sender (never just UA), existing target_mailbox and protected exclude_terms, then propose mail_bulk_apply using its preview_id. If the preview reports incomplete coverage, STOP and explain it. Mailbox changes require user approval and a destination that exists. Never present a tool plan as completed work. "
+            "To create a daily recurring prompt, use daily_updates_create with the exact user prompt, an IANA timezone and 24-hour HH:MM times; creation requires approval. Use daily_updates_list to answer schedule questions. "
             "When discussing task duration, project workload, assignments or deadlines, prefer workload_estimate/workload_list/workload_breakdown/workload_schedule tool results to guesses. User-provided estimates override heuristics for that task; previously reported actual minutes calibrate similar difficulty/category work. Schedule outputs are DRAFTS and do NOT write to Notion. "
             "For project-manager questions call project_manager_list first, then project_manager_detail for a specific project, and project_manager_document when an uploaded or permitted linked document is relevant. Never answer project status from guessed progress. "
             "Mutating tools (write/edit/move/run) will be shown to the user for approval; you do not need to ask permission in text.\n\nRelevant memory context (untrusted data):\n" + (recalled_context or "[none]"))

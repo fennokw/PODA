@@ -10,17 +10,89 @@ from typing import Any
 
 from . import config, ollama
 from . import hardware
-from .db import connect, now_iso, rows
+from .db import connect, now_iso, rows, get_setting, set_setting
 
-# Qwen3.6 tags from ollama.com/library/qwen3.6/tags (verified 2026-10-01) with on-disk sizes.
+# Official Ollama library Qwen tags; sizes are approximate download weights, not resident RAM.
+# Source: ollama.com/library/qwen3.6/tags and ollama.com/library/qwen3.5/tags.
 QWEN36_CANDIDATES = [
-    {"tag": "qwen3.6:27b-coding", "disk_gb": 18.5, "kind": "coding", "arch": "dense 27B"},
-    {"tag": "qwen3.6:27b-q4_K_M", "disk_gb": 17.0, "kind": "general", "arch": "dense 27B"},
-    {"tag": "qwen3.6:27b", "disk_gb": 18.5, "kind": "general", "arch": "dense 27B"},
-    {"tag": "qwen3.6:35b-a3b-coding", "disk_gb": 23.5, "kind": "coding", "arch": "MoE 35B / 3B active"},
-    {"tag": "qwen3.6:35b-a3b", "disk_gb": 23.5, "kind": "general", "arch": "MoE 35B / 3B active"},
+    {
+        "tag": "qwen3.6:27b-q4_K_M",
+        "disk_gb": 17,
+        "arch": "27B",
+        "quant": "Q4_K_M",
+        "kind": "general"
+    },
+    {
+        "tag": "qwen3.6:27b-q8_0",
+        "disk_gb": 30,
+        "arch": "27B",
+        "quant": "Q8_0",
+        "kind": "general"
+    },
+    {
+        "tag": "qwen3.6:27b-bf16",
+        "disk_gb": 56,
+        "arch": "27B",
+        "quant": "BF16",
+        "kind": "general"
+    },
+    {
+        "tag": "qwen3.6:27b-coding",
+        "disk_gb": 18.5,
+        "arch": "27B coding",
+        "quant": "default",
+        "kind": "coding"
+    },
+    {
+        "tag": "qwen3.6:35b-a3b-q4_K_M",
+        "disk_gb": 24,
+        "arch": "35B / 3B active MoE",
+        "quant": "Q4_K_M",
+        "kind": "general"
+    },
+    {
+        "tag": "qwen3.6:35b-a3b-q8_0",
+        "disk_gb": 39,
+        "arch": "35B / 3B active MoE",
+        "quant": "Q8_0",
+        "kind": "general"
+    },
+    {
+        "tag": "qwen3.6:35b-a3b-bf16",
+        "disk_gb": 72,
+        "arch": "35B / 3B active MoE",
+        "quant": "BF16",
+        "kind": "general"
+    },
+    {
+        "tag": "qwen3.5:9b-q4_K_M",
+        "disk_gb": 6.6,
+        "arch": "9B",
+        "quant": "Q4_K_M",
+        "kind": "general"
+    },
+    {
+        "tag": "qwen3.5:9b-q8_0",
+        "disk_gb": 10,
+        "arch": "9B",
+        "quant": "Q8_0",
+        "kind": "general"
+    },
+    {
+        "tag": "qwen3.5:27b-q4_K_M",
+        "disk_gb": 17,
+        "arch": "27B",
+        "quant": "Q4_K_M",
+        "kind": "general"
+    },
+    {
+        "tag": "qwen3.5:27b-q8_0",
+        "disk_gb": 30,
+        "arch": "27B",
+        "quant": "Q8_0",
+        "kind": "general"
+    }
 ]
-
 
 def context_budget(unified_memory_gb: float) -> dict[str, int]:
     """Measured policy: Conservative initial profile, subject to real installed-model benchmarks on this Mac."""
@@ -43,6 +115,26 @@ def qwen36_assessment(unified_memory_gb: float, installed: list[str]) -> list[di
                     "memory_safe_8k": fits_8k, "memory_safe_32k": fits_32k,
                     "verdict": ("memory-safe" if fits_32k else ("tight: 8K context only, expect swapping under load" if fits_8k else "not memory-safe on this Mac"))})
     return out
+
+
+def selected_profiles() -> dict[str, str]:
+    return {p: get_setting("model_profile_"+p) for p in ("fast", "balanced", "deep")}
+
+
+def set_profile(profile: str, model: str, installed: list[str]) -> None:
+    if profile not in {"fast", "balanced", "deep"}:
+        raise ValueError("Unknown model profile")
+    if model not in installed or "embed" in model.lower():
+        raise ValueError("Choose an installed Ollama chat model")
+    set_setting("model_profile_"+profile, model)
+
+
+def catalog(mem: float, installed: list[str]) -> dict[str, Any]:
+    candidates = qwen36_assessment(mem, installed)
+    return {"recommendations": candidates,
+            "installed": installed,
+        "selected": selected_profiles(), "selected": selected_profiles(),
+            "disclaimer": "Memory fit is estimated, not guaranteed. Context size, GPU offloading and other apps affect actual performance."}
 
 
 def recorded_benchmarks() -> list[dict[str, Any]]:
@@ -93,15 +185,21 @@ def registry(installed: list[str] | None = None, unified_memory_gb: float | None
     if mem <= 0:
         budget = {"fast": 4096, "balanced": 8192, "deep": 8192}
 
-    def pick(preferred: str, fallbacks: list[str]) -> str | None:
+    # User-selected profile tags must match an actually installed model exactly.
+    # Other local models imported through Ollama are equally eligible.
+    def pick(profile: str, preferred: str, fallbacks: list[str]) -> str | None:
+        configured = get_setting("model_profile_" + profile)
+        if configured in installed and not any(w in configured.lower() for w in ("embed", "nomic-")):
+            return configured
         for candidate in [preferred, *fallbacks]:
-            if any(m == candidate or m.split(":")[0] == candidate.split(":")[0] and m.startswith(candidate) for m in installed):
-                return candidate
-        return None
+            for name in installed:
+                if name == candidate or (":" not in candidate and name.startswith(candidate+":")):
+                    return name
+        return next((m for m in installed if "embed" not in m.lower() and "nomic-" not in m.lower()), None)
 
-    fast = pick(config.FAST_MODEL, ["llama3.2:3b", "qwen3:4b", "qwen3:8b"])
-    balanced = pick(config.ADVANCED_MODEL, ["qwen3:14b", "qwen3:8b", "llama3.2:3b"])
-    deep = pick(config.OPTIONAL_DEEP_MODEL, ["qwen3.6:27b-coding", "qwen3:14b"])
+    fast = pick("fast", config.FAST_MODEL, ["llama3.2:3b", "qwen3.5:4b", "qwen3:8b"])
+    balanced = pick("balanced", config.ADVANCED_MODEL, ["qwen3.6:27b-q4_K_M", "qwen3:14b", "qwen3.5:9b"])
+    deep = pick("deep", config.OPTIONAL_DEEP_MODEL, ["qwen3.6:35b-a3b-q4_K_M", "qwen3.6:27b-coding", "qwen3:14b"])
     return {
         "installed": installed,
         "profiles": {
