@@ -17,8 +17,8 @@ existing_pid="$(lsof -tiTCP:${PORT} -sTCP:LISTEN 2>/dev/null | head -1 || true)"
 if [ -n "$existing_pid" ]; then
   running_build="$(curl -fsS --max-time 1 "http://127.0.0.1:${PORT}/system/build" 2>/dev/null | .venv/bin/python -c 'import json,sys; print(json.load(sys.stdin).get("build_id",""))' 2>/dev/null || true)"
   cmd="$(ps -p "$existing_pid" -o command= 2>/dev/null || true)"
-  if [ "$running_build" = "$EXPECTED_BUILD" ]; then
-    echo "PODA build ${EXPECTED_BUILD} is already running (PID $existing_pid)."
+  if [ "$running_build" = "$EXPECTED_BUILD" ] && [ "${PODA_RESTART:-0}" != 1 ]; then
+    echo "PODA build ${EXPECTED_BUILD} is already running (PID $existing_pid). Set PODA_RESTART=1 to restart this exact checkout."
     open "http://127.0.0.1:${PORT}" || true
     exit 0
   fi
