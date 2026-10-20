@@ -150,6 +150,8 @@ def _load_extensions() -> None:
     register_extension(workload_tools.TOOLS)
     from ..project_manager import tools as project_tools
     register_extension(project_tools.TOOLS)
+    from ..daily_updates import tools as daily_tools
+    register_extension(daily_tools.TOOLS)
 
 
 _TYPE_MAP = {"string": str, "integer": int, "boolean": bool, "array": list, "object": dict}
