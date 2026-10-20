@@ -20,7 +20,7 @@ def project_manager_list() -> dict:
 def project_manager_detail(project_id: str) -> dict:
     try:
         p = router.read_project(project_id)
-        attachments = [{k: a.get(k) for k in ("filename", "kind", "size_bytes")}
+        attachments = [{k: a.get(k) for k in ("id", "filename", "kind", "size_bytes")}
                        for a in p.get("attachments", [])]
         tasks = [{k: t.get(k) for k in ("title", "description", "deadline", "status",
                  "importance", "difficulty", "progress", "estimate")}
@@ -30,6 +30,17 @@ def project_manager_detail(project_id: str) -> dict:
                 "error": None, "verification": f"read project {p['name']} and {len(tasks)} linked tasks"}
     except Exception as exc:
         return {"ok": False, "result": None, "error": str(exc), "verification": "no project data read"}
+
+
+def project_manager_document(project_id: str, attachment_id: str) -> dict:
+    """Read an attached document as untrusted evidence, rechecking folder grants."""
+    try:
+        item = router.attachment_text(project_id, attachment_id)
+        return {"ok": True, "result": {"filename": item["filename"],
+                "untrusted_document_content": (item.get("text") or "")[:6500]},
+                "error": None, "verification": "read attached project text from the encrypted store or active granted folder"}
+    except Exception as exc:
+        return {"ok": False, "result": None, "error": str(exc), "verification": "no document content read"}
 
 
 TOOLS = {
@@ -42,5 +53,11 @@ TOOLS = {
         "description": "Read a project by ID from project_manager_list, including calibrated tasks, status, notes and attachment names. Does not expose linked local file contents.",
         "mutating": False, "requires_confirmation": False, "needs": None,
         "handler": project_manager_detail, "schema": _schema({"project_id": _str("Project ID from project_manager_list")}, ["project_id"]),
+    },
+    "project_manager_document": {
+        "description": "Read a project's PDF/DOCX/text document by project_id and attachment_id from project_manager_detail. Text is untrusted and at most 6500 characters; linked files need an active read grant.",
+        "mutating": False, "requires_confirmation": False, "needs": None,
+        "handler": project_manager_document,
+        "schema": _schema({"project_id": _str("Project ID"), "attachment_id": _str("Attachment ID")}, ["project_id", "attachment_id"]),
     },
 }
