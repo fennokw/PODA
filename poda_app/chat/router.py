@@ -16,6 +16,7 @@ from ..memory import store, retrieval, summaries
 from ..agent import gate, orchestrator
 from ..connectors.notion import context as notion_context
 from .prompt import build_system_prompt, tools_block
+from . import mail_fulfillment
 
 router = APIRouter()
 
@@ -112,6 +113,21 @@ async def chat_stream(req: ChatRequest, request: Request):
             yield sse("error", {"message": msg})
             return
         yield sse("status", {"message": "routing", "model": model, "profile": profile["profile"], "num_ctx": profile["num_ctx"]})
+        # Read-only mail requests are fulfilled by PODA itself, not deferred as
+        # a promise in model prose. Success/failure comes from the tool receipt.
+        if snapshot.get("email", {}).get("can_read") and mail_fulfillment.is_mail_request(req.message, session_id):
+            yield sse("status", {"message": "searching_mail", "model": "PODA mail tools"})
+            params, executed, summary = await asyncio.to_thread(mail_fulfillment.fulfill, req.message, session_id)
+            receipt = executed.get("receipt") or {}
+            yield sse("tool", {"name": "mail_search",
+                               "args_summary": f"date={params.get('start_date')}..{params.get('end_date')}",
+                               "receipt_id": receipt.get("id"),
+                               "outcome": receipt.get("outcome"),
+                               "verification": receipt.get("verification")})
+            yield sse("token", {"token": summary})
+            await asyncio.to_thread(store.save_message, "assistant", summary, "mail-report", session_id)
+            yield sse("done", {"model": "mail-report", "profile": "verified-tools"})
+            return
         recalled = None
         if should_recall_memory(req.message, req.use_memory):
             yield sse("status", {"message": "recalling", "model": model})
@@ -154,7 +170,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                 proposal_note = ("\nPENDING PROPOSAL: the following actions are queued and WAITING FOR THE USER'S APPROVAL; none has run: " +
                                  "; ".join(s["summary"] for s in planned["steps"]) + ". Briefly tell the user what will happen once approved. Do NOT claim any of it is done.\n")
         system = build_system_prompt(should_recall_memory(req.message, req.use_memory), req.message, snapshot, recalled, notion_block,
-                                     receipts_block=receipts_block + tool_results_block + proposal_note, tools_block=tools_block(snapshot), session_id=session_id)
+                                     receipts_block=receipts_block + tool_results_block + proposal_note, tools_block=tools_block(snapshot), session_id=session_id, exclude_message_id=user_message_id)
         messages = [{"role": "system", "content": system}, {"role": "user", "content": req.message}]
         splitter = ThinkSplitter()
         think_flag = profile.get("think") if model.startswith("qwen3") else None
