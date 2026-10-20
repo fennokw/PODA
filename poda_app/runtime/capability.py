@@ -13,6 +13,8 @@ from ..connectors.email import state as email_state
 
 def manifest() -> dict[str, Any]:
     ollama_state = ollama.status()
+    from . import models
+    selected_profiles = models.registry(ollama_state.get("models") or []).get("profiles", {})
     conn = connect()
     try:
         integrations = {r["integration"]: r for r in rows(conn, "SELECT * FROM integration_state")}
@@ -37,6 +39,8 @@ def manifest() -> dict[str, Any]:
         "internet_browsing": False,
         "cloud_models": False,
         "ollama": ollama_state,
+        "selected_model_profiles": {name: item.get("model") for name,item in selected_profiles.items()},
+        "daily_updates": {"configured_locally": True, "runs_while_app_is_open": True, "cloud_scheduler": False},
         "code": {
             "can_generate_code_text": True,
             "can_create_user_code_files": fs["general_user_file_create"],
