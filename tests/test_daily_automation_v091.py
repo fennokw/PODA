@@ -82,3 +82,47 @@ def test_scoped_permission_rejects_unrelated_actions(monkeypatch, client):
         assert not ok
     finally:
         client.delete("/daily-updates/"+sid)
+
+
+def test_compound_mail_to_calendar_does_not_short_circuit():
+    from poda_app.chat.mail_fulfillment import is_mail_request, is_compound_request
+    phrase = "Review my emails for upcoming meetings and add confirmed meetings to my Notion calendar"
+    assert is_compound_request(phrase)
+    assert not is_mail_request(phrase)
+    assert is_mail_request("Review my emails from the past week")
+
+
+def test_unattended_planner_continues_after_mail_read(monkeypatch, client):
+    from poda_app.agent import tools
+    from poda_app.daily_updates import permissions
+    requested = []
+    responses = iter([
+        {"message":{"tool_calls":[{"function":{"name":"mail_search","arguments":{"query":"meeting"}}}]}},
+        {"message":{"tool_calls":[{"function":{"name":"notion_calendar_create","arguments":{
+            "title":"Confirmed meeting","start":"2026-10-21T15:00:00-04:00"}}}]}},
+        {"message":{"content":"Both steps completed.","tool_calls":[]}},
+    ])
+    monkeypatch.setattr(orchestrator.ollama,"chat",lambda *a,**k:next(responses))
+    monkeypatch.setattr(orchestrator,"_planner_model",lambda *a:"fake")
+    monkeypatch.setattr(permissions,"authorize",lambda *a:(True,"test-approved scope"))
+    def fake_execute(name,args,approved=False,session_id=None):
+        requested.append((name,approved))
+        return {"receipt":{"id":str(len(requested)),"outcome":"succeeded","verification":"test"},
+                "result":{"ok":True,"result":{"verified":True,"data":name},"error":None}}
+    monkeypatch.setattr(tools,"execute",fake_execute)
+    result=orchestrator.plan("Review my emails and add confirmed meetings to my calendar",{},
+                             unattended=True,unattended_target="test-id",unattended_revision="revision")
+    assert requested==[("mail_search",False),("notion_calendar_create",True)]
+    assert result["proposal_id"] is None
+    assert not [f for f in result["flagged"] if f["name"]=="calendar-followup"]
+
+
+def test_mail_catalog_uses_existing_nonsecret_accounts(client, monkeypatch):
+    from poda_app.connectors.email import state
+    monkeypatch.setattr(state,"list_accounts",lambda:[{"id":"saved-id","provider":"apple_mail",
+         "account_name":"MIT Mail","address_masked":"k***@mit.edu",
+         "allow_modify":1,"allow_send":0,"enabled":1}])
+    response=client.get("/daily-updates/permissions/catalog")
+    assert response.status_code==200
+    assert response.json()["mail_accounts"][0]["id"]=="saved-id"
+    assert "password" not in str(response.json()).lower()
