@@ -82,8 +82,11 @@ def save(title:str,prompt:str,times:list[str],timezone_name:str,enabled:bool=Tru
         raise ValueError("Title must be 1-120 chars; prompt must be 1-12000 chars")
     clean=clean_times(times); tz=clean_timezone(timezone_name); stamp=now_iso()
     from .permissions import prepare
-    authorized = prepare(permissions or [])
-    if mail_account_id:
+    # Pausing must never depend on still-connected providers: a revoked token
+    # must not trap the user in an enabled schedule they cannot disable.
+    # Re-enabling always revalidates the full current policy and account.
+    authorized = prepare(permissions or []) if enabled else (permissions or [])
+    if mail_account_id and enabled:
         from ..connectors.email.state import list_accounts
         if mail_account_id not in {a["id"] for a in list_accounts()}:
             raise ValueError("Select an existing connected account in the Mail screen")
