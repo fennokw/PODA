@@ -70,7 +70,9 @@ def _parse_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
     return calls
 
 
-def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", session_id: str | None = None, profile_model: str | None = None) -> dict[str, Any]:
+def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", session_id: str | None = None,
+         profile_model: str | None = None, unattended: bool = False,
+         unattended_target: str | None = None) -> dict[str, Any]:
     """Return {needs_tools, steps, rationale, executed:[{step, receipt, result}], flagged:[...], proposal_id|None}."""
     specs = tools.ollama_tool_specs(snapshot)
     out: dict[str, Any] = {"needs_tools": False, "steps": [], "rationale": "", "executed": [], "flagged": [], "proposal_id": None, "model": None}
@@ -81,6 +83,7 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
     out["model"] = model
     messages = [{"role": "system", "content": _system_for_planning(snapshot, recalled_context)}, {"role": "user", "content": message}]
     pending_mutations: list[dict[str, Any]] = []
+    unattended_writes = 0
     for _round in range(MAX_PLAN_ROUNDS):
         try:
             response = ollama.chat(messages, model, options={"temperature": 0.0, "num_ctx": 16384, "num_predict": 900}, tools=specs, think=False if model.startswith("qwen3") else None)
@@ -112,6 +115,22 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
             spec = tools.TOOLS[name]
             step = {"tool": name, "args": args, "summary": tools.summarize_args(name, args), "requires_confirmation": bool(spec["requires_confirmation"]), "mutating": bool(spec["mutating"])}
             if spec["mutating"]:
+                if unattended:
+                    if name == "notion_calendar_create" and unattended_target and unattended_writes < 3:
+                        # Checked at the actual write as well; never trust model arguments
+                        # to select a different Notion destination.
+                        from ..connectors.notion import state as notion_state
+                        cfg = notion_state.get_config() or {}
+                        if cfg.get("data_source_id") == unattended_target and cfg.get("insert_verified"):
+                            run = tools.execute(name, args, approved=True, session_id=session_id)
+                            out["executed"].append({"step": step, "receipt": run["receipt"], "result": run["result"]})
+                            payload = run["result"].get("result") if run["result"].get("ok") else {"error": run["result"].get("error")}
+                            tool_results_for_model.append({"role": "tool", "content": json.dumps(payload, default=str)[:6000]})
+                            unattended_writes += 1
+                            continue
+                    out["flagged"].append({"name": name, "reason": "requires interactive approval"})
+                    tool_results_for_model.append({"role": "tool", "content": json.dumps({"error": "not performed; interactive approval required"})})
+                    continue
                 pending_mutations.append(step)
                 tool_results_for_model.append({"role": "tool", "content": json.dumps({"status": "queued for user approval", "tool": name})})
                 continue
