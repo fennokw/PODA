@@ -15,11 +15,11 @@
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const tag = document.activeElement?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || document.activeElement?.isContentEditable) return;
-    const map = { 0: 'projects', 1: 'ask', 2: 'memory', 3: 'projects', 4: 'notion', 5: 'mail', 6: 'files', 7: 'privacy', 8: 'system', 9: 'personalize' };
+    const map = { 0: 'daily', 1: 'ask', 2: 'memory', 3: 'projects', 4: 'notion', 5: 'mail', 6: 'files', 7: 'privacy', 8: 'system', 9: 'personalize' };
     if (map[e.key]) { e.preventDefault(); if (map[e.key] === 'memory') window.location.assign('/memory-viewer'); else navigate(map[e.key]); }
   });
 
-  const screens = [['ask', 'Ask', '1'], ['personalize', 'Personalize', '9'], ['projects', 'Project Manager', '3'], ['notion', 'Notion', '4'], ['mail', 'Mail', '5'], ['files', 'Files & Agent', '6'], ['privacy', 'Privacy', '7'], ['system', 'System', '8']];
+  const screens = [['ask', 'Ask', '1'], ['personalize', 'Personalize', '9'], ['projects', 'Project Manager', '3'], ['notion', 'Notion', '4'], ['mail', 'Mail', '5'], ['files', 'Files & Agent', '6'], ['privacy', 'Privacy', '7'], ['daily', 'Daily Updates', '0'], ['system', 'System', '8']];
   for (const [name, label, key] of screens) registerCommand({ label: `Go to ${label}`, kind: 'Screen', key, keywords: name === 'mail' ? 'email inbox gmail apple mail' : '', run: () => navigate(name) });
   registerCommand({ label: 'Open memory viewer', kind: 'Screen', key: '2', keywords: 'open3d 3d second brain', run: () => window.location.assign('/memory-viewer') });
   registerCommand({ label: 'Check capabilities', kind: 'Action', keywords: 'ledger status', run: async () => { const c = await api('/capabilities'); toast(`Ollama ${c.ollama?.reachable ? 'reachable' : 'unreachable'} · Notion ${c.notion?.status || 'DISCONNECTED'} · ${c.filesystem?.granted_roots?.length || 0} folder grants`); navigate('system'); } });
@@ -988,8 +988,8 @@
   // =====================================================================
   route('system', async ({ view, inspector, setTitle, setInspectorTitle }) => {
     setTitle('System'); setInspectorTitle('Build'); $('#viewCrumb').textContent = 'Hardware, models, ledger';
-    const hwBox = el('div'); const modelsBox = el('div'); const benchBox = el('div'); const ledgerBox = el('div');
-    view.appendChild(el('div', { class: 'screen stack' }, section('This Mac', 'probed at request time', hwBox), section('Model profiles', 'selected only from installed models', modelsBox), section('Benchmarks', 'measured on this hardware', benchBox), section('Capability ledger', 'live and persisted', ledgerBox)));
+    const hwBox = el('div'); const modelsBox = el('div'); const benchBox = el('div'); const ledgerBox = el('div'); const managerBox = el('div');
+    view.appendChild(el('div', { class: 'screen stack' }, section('This Mac', 'probed at request time', hwBox), section('Model installer and profile selection', 'local Ollama', managerBox), section('Model profiles', 'selected only from installed models', modelsBox), section('Benchmarks', 'measured on this hardware', benchBox), section('Capability ledger', 'live and persisted', ledgerBox)));
     try { const b = await api('/system/build'); const st = await api('/system/startup').catch(() => null); inspector.append(kv([['Version', b.version], ['Build ID', el('span', { class: 'mono' }, b.build_id)], ['Memory viewer', b.memory_viewer], ['Database', el('span', { class: 'mono small' }, b.db_path)], ['Port', b.port]]), st ? el('details', { class: 'thought-panel' }, el('summary', {}, 'Startup report'), el('pre', {}, JSON.stringify(st, null, 2))) : null); } catch (err) { inspector.appendChild(errorNode(err)); }
     load(hwBox, async () => {
       const h = await api('/system/hardware');
@@ -1022,6 +1022,7 @@
       try { const r = await api('/system/benchmark', { method: 'POST', body: { model, num_ctx } }); t.remove(); toast(`${model}: ${r.gen_tok_s} tok/s, first token ${r.first_token_s}s, ${fmtBytes(r.memory_bytes)}`, 'ok', 8000); drawBench(); }
       catch (err) { t.remove(); toast(errorDetail(err).message, 'danger'); }
     }
+    if (window.PODAModelManager?.mount) window.PODAModelManager.mount(managerBox);
     drawModels(); drawBench();
     load(ledgerBox, async () => { const l = await api('/capabilities/ledger'); return el('div', { class: 'stack-sm' }, el('div', { class: 'row' }, pill(`Ollama ${l.current?.ollama?.reachable ? 'reachable' : 'unreachable'}`, l.current?.ollama?.reachable ? 'ok' : 'danger'), statusPill(l.current?.notion?.status), pill(`${(l.current?.filesystem?.granted_roots || []).length} folder grants`, 'accent'), pill(l.current?.memory?.encrypted_at_rest ? 'encrypted at rest' : 'not encrypted', l.current?.memory?.encrypted_at_rest ? 'ok' : 'danger')), jsonBox(l.current)); });
   });
