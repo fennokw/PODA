@@ -56,3 +56,29 @@ def test_no_approval_proposal_for_unattended_writes(monkeypatch):
     finally:
         if old is None:tools.TOOLS.pop("write_mock",None)
         else:tools.TOOLS["write_mock"]=old
+
+
+def test_scoped_permission_rejects_unrelated_actions(monkeypatch, client):
+    from poda_app.daily_updates import permissions
+    monkeypatch.setattr(permissions, "prepare", lambda grants: grants)
+    req={"title":"Morning task","prompt":"Do approved work","times":["06:30"],"timezone":"UTC",
+         "permissions":[{"tool":"mail_mark","scope":{"account_id":"acct","action":"mark_read"}}]}
+    made=client.post("/daily-updates",json=req)
+    assert made.status_code==200, made.text
+    task=made.json()["schedule"]
+    sid=task["id"]
+    try:
+        monkeypatch.setattr(permissions, "_matches", lambda policy,name,args:
+            name=="mail_mark" and args.get("action")=="mark_read" and args.get("account_id")=="acct")
+        monkeypatch.setattr(permissions, "PERMISSION_SPECS", {**permissions.PERMISSION_SPECS,"mail_mark":("Mark",{"account_id":"Account","action":"Action"})})
+        monkeypatch.setattr(permissions, "authorize", permissions.authorize)
+        from poda_app.agent import tools
+        monkeypatch.setattr(tools,"availability",lambda *a,**k:{"mail_mark":{"available":True}})
+        ok,_=permissions.authorize(sid,task["updated_at"],"mail_mark",{"account_id":"acct","action":"mark_read"})
+        assert ok
+        ok,_=permissions.authorize(sid,task["updated_at"],"mail_mark",{"account_id":"other","action":"mark_read"})
+        assert not ok
+        ok,_=permissions.authorize(sid,"stale-revision","mail_mark",{"account_id":"acct","action":"mark_read"})
+        assert not ok
+    finally:
+        client.delete("/daily-updates/"+sid)
