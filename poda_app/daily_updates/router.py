@@ -17,9 +17,11 @@ class DailyPrompt(BaseModel):
     times: list[str] = Field(min_length=1,max_length=12)
     timezone: str = Field(min_length=2,max_length=80)
     enabled: bool = True
+    allow_calendar_writes: bool = False
 
 def _save(data:DailyPrompt,id:str|None=None):
-    try:return service.save(data.title,data.prompt,data.times,data.timezone,data.enabled,id)
+    try:return service.save(data.title,data.prompt,data.times,data.timezone,data.enabled,id,
+                            allow_calendar_writes=data.allow_calendar_writes)
     except KeyError as exc:raise HTTPException(status_code=404,detail=str(exc)) from exc
     except ValueError as exc:raise HTTPException(status_code=422,detail=str(exc)) from exc
 
