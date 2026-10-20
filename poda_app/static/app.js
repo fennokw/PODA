@@ -15,11 +15,11 @@
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const tag = document.activeElement?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || document.activeElement?.isContentEditable) return;
-    const map = { 0: 'workload', 1: 'ask', 2: 'memory', 3: 'plan', 4: 'notion', 5: 'mail', 6: 'files', 7: 'privacy', 8: 'system', 9: 'personalize' };
+    const map = { 0: 'projects', 1: 'ask', 2: 'memory', 3: 'projects', 4: 'notion', 5: 'mail', 6: 'files', 7: 'privacy', 8: 'system', 9: 'personalize' };
     if (map[e.key]) { e.preventDefault(); if (map[e.key] === 'memory') window.location.assign('/memory-viewer'); else navigate(map[e.key]); }
   });
 
-  const screens = [['ask', 'Ask', '1'], ['personalize', 'Personalize', '9'], ['workload', 'Workload', '0'], ['plan', 'Plan', '3'], ['notion', 'Notion', '4'], ['mail', 'Mail', '5'], ['files', 'Files & Agent', '6'], ['privacy', 'Privacy', '7'], ['system', 'System', '8']];
+  const screens = [['ask', 'Ask', '1'], ['personalize', 'Personalize', '9'], ['projects', 'Project Manager', '3'], ['notion', 'Notion', '4'], ['mail', 'Mail', '5'], ['files', 'Files & Agent', '6'], ['privacy', 'Privacy', '7'], ['system', 'System', '8']];
   for (const [name, label, key] of screens) registerCommand({ label: `Go to ${label}`, kind: 'Screen', key, keywords: name === 'mail' ? 'email inbox gmail apple mail' : '', run: () => navigate(name) });
   registerCommand({ label: 'Open memory viewer', kind: 'Screen', key: '2', keywords: 'open3d 3d second brain', run: () => window.location.assign('/memory-viewer') });
   registerCommand({ label: 'Check capabilities', kind: 'Action', keywords: 'ledger status', run: async () => { const c = await api('/capabilities'); toast(`Ollama ${c.ollama?.reachable ? 'reachable' : 'unreachable'} · Notion ${c.notion?.status || 'DISCONNECTED'} · ${c.filesystem?.granted_roots?.length || 0} folder grants`); navigate('system'); } });
@@ -369,6 +369,7 @@
       el('div', { class: 'stack-sm' }, el('h3', {}, 'Supported exports'),
         el('p', { class: 'small muted' }, 'Official ChatGPT exports with conversations.json and Claude exports containing conversations/chat_messages. Nested JSON exports are detected heuristically. Attachments are ignored.')));
     await refreshHistory();
+    if (window.PODAPace?.mount) await window.PODAPace.mount(view, inspector);
   });
 
   // =====================================================================
