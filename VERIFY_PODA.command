@@ -16,24 +16,42 @@ check "No remote CDN/font/analytics references in static" "! grep -rEi 'https?:/
 check "No cloud model SDK in backend" "! grep -rEi 'openai|anthropic|cohere|gemini' poda_app --include=*.py"
 if command -v node >/dev/null 2>&1; then for f in poda_app/static/*.js; do check "JS syntax $f" "node --check $f"; done; fi
 echo "Running pytest (isolated temp database) ..."
-if .venv/bin/python -m pytest -q tests 2>&1 | tail -3; then :; fi
-.venv/bin/python -m pytest -q tests >/dev/null 2>&1 && printf '[OK]   pytest suite\n' || { printf '[FAIL] pytest suite\n'; fail=1; }
-echo "Live boot check with a fresh throwaway empty database (port 8798) ..."
-TMP="$(mktemp -d)"; echo "Using an empty test-only database; personal data is never copied."
-PODA_DATA_DIR="$TMP" PODA_BACKUP_DIR="$TMP/backups" PODA_DB_ENCRYPTION=off PODA_PORT=8798 .venv/bin/python -m uvicorn poda_app.main:app --host 127.0.0.1 --port 8798 >"$TMP/server.log" 2>&1 &
-PID=$!
-ok=0; for _ in $(seq 1 60); do if curl -fsS --max-time 1 http://127.0.0.1:8798/system/build >/dev/null 2>&1; then ok=1; break; fi; sleep .25; done
-if [ "$ok" = 1 ]; then
-  BUILD="$(curl -s http://127.0.0.1:8798/system/build | .venv/bin/python -c 'import json,sys; print(json.load(sys.stdin)["build_id"])')"
-  check "Live server reports build $BUILD" "test -n '$BUILD'"
-  COOKIE="$(curl -s -D - -o /dev/null http://127.0.0.1:8798/ | grep -i 'set-cookie' | sed 's/.*poda_session=\([^;]*\).*/\1/')"
-  check "Protected route rejects missing session" "test \"\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8798/capabilities)\" = 401"
-  check "Protected route accepts session cookie" "test \"\$(curl -s -o /dev/null -w '%{http_code}' -b poda_session=$COOKIE http://127.0.0.1:8798/capabilities)\" = 200"
-  check "Memory scene loads on migrated copy" "curl -s -b poda_session=$COOKIE http://127.0.0.1:8798/memory/open3d/scene | grep -q cloud_volume"
-  check "Database copy encrypted on disk (or encryption disabled)" "! head -c 16 '$TMP/poda.db' | grep -q 'SQLite format 3' || [ \"\${PODA_DB_ENCRYPTION:-auto}\" = off ]"
+TEST_LOG="$(mktemp)"
+if .venv/bin/python -m pytest -q tests >"$TEST_LOG" 2>&1; then
+  tail -4 "$TEST_LOG"; printf '[OK] pytest suite\n'
 else
-  printf '[FAIL] live server did not start\n'; tail -20 "$TMP/server.log"; fail=1
+  tail -85 "$TEST_LOG"; printf '[FAIL] pytest suite\n'; fail=1
 fi
-kill $PID 2>/dev/null || true; rm -rf "$TMP"
+rm -f "$TEST_LOG"
+echo "Live boot check with a fresh throwaway empty database (port 8798) ..."
+TMP="$(mktemp -d)"
+PID=""
+cleanup_verify(){ if [ -n "$PID" ]; then kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true; fi; rm -rf "$TMP"; }
+trap cleanup_verify EXIT
+echo "Using an empty test-only database; personal data is never copied."
+if lsof -tiTCP:8798 -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "[FAIL] Smoke-test port 8798 is already occupied; refusing to inspect another process."; fail=1
+else
+  PODA_DATA_DIR="$TMP" PODA_BACKUP_DIR="$TMP/backups" PODA_DB_ENCRYPTION=off PODA_PORT=8798 .venv/bin/python -m uvicorn poda_app.main:app --host 127.0.0.1 --port 8798 >"$TMP/server.log" 2>&1 &
+  PID=$!
+  ok=0
+  for _ in $(seq 1 60); do
+    if ! kill -0 "$PID" 2>/dev/null; then break; fi
+    if curl -fsS --max-time 1 http://127.0.0.1:8798/system/build >/dev/null 2>&1; then ok=1; break; fi
+    sleep .25
+  done
+  if [ "$ok" = 1 ]; then
+    BUILD="$(curl -fsS http://127.0.0.1:8798/system/build | .venv/bin/python -c 'import json,sys; print(json.load(sys.stdin)["build_id"])')"
+    check "Live server reports build $BUILD" "test -n '$BUILD'"
+    COOKIE="$(curl -s -D - -o /dev/null http://127.0.0.1:8798/ | grep -i 'set-cookie' | sed 's/.*poda_session=\([^;]*\).*/\1/')"
+    check "Protected route rejects missing session" "test \"\$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8798/capabilities)\" = 401"
+    check "Protected route accepts session cookie" "test \"\$(curl -s -o /dev/null -w '%{http_code}' -b poda_session=$COOKIE http://127.0.0.1:8798/capabilities)\" = 200"
+    check "Memory scene loads on isolated copy" "curl -s -b poda_session=$COOKIE http://127.0.0.1:8798/memory/open3d/scene | grep -q cloud_volume"
+    check "Isolated database follows intentionally disabled encryption mode" "head -c 16 '$TMP/poda.db' | grep -q 'SQLite format 3'"
+    check "Production mode defaults to required encryption" ".venv/bin/python -c 'from poda_app.runtime.config import DB_ENCRYPTION; assert DB_ENCRYPTION == \"required\"'"
+  else
+    printf '[FAIL] Fresh live server did not start\n'; tail -20 "$TMP/server.log"; fail=1
+  fi
+fi
 if [ "$fail" -ne 0 ]; then echo "PODA v$VERSION verification FAILED."; exit 1; fi
 echo "PODA v$VERSION verification PASSED."
