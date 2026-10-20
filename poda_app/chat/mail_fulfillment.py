@@ -142,10 +142,15 @@ def parameters(message: str, session_id: str | None, now: datetime | None = None
             "related_terms": related, "limit": 80, "include_body": True}
 
 
-def _evaluate(message: dict[str, Any]) -> tuple[int, list[str]]:
+def _evaluate(message: dict[str, Any], terms: list[str] | None = None) -> tuple[int, list[str]]:
     content = " ".join(str(message.get(k) or "") for k in ("subject", "snippet")).lower()
     score = 0
     labels = []
+    concepts = [term.strip().lower() for term in (terms or []) if len(term.strip()) >= 4]
+    topic_matches = sum(1 for term in concepts if term in content)
+    if topic_matches:
+        score += min(8, topic_matches * 3)
+        labels.append("Relevant to search")
     if any(w in content for w in _ACTION_WORDS):
         score += 5
         labels.append("Action requested")
@@ -173,7 +178,8 @@ def report(params: dict[str, Any], outcome: dict[str, Any]) -> str:
         return f"The email search did not complete: {error}. I cannot report findings until the search succeeds."
     data = result.get("result") or {}
     messages = data.get("messages") or []
-    scored = [(score, labels, item) for item in messages for score, labels in [_evaluate(item)]]
+    terms = [params.get("query") or "", *(params.get("related_terms") or [])]
+    scored = [(score, labels, item) for item in messages for score, labels in [_evaluate(item, terms)]]
     scored.sort(key=lambda v: (v[0], v[2].get("date") or ""), reverse=True)
     important = [(score, labels, row) for score, labels, row in scored if score >= 3]
     period = (f"{params['start_date']} through {params['end_date']}" if params.get("start_date") and params.get("end_date") else "the searched mailboxes")
