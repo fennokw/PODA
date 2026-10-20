@@ -1,4 +1,4 @@
-/* Project Manager — understated glass, blue gradients, responsive grid. */
+/* Project Manager - understated glass, blue gradients, responsive grid. */
 .pm-screen {max-width:1320px;gap:24px;padding-bottom:40px}
 .pm-screen .card {border-color:rgba(110,169,228,.19)}
 .pm-header {display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap}
