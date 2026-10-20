@@ -1,5 +1,11 @@
 # PODA — Personal Organization Digital Assistant
 
+## PODA v0.9.1: reliable daily automations and safer local verification
+
+This maintenance release corrects two misleading/failing local smoke checks, improves re-launch behavior when the same checkout has an older server process on port 8787, and makes automated mail-to-calendar prompts continue past mail search. Unattended actions require specific, revocable permissions and independently verified receipts; no fixed three-calendar-item limit or legacy cap checkbox remains. Daily Automation loads connected Mail accounts from Mail settings into a dropdown (no re-entered mail passwords or account IDs). Production databases still require encryption, while synthetic verification databases intentionally run unencrypted.
+
+**Upgrade:** Download the latest source ZIP or pull `main`, quit an old PODA instance via `STOP_PODA.command`, and run `VERIFY_PODA.command` then `start_poda.command`. Existing private state is stored outside the source checkout under Application Support.
+
 ## PODA v0.9.0: contextual actions, model choice, and Daily Updates
 
 ### Contextual intent: mailbox actions are not filesystem actions
@@ -16,15 +22,15 @@ The catalog lists official Qwen 3.6 and Qwen 3.5 variants, with selectable Q4_K_
 
 Press **Install selected quantization in Terminal**, confirm, and PODA opens a local `.command` script containing the exact `ollama pull MODEL:TAG` command. It does not pull models silently, route inference to external services, or claim an installation succeeded before Ollama finishes. After installation, refresh System and explicitly choose the newly installed model for a profile. Other local models can be installed by entering any syntactically valid Ollama tag in **Install model...**. Only model downloads contact the Ollama model registry.
 
-### Daily Updates: recurring private prompts
+### Daily Automation: recurring private prompts
 
-Open **Daily Updates** and create a named prompt: enter its full question, one to twelve daily times in 24-hour format (`08:00, 17:30`), and an IANA timezone (such as `America/New_York`). Choose whether it is enabled, edit/pause/remove it later, or press **Run now** to execute immediately. PODA stores both the schedules and each resulting answer in its encrypted local database. Completed answers appear in the Daily Updates interface, and PODA asks macOS to show a local notification (subject to the system's notification permissions). No cloud push or third-party scheduler is used.
+Open **Daily Automation** and create a named prompt: enter its full question, one to twelve daily times in 24-hour format (`08:00, 17:30`), and an IANA timezone (such as `America/New_York`). Choose whether it is enabled, edit/pause/remove it later, or press **Run now** to execute immediately. PODA stores both the schedules and each resulting answer in its encrypted local database. Completed answers appear in the Daily Automation interface, and PODA asks macOS to show a local notification (subject to the system's notification permissions). No cloud push or third-party scheduler is used.
 
 A user may also ask in normal chat to create a recurring update. PODA exposes a **confirmation-gated** `daily_updates_create` tool, so scheduling only occurs after an explicit approved proposal.
 
 **Operational constraints:** the scheduler runs *inside the PODA server process*. Scheduled times require PODA to be open, the Mac to be awake and the Ollama models available. A short ten-minute grace window handles late wakeups; missed runs outside that window are not automatically replayed. Every daily time slot is claimed atomically in SQLite to prevent duplicate firing after retries/restarts, including daylight-saving changes. Schedules do not run remotely while the Mac is powered off, and a macOS notification is not guaranteed unless allowed for the local process.
 
-The prompt executes through the usual local PODA chat pipeline, including authorized read-only integrations, but **mail sends, file edits, Notion writes and any other mutating actions cannot be performed unattended**. They still require an explicit interactive approval in PODA.
+The prompt executes with the same connected tools as normal chat but without adding its messages to chat memory. A per-automation policy may preauthorize specific Notion additions/edits, mail actions on a selected connected account, or scoped file/project operations. Non-authorized writes remain blocked. There is no per-run calendar-edit count limit; model and runtime safety budgets still apply. Results, action receipts and errors remain visible in automation history.
 
 ---
 
@@ -40,11 +46,11 @@ The prompt executes through the usual local PODA chat pipeline, including author
 - Link computer files through the existing Files & Agent folder-grant system. Links grant **no new permissions** and are revalidated every time a file is read. Revoking the grant blocks future access.
 - Generate a draft work schedule, constrained by importance, due dates, individual estimates, per-day work preferences, and Notion calendar events **when connected**. No Notion writes occur automatically.
 
-**Personalize → Personal work-speed calibration** now contains example-based pacing controls. Describe an assignment, set its category and difficulty, enter how long you expect it to take, optionally record actual completion time, and optionally upload the relevant work. These examples affect the same category- and difficulty-weighted estimation engine as Project Manager, but they are stored as *calibration examples*, not fabricated outstanding tasks. You can inspect and delete examples at any time. Your workday hours, session duration, breaks, daily workload cap, and weekend preference also live here.
+**Personalize → Personal work-speed calibration** now contains example-based pacing controls. Describe an assignment, set its category and difficulty, enter how long you expect it to take, optionally record actual completion time, and optionally upload the relevant work. These examples affect the same category- and difficulty-weighted estimation engine as Project Manager, but they are stored as *calibration examples*, not fabricated outstanding tasks. You can inspect and delete examples at any time. The scheduling inputs are now only nightly sleep, daily meals, and personal free-time allowances; work blocks are inferred from available connected calendar time.
 
 **Short-term working context and second-brain graduation:** PODA uses a rolling six-exchange window from its existing encrypted message store to interpret follow-up questions without an expensive long-term memory query. This is not a second permanent memory database. As the chat grows, older exchanges are promoted to paired, visible second-brain nodes, and selecting **New chat** finalizes the remaining exchanges. A server restart reconciles any pending messages. Explicit historical questions can still retrieve long-term memories through the graph.
 
-**Receipt-grounded mail reviews:** When authorized mail search is appropriate, PODA now runs its read-only search **before** presenting an answer. It reports concrete findings or a clear failure/coverage limitation instead of answering only “I will search.” Date-only inbox requests stay broad; topic queries use bounded lexical alternatives and optional locally generated Ollama synonyms. Its importance and meeting classification is heuristic: it can miss nuances, so it must never label an incomplete scan exhaustive. Every search remains within the connected account permissions and local Ollama inference. No email is sent or modified without the established approval workflow.
+**Receipt-grounded mail reviews:** When authorized mail search is appropriate, PODA now runs its read-only search **before** presenting an answer. It reports concrete findings or a clear failure/coverage limitation instead of answering only “I will search.” Date-only inbox requests stay broad; topic queries use bounded lexical alternatives and optional locally generated Ollama synonyms. Its importance and meeting classification is heuristic: it can miss nuances, so it must never label an incomplete scan exhaustive. Every search remains within the connected account permissions and local Ollama inference. Email sends or modifications require ordinary interactive approval unless a daily automation has been explicitly granted an exact, revocable permission for that account and action.
 
 ### Migrating from v0.7.0
 
@@ -57,7 +63,7 @@ The old Plan and Workload screens are no longer displayed in the main navigation
 
 PODA is a self-hosted web application for **one Apple Silicon Mac**. Its chat models, embeddings, memory database, task planner and visual second brain run locally. Instead of relying on a hosted AI service to remember your life, PODA maintains an inspectable, editable local record of the context you choose to retain. It can also connect, with your permission, to **the Notion database behind Notion Calendar**, macOS Apple Mail, and optionally Gmail IMAP/SMTP. Those integrations necessarily contact external services; PODA's AI inference does not.
 
-> **Public source release v0.9.0-public.** This repository intentionally contains **no personal memories, chat transcripts, credentials, connected accounts, historical databases, logs, screenshots or private Git history**. On first run it creates a brand-new, encrypted memory database in `~/Library/Application Support/PODA-Public/`. It does not import or modify another PODA installation. The downloadable ZIP is a source repository, **not a signed Mac app**. See [Security and limitations](#security-and-limitations).
+> **Public source release v0.9.1-public.** This repository intentionally contains **no personal memories, chat transcripts, credentials, connected accounts, historical databases, logs, screenshots or private Git history**. On first run it creates a brand-new, encrypted memory database in `~/Library/Application Support/PODA-Public/`. It does not import or modify another PODA installation. The downloadable ZIP is a source repository, **not a signed Mac app**. See [Security and limitations](#security-and-limitations).
 
 ## Why PODA exists
 
