@@ -12,7 +12,7 @@
     document.getElementById('viewCrumb').textContent='Scheduled questions · notifications · history';
     const root=el('div',{class:'screen stack daily-screen'});view.append(root);
     inspector.append(note('Prompts run locally when PODA is open. A Mac asleep or shut down cannot execute them until PODA is awake within the 10-minute catch-up window.'),
-      note('Runs are isolated from chat messages and memory. Results appear only in automation history. Email and file changes require interactive approval; permitted Notion additions can run unattended when explicitly enabled.'));
+      note('Runs are isolated from chat memory. Explicitly authorized email, calendar, file, and task changes can run unattended; other actions still require approval.'));
     let editing=null;
     const render=async()=>{
       let data;
@@ -28,11 +28,14 @@
       const times=input('times','08:00','text',{required:true,placeholder:'08:00, 17:00'});
       const tz=input('timezone',Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC','text',{required:true});
       const enabled=el('input',{type:'checkbox',checked:true});
-      const allowCalendar=el('input',{type:'checkbox',checked:false});
       const permissionArea=el('div',{class:'stack-sm'});
       const configuredPermissions=[];
-      let permissionCatalog=[];
-      try { permissionCatalog=(await api('/daily-updates/permissions/catalog')).permissions||[]; } catch(e) { permissionArea.append(note(errorDetail(e).message)); }
+      let permissionCatalog=[],mailAccounts=[];
+      try {
+        const grants=await api('/daily-updates/permissions/catalog');
+        permissionCatalog=grants.permissions||[];
+        mailAccounts=grants.mail_accounts||[];
+      } catch(e) { permissionArea.append(note(errorDetail(e).message)); }
       const redrawPermissions=()=>{
         permissionArea.replaceChildren(el('h4',{},'Persistent unattended permissions'),
           note('Select only actions and exact targets this automation may change. Revoked when paused, edited or deleted. Sensitive permissions can modify real data without asking again.'));
@@ -43,7 +46,19 @@
           const section=el('div',{class:'stack-sm'},el('label',{class:'check'},check,entry.label+' ('+entry.tool+')'),
             !entry.available?note(entry.reason):null);
           for(const f of entry.fields||[]){
-            const ctl=input(f.name,grant?.scope?.[f.name]||'','text',{placeholder:f.label});
+            let ctl;
+            if(f.name==='account_id'){
+              ctl=el('select',{class:'input',name:f.name},
+                el('option',{value:''},mailAccounts.length?'Select an existing Mail account':'No connected Mail accounts'),
+                ...mailAccounts.map(a=>el('option',{value:a.id},a.account_name+' · '+a.address_masked)));
+              ctl.value=grant?.scope?.[f.name]||'';
+            }else if(f.name==='action'){
+              ctl=el('select',{class:'input',name:f.name},
+                ...['mark_read','mark_unread','flag','unflag','archive'].map(x=>el('option',{value:x},x.replace('_',' '))));
+              ctl.value=grant?.scope?.[f.name]||'mark_read';
+            }else{
+              ctl=input(f.name,grant?.scope?.[f.name]||'','text',{placeholder:f.label});
+            }
             scopeControls[f.name]=ctl;section.append(field(f.label,ctl));
           }
           check.onchange=()=>{
@@ -51,8 +66,15 @@
             if(idx>=0)configuredPermissions.splice(idx,1);
             if(check.checked)configuredPermissions.push({tool:entry.tool,scope:Object.fromEntries(Object.entries(scopeControls).map(([k,v])=>[k,v.value]))});
           };
-          for(const [key,ctl] of Object.entries(scopeControls))ctl.oninput=()=>{
-            const g=configuredPermissions.find(p=>p.tool===entry.tool);if(g)g.scope[key]=ctl.value;
+          for(const [key,ctl] of Object.entries(scopeControls)){
+            const storeScope=()=>{
+              const g=configuredPermissions.find(p=>p.tool===entry.tool);if(g)g.scope[key]=ctl.value;
+            };
+            ctl.oninput=storeScope;ctl.onchange=storeScope;
+          }
+          /* fields synchronize the currently enabled scoped grant */
+          if(false)()=>{
+            /* noop */
           };
           permissionArea.append(section);
         }
@@ -63,13 +85,12 @@
         field('Name',title),field('Automation prompt',prompt),
         field('Times (24-hour, comma separated)',times),field('Time zone (IANA)',tz),
         el('label',{class:'check'},enabled,'Active'),
-        el('label',{class:'check'},allowCalendar,'Authorize up to 3 new Notion calendar items per run (connected verified calendar only)'),
-        note('Granular permissions below take precedence over the legacy calendar checkbox.'),permissionArea,save);
+        permissionArea,save);
       form.onsubmit=async e=>{
         e.preventDefault();save.disabled=true;
         const payload={title:title.value,prompt:prompt.value,times:times.value.split(',').map(x=>x.trim()).filter(Boolean),
                        timezone:tz.value.trim(),enabled:enabled.checked,
-                       allow_calendar_writes:allowCalendar.checked,permissions:configuredPermissions};
+                       permissions:configuredPermissions};
         try{
           await api(editing?'/daily-updates/'+encodeURIComponent(editing):'/daily-updates',
             {method:editing?'PUT':'POST',body:payload});
@@ -92,14 +113,14 @@
             }),
             button('Edit',()=>{
               editing=s.id;title.value=s.title;prompt.value=s.prompt;times.value=s.times.join(', ');
-              tz.value=s.timezone;enabled.checked=s.enabled;allowCalendar.checked=!!s.calendar_write_target;
+              tz.value=s.timezone;enabled.checked=s.enabled;
               configuredPermissions.splice(0,configuredPermissions.length,...(JSON.parse(s.permissions_json||'[]')));
               redrawPermissions();save.textContent='Save changes';title.focus();
             }),
             button(s.enabled?'Pause':'Resume',async()=>{
               try{
                 await api('/daily-updates/'+encodeURIComponent(s.id),{method:'PUT',
-                  body:{title:s.title,prompt:s.prompt,times:s.times,timezone:s.timezone,enabled:!s.enabled,allow_calendar_writes:false,permissions:JSON.parse(s.permissions_json||'[]')}});
+                  body:{title:s.title,prompt:s.prompt,times:s.times,timezone:s.timezone,enabled:!s.enabled,permissions:JSON.parse(s.permissions_json||'[]')}});
                 render();
               }catch(err){toast(errorDetail(err).message,'danger');}
             }),
