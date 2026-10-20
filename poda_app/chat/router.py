@@ -90,7 +90,8 @@ async def chat_stream(req: ChatRequest, request: Request):
 
 
 async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = False,
-                   unattended_target: str | None = None, unattended_revision: str | None = None):
+                   unattended_target: str | None = None, unattended_revision: str | None = None,
+                   unattended_mail_account: str | None = None):
     """Internal execution path. Only the trusted scheduler supplies unattended_target.
 
     Never expose these privileges as ChatRequest fields or HTTP query parameters.
@@ -165,7 +166,7 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
             planner_ctx = ("RECENT ACTIVE CONVERSATION (not tool evidence):\n" + recent_dialogue +
                            "\n\n" + recalled_ctx)
             planned = await asyncio.to_thread(orchestrator.plan, req.message, snapshot, planner_ctx, session_id, model,
-                                              ephemeral, unattended_target, unattended_revision)
+                                              ephemeral, unattended_target, unattended_revision, unattended_mail_account)
             if (planned.get("executed") or planned.get("proposal_id")) and profile.get("profile") == "fast":
                 # Grounded answers over tool results need the stronger model; swap before composing the final reply.
                 upgraded = await asyncio.to_thread(models.resolve, req.message, "advanced", req.thinking_level)
