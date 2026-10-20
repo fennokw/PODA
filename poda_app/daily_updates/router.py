@@ -18,19 +18,20 @@ class DailyPrompt(BaseModel):
     times: list[str] = Field(min_length=1,max_length=12)
     timezone: str = Field(min_length=2,max_length=80)
     enabled: bool = True
-    allow_calendar_writes: bool = False
     permissions: list[dict[str,Any]] = []
 
 def _save(data:DailyPrompt,id:str|None=None):
     try:return service.save(data.title,data.prompt,data.times,data.timezone,data.enabled,id,
-                            allow_calendar_writes=data.allow_calendar_writes,permissions=data.permissions)
+                            permissions=data.permissions)
     except KeyError as exc:raise HTTPException(status_code=404,detail=str(exc)) from exc
     except ValueError as exc:raise HTTPException(status_code=422,detail=str(exc)) from exc
 
 @router.get("/permissions/catalog")
 def permission_catalog():
     from .permissions import catalog
-    return {"permissions":catalog()}
+    from ..connectors.email import state as email_state
+    return {"permissions":catalog(),
+            "mail_accounts":[email_state.public_account(a) for a in email_state.list_accounts()]}
 
 @router.get("")
 def list_updates():
