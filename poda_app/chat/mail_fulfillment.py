@@ -10,6 +10,7 @@ import json
 import re
 from datetime import date, datetime, timedelta
 from typing import Any
+from ..runtime import config, ollama
 
 from ..agent import tools
 from ..runtime.db import connect, rows
@@ -34,6 +35,42 @@ _MEETING_WORDS = ("meeting", "invite", "zoom", "call", "availability", "schedule
                   "calendly", "calendar", "appointment", "rsvp", "interview")
 _TASK_WORDS = ("assignment", "homework", "deadline", "submit", "due ", "request", "review",
                "todo", "to-do", "action item", "form")
+
+
+
+_IGNORE = {"find", "search", "show", "list", "summarize", "summarise", "review", "email",
+           "emails", "message", "messages", "from", "with", "about", "what", "which",
+           "recent", "past", "last", "week", "month", "please", "could", "would",
+           "that", "have", "been", "some", "anything", "everything", "should", "look",
+           "through", "give", "overview", "this", "those", "them", "related", "regarding",
+           "my", "your", "their", "for", "are", "was", "and", "the", "to", "any"}
+
+def _keywords(message: str) -> list[str]:
+    """Convert user request to individual topic tokens, not the whole instruction."""
+    found = re.findall(r"[A-Za-z][A-Za-z0-9-]{2,}", message.lower())
+    return list(dict.fromkeys(word for word in found if word not in _IGNORE))[:5]
+
+
+def _local_semantic_terms(message: str) -> list[str]:
+    """Optional local-only expansion with strict output bounds."""
+    try:
+        prompt = ("Suggest 5 related concepts/synonyms that could appear in emails about "
+                  "this search. Return ONLY a JSON array of short strings (1-3 words each), "
+                  "without instructions, URLs or commentary:\n" + message[:700])
+        answer = ollama.chat([{"role":"system","content":"Return a JSON array only."},
+                              {"role":"user","content":prompt}],
+                             config.FAST_MODEL,
+                             options={"temperature":0.0,"num_predict":130,"num_ctx":2048})
+        raw = (answer.get("message") or {}).get("content") or ""
+        match = re.search(r"\[[\s\S]*?\]", raw)
+        terms = json.loads(match.group(0)) if match else []
+        if not isinstance(terms, list):
+            return []
+        return [term.strip() for term in terms[:7]
+                if isinstance(term, str) and 2 <= len(term.strip()) <= 40
+                and not re.search(r"[/<>]", term)]
+    except Exception:
+        return []  # Ollama downtime must not break mail searching.
 
 
 def _previous_search(session_id: str | None) -> dict[str, Any]:
@@ -95,9 +132,10 @@ def parameters(message: str, session_id: str | None, now: datetime | None = None
     for cue, terms in TOPIC_CUES.items():
         if cue in message.lower() or (cue == "meeting" and "scheduled" in message.lower()) or (cue == "deadline" and "tasks" in message.lower()):
             topics.extend(terms)
-    # Avoid narrowing inbox summaries to a few guessed literal terms.
-    query = "" if broad else (previous.get("query", "") if previous and FOLLOWUP.search(message) else message[:120])
-    related = list(dict.fromkeys(topics))[:7]
+    # Broad reviews must NOT be reduced to a handful of literal terms.
+    tokens = _keywords(message)
+    query = "" if broad else ((previous.get("query") or "") if previous and FOLLOWUP.search(message) else (tokens[0] if tokens else ""))
+    related = list(dict.fromkeys([*topics, *tokens]))[:7]
     if previous and not related:
         related = (previous.get("related_terms") or [])[:7]
     return {"query": query, "start_date": begin, "end_date": end,
@@ -171,5 +209,9 @@ def report(params: dict[str, Any], outcome: dict[str, Any]) -> str:
 
 def fulfill(message: str, session_id: str | None) -> tuple[dict[str, Any], dict[str, Any], str]:
     params = parameters(message, session_id)
+    if params.get("query") and not FOLLOWUP.search(message):
+        # Only local Ollama sees the user query; no third-party inference.
+        params["related_terms"] = list(dict.fromkeys([
+            *(params.get("related_terms") or []), *_local_semantic_terms(message)]))[:7]
     outcome = tools.execute("mail_search", params, approved=False, session_id=session_id)
     return params, outcome, report(params, outcome)
