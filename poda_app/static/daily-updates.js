@@ -29,18 +29,47 @@
       const tz=input('timezone',Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC','text',{required:true});
       const enabled=el('input',{type:'checkbox',checked:true});
       const allowCalendar=el('input',{type:'checkbox',checked:false});
+      const permissionArea=el('div',{class:'stack-sm'});
+      const configuredPermissions=[];
+      let permissionCatalog=[];
+      try { permissionCatalog=(await api('/daily-updates/permissions/catalog')).permissions||[]; } catch(e) { permissionArea.append(note(errorDetail(e).message)); }
+      const redrawPermissions=()=>{
+        permissionArea.replaceChildren(el('h4',{},'Persistent unattended permissions'),
+          note('Select only actions and exact targets this automation may change. Revoked when paused, edited or deleted. Sensitive permissions can modify real data without asking again.'));
+        for(const entry of permissionCatalog){
+          const grant=configuredPermissions.find(p=>p.tool===entry.tool);
+          const check=el('input',{type:'checkbox',checked:!!grant,disabled:!entry.available});
+          const scopeControls={};
+          const section=el('div',{class:'stack-sm'},el('label',{class:'check'},check,entry.label+' ('+entry.tool+')'),
+            !entry.available?note(entry.reason):null);
+          for(const f of entry.fields||[]){
+            const ctl=input(f.name,grant?.scope?.[f.name]||'','text',{placeholder:f.label});
+            scopeControls[f.name]=ctl;section.append(field(f.label,ctl));
+          }
+          check.onchange=()=>{
+            const idx=configuredPermissions.findIndex(p=>p.tool===entry.tool);
+            if(idx>=0)configuredPermissions.splice(idx,1);
+            if(check.checked)configuredPermissions.push({tool:entry.tool,scope:Object.fromEntries(Object.entries(scopeControls).map(([k,v])=>[k,v.value]))});
+          };
+          for(const [key,ctl] of Object.entries(scopeControls))ctl.oninput=()=>{
+            const g=configuredPermissions.find(p=>p.tool===entry.tool);if(g)g.scope[key]=ctl.value;
+          };
+          permissionArea.append(section);
+        }
+      };
+      redrawPermissions();
       const save=el('button',{class:'btn btn-primary',type:'submit'},'Save automation');
       form.append(el('h3',{},'Create daily automation'),
         field('Name',title),field('Automation prompt',prompt),
         field('Times (24-hour, comma separated)',times),field('Time zone (IANA)',tz),
         el('label',{class:'check'},enabled,'Active'),
         el('label',{class:'check'},allowCalendar,'Authorize up to 3 new Notion calendar items per run (connected verified calendar only)'),
-        note('Approval applies only to calendar additions. Other writes remain blocked. Revise or disable the automation to revoke permission.'),save);
+        note('Granular permissions below take precedence over the legacy calendar checkbox.'),permissionArea,save);
       form.onsubmit=async e=>{
         e.preventDefault();save.disabled=true;
         const payload={title:title.value,prompt:prompt.value,times:times.value.split(',').map(x=>x.trim()).filter(Boolean),
                        timezone:tz.value.trim(),enabled:enabled.checked,
-                       allow_calendar_writes:allowCalendar.checked};
+                       allow_calendar_writes:allowCalendar.checked,permissions:configuredPermissions};
         try{
           await api(editing?'/daily-updates/'+encodeURIComponent(editing):'/daily-updates',
             {method:editing?'PUT':'POST',body:payload});
@@ -63,12 +92,14 @@
             }),
             button('Edit',()=>{
               editing=s.id;title.value=s.title;prompt.value=s.prompt;times.value=s.times.join(', ');
-              tz.value=s.timezone;enabled.checked=s.enabled;allowCalendar.checked=!!s.calendar_write_target;save.textContent='Save changes';title.focus();
+              tz.value=s.timezone;enabled.checked=s.enabled;allowCalendar.checked=!!s.calendar_write_target;
+              configuredPermissions.splice(0,configuredPermissions.length,...(JSON.parse(s.permissions_json||'[]')));
+              redrawPermissions();save.textContent='Save changes';title.focus();
             }),
             button(s.enabled?'Pause':'Resume',async()=>{
               try{
                 await api('/daily-updates/'+encodeURIComponent(s.id),{method:'PUT',
-                  body:{title:s.title,prompt:s.prompt,times:s.times,timezone:s.timezone,enabled:!s.enabled,allow_calendar_writes:!!s.calendar_write_target}});
+                  body:{title:s.title,prompt:s.prompt,times:s.times,timezone:s.timezone,enabled:!s.enabled,allow_calendar_writes:false,permissions:JSON.parse(s.permissions_json||'[]')}});
                 render();
               }catch(err){toast(errorDetail(err).message,'danger');}
             }),
