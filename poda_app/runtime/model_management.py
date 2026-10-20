@@ -20,7 +20,7 @@ from . import config, models, ollama, hardware
 
 router = APIRouter(prefix="/system/model-manager", tags=["models"])
 
-_TAG = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,100}(?::[a-z0-9][a-z0-9._-]{0,80})?$")
+_TAG = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,100}(?::[a-z0-9][a-z0-9._-]{0,80})?$", re.I)
 
 
 class ModelProfile(BaseModel):
@@ -51,7 +51,7 @@ def assign_profile(body: ModelProfile):
 
 @router.post("/install-terminal")
 def install_in_terminal(body: InstallRequest):
-    tag = body.tag.strip().lower()
+    tag = body.tag.strip()
     if not _TAG.fullmatch(tag) or ".." in tag or tag.startswith("/") or "//" in tag:
         raise HTTPException(status_code=422, detail="Invalid Ollama model tag")
     if platform.system() != "Darwin":
