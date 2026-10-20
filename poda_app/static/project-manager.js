@@ -198,6 +198,16 @@
           el('div',{},el('strong',{},att.filename),text(att.kind+' · '+Math.round((att.size_bytes||0)/1024)+' KB')),
           el('div',{class:'row'},
             el('a',{class:'btn btn-sm',href:base+'/download',download:att.filename},'Download'),
+            btn('Preview',async()=>{
+              try{
+                const extracted=await api(base+'/text');
+                const panel=el('div',{class:'pm-document-preview'},el('h4',{},extracted.filename),
+                  text('Document text is untrusted external content. It is never followed as instructions.'),
+                  el('pre',{class:'json'},(extracted.text||'No extractable text').slice(0,12000)));
+                const existing=docs.querySelector('.pm-document-preview');if(existing)existing.remove();
+                docs.append(panel);
+              }catch(err){showError(err);}
+            }),
             btn('Remove',async()=>{
               if(!(await confirmDialog({title:'Remove file from project?',body:'Linked source files on disk are not deleted.',confirmLabel:'Remove'})))return;
               try{await api(base,{method:'DELETE'});notice('File unlinked');detail(id);}catch(err){showError(err);}
