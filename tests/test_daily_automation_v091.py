@@ -38,7 +38,7 @@ def test_no_approval_proposal_for_unattended_writes(monkeypatch):
     from poda_app.agent import tools
     fake_tool={"description":"safe mock","mutating":True,"requires_confirmation":True,
               "needs":None,"handler":lambda:{"ok":True,"result":{}},
-              "schema":{"type":"object","properties":{}}}
+              "schema":{"type":"object","properties":{},"required":[]}}
     old=tools.TOOLS.get("write_mock")
     tools.TOOLS["write_mock"]=fake_tool
     class OllamaStub:
