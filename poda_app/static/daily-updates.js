@@ -41,7 +41,7 @@
           note('Select only actions and exact targets this automation may change. Revoked when paused, edited or deleted. Sensitive permissions can modify real data without asking again.'));
         for(const entry of permissionCatalog){
           const grant=configuredPermissions.find(p=>p.tool===entry.tool);
-          const check=el('input',{type:'checkbox',checked:!!grant,disabled:!entry.available});
+          const check=el('input',{type:'checkbox',checked:!!grant,disabled:!entry.available && !grant});
           const scopeControls={};
           const section=el('div',{class:'stack-sm'},el('label',{class:'check'},check,entry.label+' ('+entry.tool+')'),
             !entry.available?note(entry.reason):null);
