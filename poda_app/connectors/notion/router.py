@@ -347,3 +347,39 @@ def notion_disconnect() -> dict[str, Any]:
 @router.get("/notion/test-pages")
 def notion_test_pages() -> dict[str, Any]:
     return {"test_pages": service.all_test_pages(), "leftover": service.leftover_test_pages()}
+
+class CommitmentChange(BaseModel):
+    commitment: str | None = None
+    expected_last_edited_time: str | None = None
+
+
+@router.post("/notion/calendar/{page_id}/commitment")
+def change_commitment(page_id: str, req: CommitmentChange) -> dict[str, Any]:
+    """Explicit user-initiated calendar edit, re-read for conflict and verification."""
+    cfg = state.get_config() or {}
+    field = (cfg.get("schema") or {}).get("Commitment") or {}
+    if field.get("type") != "select":
+        raise HTTPException(422, detail="Connected Notion database requires a Commitment select property.")
+    if not cfg.get("update_verified"):
+        raise HTTPException(403, detail="Notion update access has not been verified.")
+    choices = {o.get("name") for o in (field.get("select") or {}).get("options", [])}
+    if req.commitment is not None and req.commitment not in choices:
+        raise HTTPException(422, detail="Select an existing Notion Commitment option.")
+    from .client import NotionClient
+    try:
+        client = NotionClient()
+        current = client.page(page_id)
+        parent = current.get("parent") or {}
+        if parent.get("data_source_id") != cfg.get("data_source_id"):
+            raise HTTPException(403, detail="Page is not in the connected Notion calendar.")
+        if req.expected_last_edited_time and current.get("last_edited_time") != req.expected_last_edited_time:
+            raise HTTPException(409, detail="Calendar item changed in Notion; refresh before editing.")
+        client.update_page(page_id, {"properties":{"Commitment":{"select":({"name":req.commitment} if req.commitment else None)}}})
+        after = client.page(page_id)
+        from .service import normalize_page
+        verified = normalize_page(after).get("properties",{}).get("Commitment") == req.commitment
+        if not verified:
+            raise HTTPException(502, detail="Notion update was not verified after re-reading.")
+        return {"updated":True,"verified":True,"commitment":req.commitment,"last_edited_time":after.get("last_edited_time")}
+    except NotionError as exc:
+        raise _http(exc)
