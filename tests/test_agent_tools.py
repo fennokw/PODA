@@ -87,6 +87,8 @@ def test_edit_hash_validation(granted):
 
 def test_run_python_real_exit_code_and_bounded_output(granted, monkeypatch):
     monkeypatch.setenv("PODA_UNSAFE_EXECUTE", "I_UNDERSTAND_THIS_RUNS_AS_ME")
+    # Runner-output test; isolate platform-specific macOS seatbelt behavior.
+    monkeypatch.setattr(exec_tools.sandbox, "wrap", lambda command, root, scratch: command)
     folder, _ = granted
     script = folder / "exit3.py"
     script.write_text("import sys\nprint('x' * 100000)\nsys.exit(3)\n")
