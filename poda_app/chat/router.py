@@ -87,7 +87,7 @@ class ThinkSplitter:
 @router.post("/chat/stream")
 async def chat_stream(req: ChatRequest, request: Request):
     session_id = req.session_id or str(uuid.uuid4())
-    user_message_id = await asyncio.to_thread(store.save_message, "user", req.message, None, session_id)
+    user_message_id = await asyncio.to_thread(store.save_message, "user", req.message, None, session_id, "chat", None, True)
     snapshot = await asyncio.to_thread(capability.sync_ledger)
     profile = await asyncio.to_thread(models.resolve, req.message, req.mode, req.thinking_level)
     blocked = gate.unsupported_action_response(req.message, snapshot)
@@ -98,13 +98,13 @@ async def chat_stream(req: ChatRequest, request: Request):
         if blocked:
             yield sse("status", {"message": "capability_action_gate", "model": "PODA capability ledger"})
             yield sse("token", {"token": blocked})
-            await asyncio.to_thread(store.save_message, "assistant", blocked, "capability-action-gate", session_id)
+            await asyncio.to_thread(store.save_message, "assistant", blocked, "capability-action-gate", session_id, "chat", None, True)
             yield sse("done", {"model": "capability-action-gate", "profile": "gate"})
             return
         if capability_reply:
             yield sse("status", {"message": "verified_runtime_status", "model": "PODA capability ledger"})
             yield sse("token", {"token": capability_reply})
-            await asyncio.to_thread(store.save_message, "assistant", capability_reply, "capability-ledger", session_id)
+            await asyncio.to_thread(store.save_message, "assistant", capability_reply, "capability-ledger", session_id, "chat", None, True)
             yield sse("done", {"model": "capability-ledger", "profile": "ledger"})
             return
         model = profile.get("model")
@@ -125,7 +125,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                                "outcome": receipt.get("outcome"),
                                "verification": receipt.get("verification")})
             yield sse("token", {"token": summary})
-            await asyncio.to_thread(store.save_message, "assistant", summary, "mail-report", session_id)
+            await asyncio.to_thread(store.save_message, "assistant", summary, "mail-report", session_id, "chat", None, True)
             yield sse("done", {"model": "mail-report", "profile": "verified-tools"})
             return
         recalled = None
@@ -180,7 +180,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                     yield sse("status", {"message": "cancelled", "model": model})
                     partial = "".join(splitter.final).strip()
                     if partial:
-                        await asyncio.to_thread(store.save_message, "assistant", partial + "\n\n[response cancelled by user]", model, session_id)
+                        await asyncio.to_thread(store.save_message, "assistant", partial + "\n\n[response cancelled by user]", model, session_id, "chat", None, True)
                     return
                 msg = chunk.get("message", {})
                 thinking = msg.get("thinking")
@@ -193,7 +193,7 @@ async def chat_stream(req: ChatRequest, request: Request):
                         yield sse(kind, {"token": piece})
                 if done:
                     final = "".join(splitter.final).strip()
-                    await asyncio.to_thread(store.save_message, "assistant", final, model, session_id)
+                    await asyncio.to_thread(store.save_message, "assistant", final, model, session_id, "chat", None, True)
                     yield sse("done", {"model": model, "profile": profile["profile"], "eval_count": chunk.get("eval_count"), "eval_duration_ms": round((chunk.get("eval_duration") or 0) / 1e6),
                                        "prompt_eval_count": chunk.get("prompt_eval_count")})
                     asyncio.get_running_loop().run_in_executor(None, summaries.maybe_compact, session_id)
@@ -225,3 +225,12 @@ def session_messages(session_id: str, limit: int = 100) -> dict[str, Any]:
 @router.get("/chat/history")
 def chat_history(limit: int = 60) -> dict[str, Any]:
     return {"messages": store.recent_messages(max(1, min(limit, 500)))}
+
+@router.post("/chat/session/{session_id}/flush")
+def flush_session_memory(session_id: str) -> dict[str, Any]:
+    """Finalize a chat and move all remaining encrypted working turns to the visible memory graph."""
+    if not session_id or len(session_id) > 128:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=422, detail="Invalid session ID")
+    result = store.flush_session_to_graph(session_id, retain_messages=0)
+    return {"ok": True, "session_id": session_id, **result}
