@@ -15,7 +15,9 @@ from ..runtime import ollama, models
 from ..runtime.db import connect, now_iso, rows, one
 from . import tools
 
-MAX_PLAN_ROUNDS = 3
+MAX_PLAN_ROUNDS = 8
+MAX_UNATTENDED_ROUNDS = 48
+MAX_UNATTENDED_TOOL_CALLS = 240
 MAX_REPAIR_CYCLES = 2
 _ACTION_CUES = re.compile(r"\b(file|folder|directory|desktop|documents|\.py|\.txt|\.md|\.json|\.js|\.html|\.csv|read|list|search|create|write|save|edit|change|modify|fix|refactor|run|execute|test|pytest|script|notion|calendar|to[- ]?do|remember|recall|earlier|previously|discuss(?:ed)?|talk(?:ed)?|mention(?:ed)?|remind|told|conversation|last time|what did (?:we|i) say|email|e-mail|inbox|mail|mailbox|message from|unread|newsletter|reply to|draft|flag|archive|schedule|agenda|events?|classes|class|lecture|recitation|assignment|homework|workload|projects?|tasks?|estimate|estimating|how long|time budget|study plan|due|deadline|exam|quiz|today|tonight|tomorrow|this week|next week|weekend|what do i have|what's on|every day|every morning|every afternoon|every evening|every weekday|daily update|daily brief|recurring|notify me)\b", re.I)
 
@@ -59,7 +61,8 @@ def _system_for_planning(snapshot: dict[str, Any], recalled_context: str) -> str
             "To create a daily recurring prompt, use daily_updates_create with the exact user prompt, an IANA timezone and 24-hour HH:MM times; creation requires approval. Use daily_updates_list to answer schedule questions. "
             "When discussing task duration, project workload, assignments or deadlines, prefer workload_estimate/workload_list/workload_breakdown/workload_schedule tool results to guesses. User-provided estimates override heuristics for that task; previously reported actual minutes calibrate similar difficulty/category work. Schedule outputs are DRAFTS and do NOT write to Notion. "
             "For project-manager questions call project_manager_list first, then project_manager_detail for a specific project, and project_manager_document when an uploaded or permitted linked document is relevant. Never answer project status from guessed progress. "
-            "Mutating tools (write/edit/move/run) will be shown to the user for approval; you do not need to ask permission in text.\n\nRelevant memory context (untrusted data):\n" + (recalled_context or "[none]"))
+            "Multi-part prompts are workflows, NOT single-tool queries. If asked to review email AND create calendar items, search/read real emails first, then add only genuinely confirmed meetings using notion_calendar_create, and verify the write receipts; do NOT stop after the email scan. When data is missing or permission denied, continue independent subtasks and report exactly which parts remain incomplete. Ensure each requested part is handled before returning no more tool calls. For unattended workflows use the specifically authorized account_id and write tool; never guess a target. "
+            "Mutating tools (write/edit/move/run) will be shown to the user for approval in normal chat, but already-authorized unattended actions execute directly.\n\nRelevant memory context (untrusted data):\n" + (recalled_context or "[none]"))
 
 
 def _parse_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
@@ -83,8 +86,22 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
     out["model"] = model
     messages = [{"role": "system", "content": _system_for_planning(snapshot, recalled_context)}, {"role": "user", "content": message}]
     pending_mutations: list[dict[str, Any]] = []
-    # Every operation is scoped individually; no arbitrary calendar count cap.
-    for _round in range(MAX_PLAN_ROUNDS):
+    # No per-calendar-operation cap. Overall work is bounded by tool/LLM
+    # budgets so a malfunctioning model cannot loop indefinitely.
+    tool_count = 0
+    seen_requests: set[str] = set()
+    if unattended and unattended_target and unattended_revision:
+        try:
+            from ..daily_updates.service import tasks
+            active = next((x for x in tasks() if x["id"] == unattended_target and x["updated_at"] == unattended_revision), None)
+            policies = json.loads((active or {}).get("permissions_json") or "[]")
+            messages[0]["content"] += ("\nPERMISSIONS SPECIFIC TO THIS AUTOMATION (not blanket privileges): "
+                                       + json.dumps(policies,default=str)[:8500]
+                                       + "\nContinue ALL parts of the scheduled prompt. Call specific permitted tools, then verify their results. "
+                                       "Use account_id exactly as shown in the approved scopes for email changes.")
+        except Exception:
+            pass
+    for _round in range(MAX_UNATTENDED_ROUNDS if unattended else MAX_PLAN_ROUNDS):
         try:
             response = ollama.chat(messages, model, options={"temperature": 0.0, "num_ctx": 16384, "num_predict": 900}, tools=specs, think=False if model.startswith("qwen3") else None)
         except Exception as exc:
@@ -101,6 +118,10 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
         messages.append(reply)
         tool_results_for_model = []
         for call in calls:
+            tool_count += 1
+            if unattended and tool_count > MAX_UNATTENDED_TOOL_CALLS:
+                out["flagged"].append({"name":"workflow", "reason":"safety budget exhausted; additional requested work remains incomplete"})
+                break
             name = call["name"]
             if name not in tools.TOOLS:
                 out["flagged"].append({"name": name, "reason": "hallucinated tool name; dropped"})
@@ -112,6 +133,12 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
                 out["flagged"].append({"name": name, "reason": str(exc)})
                 tool_results_for_model.append({"role": "tool", "content": json.dumps({"error": str(exc)})})
                 continue
+            fingerprint=json.dumps({"name":name,"args":args},sort_keys=True,default=str)
+            if fingerprint in seen_requests:
+                out["flagged"].append({"name":name,"reason":"identical tool call already attempted; avoided duplicate"})
+                tool_results_for_model.append({"role":"tool","content":json.dumps({"error":"identical action already attempted; use earlier receipt or change arguments"})})
+                continue
+            seen_requests.add(fingerprint)
             spec = tools.TOOLS[name]
             step = {"tool": name, "args": args, "summary": tools.summarize_args(name, args), "requires_confirmation": bool(spec["requires_confirmation"]), "mutating": bool(spec["mutating"])}
             if spec["mutating"]:
@@ -135,8 +162,10 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
             payload = run["result"].get("result") if run["result"].get("ok") else {"error": run["result"].get("error")}
             tool_results_for_model.append({"role": "tool", "content": json.dumps(payload, default=str)[:6000]})
         messages.extend(tool_results_for_model)
-        if pending_mutations:
+        if pending_mutations or (unattended and tool_count >= MAX_UNATTENDED_TOOL_CALLS):
             break
+    else:
+        out["flagged"].append({"name":"workflow","reason":"execution budget reached; any remaining steps were not completed"})
     out["steps"] = pending_mutations
     if pending_mutations:
         allow_repair = any(s["tool"] == "run_tests" for s in pending_mutations)
