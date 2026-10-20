@@ -1,5 +1,34 @@
 # PODA — Personal Organization Digital Assistant
 
+## PODA v0.9.0: contextual actions, model choice, and Daily Updates
+
+### Contextual intent: mailbox actions are not filesystem actions
+
+PODA's action gate distinguishes mailboxes and email folders from local filesystem directories. For example, "mark all of those emails read and move them to a UA emails folder" is an email modification request, not a request for edit permission to user files. Genuine filesystem operations still need active Files & Agent grants. If Mail is connected read-only, the honest blocker is now *mail modify permission*, not a Desktop grant. The tool planner also sees bounded encrypted recent chat turns, allowing it to resolve natural follow-ups without expensive long-term graph recall.
+
+For batch email reorganization, the assistant can preview messages from an **exact, unambiguous sender**, show exclusions (for example, course-related messages), and propose a single confirmed batch. The destination mailbox must already exist. Missing mailboxes and incomplete provider scans fail closed. No message is marked read or moved merely because the model proposed it; the user must approve the action in PODA. Ambiguous short names like "UA" must be resolved into an actual sender.
+
+### Any installed Ollama model, and Qwen quantization choices
+
+Open **System > Model installer and profile selection**. Installed local chat model tags (including your own custom Ollama models) may be assigned to Fast, Balanced, and Deep, overriding older built-in Qwen/Llama defaults. Model selection is stored in the local encrypted database. The existing separate thinking-effort control still adjusts context/prediction budgets.
+
+The catalog lists official Qwen 3.6 and Qwen 3.5 variants, with selectable Q4_K_M, Q8_0, and BF16 quantizations where available. Estimated model disk sizes and memory headroom are displayed alongside hardware-derived recommendations. These are **estimates**, not a performance or fit guarantee. Large context lengths require additional KV-cache memory and may slow generation.
+
+Press **Install selected quantization in Terminal**, confirm, and PODA opens a local `.command` script containing the exact `ollama pull MODEL:TAG` command. It does not pull models silently, route inference to external services, or claim an installation succeeded before Ollama finishes. After installation, refresh System and explicitly choose the newly installed model for a profile. Other local models can be installed by entering any syntactically valid Ollama tag in **Install model...**. Only model downloads contact the Ollama model registry.
+
+### Daily Updates: recurring private prompts
+
+Open **Daily Updates** and create a named prompt: enter its full question, one to twelve daily times in 24-hour format (`08:00, 17:30`), and an IANA timezone (such as `America/New_York`). Choose whether it is enabled, edit/pause/remove it later, or press **Run now** to execute immediately. PODA stores both the schedules and each resulting answer in its encrypted local database. Completed answers appear in the Daily Updates interface, and PODA asks macOS to show a local notification (subject to the system's notification permissions). No cloud push or third-party scheduler is used.
+
+A user may also ask in normal chat to create a recurring update. PODA exposes a **confirmation-gated** `daily_updates_create` tool, so scheduling only occurs after an explicit approved proposal.
+
+**Operational constraints:** the scheduler runs *inside the PODA server process*. Scheduled times require PODA to be open, the Mac to be awake and the Ollama models available. A short ten-minute grace window handles late wakeups; missed runs outside that window are not automatically replayed. Every daily time slot is claimed atomically in SQLite to prevent duplicate firing after retries/restarts, including daylight-saving changes. Schedules do not run remotely while the Mac is powered off, and a macOS notification is not guaranteed unless allowed for the local process.
+
+The prompt executes through the usual local PODA chat pipeline, including authorized read-only integrations, but **mail sends, file edits, Notion writes and any other mutating actions cannot be performed unattended**. They still require an explicit interactive approval in PODA.
+
+---
+
+
 ## What's new in v0.8.0: one Project Manager and better active-chat context
 
 **Project Manager** replaces the separate Workload and Plan navigation entries. The existing work records and the original project records are preserved; no task migration is required. The combined dashboard shows project status, workload counts, deadlines, remaining calibrated minutes, and completion percentage. Select a project to:
@@ -28,7 +57,7 @@ The old Plan and Workload screens are no longer displayed in the main navigation
 
 PODA is a self-hosted web application for **one Apple Silicon Mac**. Its chat models, embeddings, memory database, task planner and visual second brain run locally. Instead of relying on a hosted AI service to remember your life, PODA maintains an inspectable, editable local record of the context you choose to retain. It can also connect, with your permission, to **the Notion database behind Notion Calendar**, macOS Apple Mail, and optionally Gmail IMAP/SMTP. Those integrations necessarily contact external services; PODA's AI inference does not.
 
-> **Public source release v0.8.0-public.** This repository intentionally contains **no personal memories, chat transcripts, credentials, connected accounts, historical databases, logs, screenshots or private Git history**. On first run it creates a brand-new, encrypted memory database in `~/Library/Application Support/PODA-Public/`. It does not import or modify another PODA installation. The downloadable ZIP is a source repository, **not a signed Mac app**. See [Security and limitations](#security-and-limitations).
+> **Public source release v0.9.0-public.** This repository intentionally contains **no personal memories, chat transcripts, credentials, connected accounts, historical databases, logs, screenshots or private Git history**. On first run it creates a brand-new, encrypted memory database in `~/Library/Application Support/PODA-Public/`. It does not import or modify another PODA installation. The downloadable ZIP is a source repository, **not a signed Mac app**. See [Security and limitations](#security-and-limitations).
 
 ## Why PODA exists
 
