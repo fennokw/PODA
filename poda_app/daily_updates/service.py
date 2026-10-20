@@ -69,22 +69,14 @@ def tasks() -> list[dict[str,Any]]:
 
 
 def save(title:str,prompt:str,times:list[str],timezone_name:str,enabled:bool=True,id:str|None=None,
-         allow_calendar_writes:bool=False, permissions:list[dict[str,Any]]|None=None) -> dict[str,Any]:
+         permissions:list[dict[str,Any]]|None=None) -> dict[str,Any]:
     title=title.strip()
     prompt=prompt.strip()
     if not 1 <= len(title) <= 120 or not 1 <= len(prompt) <= 12000:
         raise ValueError("Title must be 1-120 chars; prompt must be 1-12000 chars")
     clean=clean_times(times); tz=clean_timezone(timezone_name); stamp=now_iso()
-    # Persist the exact data-source identity approved at creation/edit time.
-    target = None
-    if allow_calendar_writes:
-        from ..connectors.notion import state
-        cfg = state.get_config() or {}
-        if not (cfg.get("data_source_id") and cfg.get("insert_verified") and state.token_present()):
-            raise ValueError("Verify Notion insert permission before enabling unattended calendar additions")
-        target = cfg["data_source_id"]
     from .permissions import prepare
-    authorized = prepare(permissions or ([{"tool":"notion_calendar_create","scope":{}}] if allow_calendar_writes else []))
+    authorized = prepare(permissions or [])
     db=connect()
     try:
         ensure_tables(db)
@@ -92,13 +84,13 @@ def save(title:str,prompt:str,times:list[str],timezone_name:str,enabled:bool=Tru
             if not one(db,"SELECT id FROM daily_prompts WHERE id=?",(id,)):
                 raise KeyError("Daily prompt not found")
             db.execute("UPDATE daily_prompts SET title=?,prompt=?,times_json=?,timezone=?,enabled=?,updated_at=?,calendar_write_target=?,permissions_json=? WHERE id=?",
-                       (title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,target,json.dumps(authorized),id))
+                       (title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,None,json.dumps(authorized),id))
         else:
             id=str(uuid.uuid4())
             db.execute("""INSERT INTO daily_prompts
                       (id,title,prompt,times_json,timezone,enabled,created_at,updated_at,calendar_write_target,permissions_json)
                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                       (id,title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,stamp,target,json.dumps(authorized)))
+                       (id,title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,stamp,None,json.dumps(authorized)))
         db.commit()
         return {**one(db,"SELECT * FROM daily_prompts WHERE id=?",(id,)), "times":clean,"enabled":bool(enabled)}
     finally: db.close()
