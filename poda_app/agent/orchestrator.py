@@ -91,6 +91,11 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
     # budgets so a malfunctioning model cannot loop indefinitely.
     tool_count = 0
     seen_requests: set[str] = set()
+    requested_calendar_followup = bool(
+        re.search(r"\b(?:add|create|put|schedule|update|sync|write)\b.{0,180}\b(?:calendar|notion|events?|meetings?)\b", message, re.I|re.S)
+        and re.search(r"\b(?:email|inbox|mailbox|messages?)\b", message, re.I))
+    retry_missing_calendar_step = False
+    did_calendar_step = False
     if unattended and unattended_mail_account:
         messages[0]["content"] += ("\nSelected connected email account ID for this automation: "
                                   + unattended_mail_account + ". For all mail reads and writes, use THIS account_id.")
@@ -117,6 +122,14 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
         if text and not out["rationale"]:
             out["rationale"] = text[:600]
         if not calls:
+            if requested_calendar_followup and not did_calendar_step and not retry_missing_calendar_step:
+                retry_missing_calendar_step = True
+                messages.append({"role":"assistant","content":text or "No tool calls supplied"})
+                messages.append({"role":"user","content":
+                    "Your previous reply did not attempt the requested calendar stage. "
+                    "Using ONLY verified email evidence, either invoke calendar tools for confirmed meetings "
+                    "or explain that no meeting had a verifiable date/time. Do not stop after only reviewing emails."})
+                continue
             break
         out["needs_tools"] = True
         messages.append(reply)
@@ -149,6 +162,8 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
                 tool_results_for_model.append({"role":"tool","content":json.dumps({"error":"identical action already attempted; use earlier receipt or change arguments"})})
                 continue
             seen_requests.add(fingerprint)
+            if name.startswith("notion_calendar_"):
+                did_calendar_step = True
             spec = tools.TOOLS[name]
             step = {"tool": name, "args": args, "summary": tools.summarize_args(name, args), "requires_confirmation": bool(spec["requires_confirmation"]), "mutating": bool(spec["mutating"])}
             if spec["mutating"]:
@@ -176,6 +191,9 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
             break
     else:
         out["flagged"].append({"name":"workflow","reason":"execution budget reached; any remaining steps were not completed"})
+    if requested_calendar_followup and not did_calendar_step:
+        out["flagged"].append({"name":"calendar-followup",
+          "reason":"No verified calendar action was attempted; the calendar stage remains incomplete."})
     out["steps"] = pending_mutations
     if pending_mutations:
         allow_repair = any(s["tool"] == "run_tests" for s in pending_mutations)
