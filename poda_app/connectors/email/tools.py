@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 from ...agent.tools import _schema, _str, _int, _bool
-from . import service, state
+from . import service, state, bulk
 from .models import MailError, wrap_untrusted
 
 
@@ -107,6 +107,27 @@ def mail_send(subject: str, body: str, to: list[str] | None = None, reply_to_mes
     return {"ok": True, "result": {"receipt_id": out["receipt"]["id"]}, "error": None, "verification": out["receipt"].get("verification")}
 
 
+def mail_bulk_preview(sender: str, target_mailbox: str, exclude_terms: list[str] | None = None,
+                      account_id: str | None = None) -> dict[str, Any]:
+    try:
+        result=bulk.preview(sender,target_mailbox,exclude_terms,account_id)
+        return {"ok":True,"result":result,"error":None,
+                "verification":f"Previewed {result['count']} matching emails without mutation"}
+    except Exception as exc:
+        return _err(exc,"no email changed")
+
+
+def mail_bulk_apply(preview_id: str) -> dict[str, Any]:
+    try:
+        outcome=bulk.apply(preview_id)
+        return {"ok":not bool(outcome["failures"]),"result":outcome,
+                "error":f"{len(outcome['failures'])} mailbox actions failed" if outcome["failures"] else None,
+                "verification":f"moved {outcome['completed']} messages; {len(outcome['failures'])} failures"}
+    except Exception as exc:
+        return _err(exc,"bulk action not performed")
+
+
+
 _ACCOUNT = _str("Which account: its id, its name (Exchange = school/work account, Google = Gmail), or an address/domain like school.example.test or gmail.com; optional, defaults to the first account")
 _ADDRS = {"type": "array", "items": {"type": "string"}, "description": "Recipient email addresses"}
 
@@ -125,4 +146,16 @@ TOOLS: dict[str, dict[str, Any]] = {
                    "handler": mail_draft, "schema": _schema({"subject": _str("Subject"), "body": _str("Plain-text body"), "to": _ADDRS, "reply_to_message_id": _str("Message id to reply to"), "account_id": _ACCOUNT}, ["subject", "body"])},
     "mail_send": {"description": "Send an email from an account with sending enabled (always confirmed by the user first).", "mutating": True, "requires_confirmation": True, "needs": "email_send",
                   "handler": mail_send, "schema": _schema({"subject": _str("Subject"), "body": _str("Plain-text body"), "to": _ADDRS, "reply_to_message_id": _str("Message id to reply to"), "account_id": _ACCOUNT}, ["subject", "body"])},
+    "mail_bulk_preview": {"description": "Read-only exact-sender preview for bulk email cleanup. Require a SPECIFIC, unambiguous sender such as 'Undergraduate Admissions', a preexisting destination mailbox, and exclusion keywords for protected course or schedule messages. Returns a preview_id and exact candidates; NO messages are modified. If complete=false, narrow the search.",
+        "mutating": False, "requires_confirmation": False, "needs": "email_read",
+        "handler": mail_bulk_preview,
+        "schema": _schema({"sender": _str("Exact sender organization, NOT ambiguous UA alias"),
+              "target_mailbox":_str("Preexisting destination folder name"),
+              "exclude_terms":{"type":"array","items":{"type":"string"},"description":"Protected words or subjects to exclude"},
+              "account_id":_ACCOUNT},["sender","target_mailbox"])},
+    "mail_bulk_apply": {"description": "After user approval, mark READ and MOVE only the messages in a verified complete mail_bulk_preview. REQUIRES explicit user confirmation. Must use the preview_id from the previous read-only tool call.",
+        "mutating": True, "requires_confirmation": True, "needs": "email_modify",
+        "handler": mail_bulk_apply,
+        "schema": _schema({"preview_id":_str("Exact preview_id from mail_bulk_preview")},["preview_id"])},
+
 }
