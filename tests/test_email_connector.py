@@ -165,7 +165,9 @@ def test_extraction_normalizes(monkeypatch):
     monkeypatch.setattr(extraction.models, "registry", lambda: {"profiles": {"fast": {"model": "llama3.2:3b"}, "balanced": {"model": None}}})
     out = extraction.extract({"id": "m1", "subject": "Lab", "body_text": READ["body"], "date": "2026-10-01T10:00:00Z", "from_name": "Prof", "from_address_masked": "p***@example.test"})
     assert out["note"].startswith("unconfirmed") and len(out["commitments"]) == 2
-    assert out["commitments"][0]["kind"] == "confirmed" and out["commitments"][0]["all_day"] is False
+    assert out["commitments"][0]["kind"] == "tentative" and out["commitments"][0]["all_day"] is False
+    # A time without an explicit zone is still useful, but cannot be
+    # automatically added to a calendar without local-zone confirmation.
     assert out["commitments"][1]["kind"] == "tentative"  # evidence not verbatim + no date
 
 
