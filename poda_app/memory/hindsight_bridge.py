@@ -43,6 +43,9 @@ def ensure_tables(db):
     db.execute("""CREATE TABLE IF NOT EXISTS hindsight_node_index (
       poda_node_id TEXT PRIMARY KEY, content_sha TEXT NOT NULL,
       status TEXT NOT NULL, last_synced TEXT)""")
+    db.execute("""CREATE TABLE IF NOT EXISTS poda_memory_feedback(
+      poda_node_id TEXT PRIMARY KEY, assessment TEXT NOT NULL,
+      reason TEXT NOT NULL, updated_at TEXT NOT NULL)""")
 
 
 def _document_id(node_id:str)->str:
@@ -51,9 +54,10 @@ def _document_id(node_id:str)->str:
 
 def _canonical_nodes(db):
     # No invisible automation transcripts; only visible committed memory nodes.
-    return rows(db,"""SELECT id,title,summary,content,parent_id,tags_json,importance
-              FROM memory_nodes WHERE node_type='memory'
-              ORDER BY updated_at ASC""")
+    return rows(db,"""SELECT n.id,n.title,n.summary,n.content,n.parent_id,n.tags_json,n.importance
+              FROM memory_nodes n LEFT JOIN poda_memory_feedback f ON f.poda_node_id=n.id
+              WHERE n.node_type='memory' AND COALESCE(f.assessment,'') NOT IN ('incorrect','outdated')
+              ORDER BY n.updated_at ASC""")
 
 
 def sync_once(limit:int=MAX_SYNC_PER_CALL)->dict[str,Any]:
@@ -150,3 +154,47 @@ def sync_memory(limit:int=35):
     try:return sync_once(limit)
     except httpx.HTTPError as exc:
         raise HTTPException(503,detail=f"Local Hindsight unavailable: {type(exc).__name__}") from exc
+
+
+class FeedbackRequest(BaseModel):
+    node_id: str
+    assessment: str
+    reason: str = ""
+
+
+@router.post("/feedback")
+def feedback(req: FeedbackRequest):
+    """Record explicit quality feedback on a visible PODA memory node."""
+    if req.assessment not in {"helpful","incorrect","outdated","restore"}:
+        raise HTTPException(422,detail="Invalid feedback assessment")
+    db=connect()
+    try:
+        ensure_tables(db)
+        node=one(db,"SELECT id,node_type FROM memory_nodes WHERE id=?",(req.node_id,))
+        if not node or node["node_type"]!="memory":
+            raise HTTPException(404,detail="Visible memory node not found")
+        if req.assessment=="restore":
+            db.execute("DELETE FROM poda_memory_feedback WHERE poda_node_id=?",(req.node_id,))
+        else:
+            db.execute("""INSERT INTO poda_memory_feedback VALUES (?,?,?,?)
+                      ON CONFLICT(poda_node_id) DO UPDATE SET assessment=excluded.assessment,
+                      reason=excluded.reason,updated_at=excluded.updated_at""",
+                      (req.node_id,req.assessment,req.reason[:600],now_iso()))
+        db.commit()
+    finally: db.close()
+    return {"node_id":req.node_id,"assessment":req.assessment,"sync_required":enabled(),
+            "note":"Source node is preserved for user review; incorrect/outdated nodes are excluded from retrieval and Hindsight at next sync."}
+
+
+async def background_sync():
+    """Incrementally reconcile only after explicit opt-in; never fetch from cloud."""
+    import asyncio
+    while True:
+        try:
+            if enabled():
+                await asyncio.to_thread(sync_once,15)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        await asyncio.sleep(600)
