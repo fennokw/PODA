@@ -42,6 +42,7 @@ def ensure_tables(conn):
     add_column(conn, "daily_prompts", "calendar_write_target", "TEXT")
     add_column(conn, "daily_prompts", "permissions_json", "TEXT NOT NULL DEFAULT '[]'")
     add_column(conn, "daily_prompts", "mail_account_id", "TEXT")
+    add_column(conn, "daily_prompts", "mail_account_ids_json", "TEXT NOT NULL DEFAULT '[]'")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_runs_recent ON daily_prompt_runs(scheduled_for DESC)")
 
 
@@ -69,13 +70,16 @@ def tasks() -> list[dict[str,Any]]:
     try:
         ensure_tables(db)
         out=rows(db,"SELECT * FROM daily_prompts ORDER BY updated_at DESC")
-        return [{**row,"times":json.loads(row["times_json"]), "enabled":bool(row["enabled"])}
+        return [{**row,"times":json.loads(row["times_json"]), "enabled":bool(row["enabled"]),
+                 "mail_account_ids":json.loads(row.get("mail_account_ids_json") or "[]") or
+                   ([row["mail_account_id"]] if row.get("mail_account_id") else [])}
                 for row in out]
     finally: db.close()
 
 
 def save(title:str,prompt:str,times:list[str],timezone_name:str,enabled:bool=True,id:str|None=None,
-         permissions:list[dict[str,Any]]|None=None, mail_account_id:str|None=None) -> dict[str,Any]:
+         permissions:list[dict[str,Any]]|None=None, mail_account_id:str|None=None,
+         mail_account_ids:list[str]|None=None) -> dict[str,Any]:
     title=title.strip()
     prompt=prompt.strip()
     if not 1 <= len(title) <= 120 or not 1 <= len(prompt) <= 12000:
@@ -86,26 +90,33 @@ def save(title:str,prompt:str,times:list[str],timezone_name:str,enabled:bool=Tru
     # must not trap the user in an enabled schedule they cannot disable.
     # Re-enabling always revalidates the full current policy and account.
     authorized = prepare(permissions or []) if enabled else (permissions or [])
-    if mail_account_id and enabled:
+    selected_accounts = mail_account_ids if mail_account_ids is not None else ([mail_account_id] if mail_account_id else [])
+    if not isinstance(selected_accounts, list) or len(selected_accounts)>20 or any(
+            not isinstance(x,str) for x in selected_accounts) or len(set(selected_accounts))!=len(selected_accounts):
+        raise ValueError("Select at most twenty distinct connected mail accounts")
+    if enabled and selected_accounts:
         from ..connectors.email.state import list_accounts
-        if mail_account_id not in {a["id"] for a in list_accounts()}:
-            raise ValueError("Select an existing connected account in the Mail screen")
+        if not set(selected_accounts).issubset({a["id"] for a in list_accounts()}):
+            raise ValueError("Choose only accounts already connected in the Mail screen")
+    for grant in authorized:
+        if grant.get("tool","").startswith("mail_") and selected_accounts and grant.get("scope",{}).get("account_id") not in selected_accounts:
+            raise ValueError("Unattended mail permissions must refer to one of this automation's selected accounts")
     db=connect()
     try:
         ensure_tables(db)
         if id:
             if not one(db,"SELECT id FROM daily_prompts WHERE id=?",(id,)):
                 raise KeyError("Daily prompt not found")
-            db.execute("UPDATE daily_prompts SET title=?,prompt=?,times_json=?,timezone=?,enabled=?,updated_at=?,calendar_write_target=?,permissions_json=?,mail_account_id=? WHERE id=?",
-                       (title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,None,json.dumps(authorized),mail_account_id or None,id))
+            db.execute("UPDATE daily_prompts SET title=?,prompt=?,times_json=?,timezone=?,enabled=?,updated_at=?,calendar_write_target=?,permissions_json=?,mail_account_id=?,mail_account_ids_json=? WHERE id=?",
+                       (title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,None,json.dumps(authorized),selected_accounts[0] if selected_accounts else None,json.dumps(selected_accounts),id))
         else:
             id=str(uuid.uuid4())
             db.execute("""INSERT INTO daily_prompts
-                      (id,title,prompt,times_json,timezone,enabled,created_at,updated_at,calendar_write_target,permissions_json,mail_account_id)
-                      VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                       (id,title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,stamp,None,json.dumps(authorized),mail_account_id or None))
+                      (id,title,prompt,times_json,timezone,enabled,created_at,updated_at,calendar_write_target,permissions_json,mail_account_id,mail_account_ids_json)
+                      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       (id,title,prompt,json.dumps(clean),tz,int(bool(enabled)),stamp,stamp,None,json.dumps(authorized),selected_accounts[0] if selected_accounts else None,json.dumps(selected_accounts)))
         db.commit()
-        return {**one(db,"SELECT * FROM daily_prompts WHERE id=?",(id,)), "times":clean,"enabled":bool(enabled)}
+        return {**one(db,"SELECT * FROM daily_prompts WHERE id=?",(id,)), "times":clean,"enabled":bool(enabled),"mail_account_ids":selected_accounts}
     finally: db.close()
 
 
@@ -217,7 +228,8 @@ async def execute(run_id:str,task:dict[str,Any]):
                         mode="auto",thinking_level="balanced",use_memory=False)
         result=await run_chat(req,BackgroundRequest(),ephemeral=True,
                               unattended_target=task.get("id"), unattended_revision=task.get("updated_at"),
-                              unattended_mail_account=task.get("mail_account_id"))
+                              unattended_mail_accounts=json.loads(task.get("mail_account_ids_json") or "[]") or
+                                     ([task["mail_account_id"]] if task.get("mail_account_id") else []))
         async def collect():
             nonlocal error
             async for frame in result.body_iterator:
