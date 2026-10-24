@@ -73,7 +73,8 @@ async def upload_skill(file: UploadFile = File(...), name: str = Form(""),
                             and not x.is_dir() and x.file_size<=MAX_TEXT]
                 if len(candidates)!=1:
                     raise ValueError("ZIP must contain exactly one SKILL.md under 24 KB")
-                body=z.read(candidates[0],MAX_TEXT+1).decode("utf-8")
+                with z.open(candidates[0]) as extracted:
+                    body=extracted.read(MAX_TEXT+1).decode("utf-8")
         except (zipfile.BadZipFile,UnicodeError,ValueError,RuntimeError) as exc:
             raise HTTPException(422,detail=f"Invalid skill archive: {exc}") from exc
     else:
