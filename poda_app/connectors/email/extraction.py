@@ -58,8 +58,11 @@ def normalize(items: list[dict[str, Any]], body: str) -> list[dict[str, Any]]:
             continue
         kind = "confirmed" if str(c.get("kind", "")).lower() == "confirmed" else "tentative"
         span = str(c.get("evidence_span") or "")
-        if span and span not in body:
-            kind = "tentative"  # evidence not verifiable verbatim
+        # Evidence and timestamps must BOTH be verified before calling a
+        # meeting confirmed. This protects unattended calendar writes from
+        # guesses by a local model parsing untrusted mail.
+        if not span or span not in body:
+            kind = "tentative"
         try:
             conf = max(0.0, min(1.0, float(c.get("confidence", 0.5))))
         except Exception:
@@ -67,6 +70,19 @@ def normalize(items: list[dict[str, Any]], body: str) -> list[dict[str, Any]]:
         start = c.get("date_start") or None
         if not start:
             kind = "tentative"
+        elif kind=="confirmed":
+            try:
+                parsed=datetime.fromisoformat(start.replace("Z","+00:00"))
+                if not c.get("all_day",False) and parsed.tzinfo is None:
+                    kind="tentative"  # timezone offset is required to write safely
+                if c.get("date_end"):
+                    parsed_end=datetime.fromisoformat(str(c["date_end"]).replace("Z","+00:00"))
+                    if parsed_end<=parsed:
+                        kind="tentative"
+            except (TypeError,ValueError):
+                kind="tentative"
+        if conf<0.75:
+            kind="tentative"
         out.append({"kind": kind, "title": str(c["title"])[:200], "evidence_span": span[:400], "date_start": start, "date_end": c.get("date_end") or None,
                     "all_day": bool(c.get("all_day", True)) if start else True, "time_zone": c.get("time_zone") or None,
                     "duration_minutes": c.get("duration_minutes") if isinstance(c.get("duration_minutes"), int) else None,
