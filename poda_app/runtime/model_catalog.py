@@ -72,7 +72,7 @@ def assess(hw: dict, installed: list[str]) -> dict:
         out.append({**{k:v for k,v in family.items() if k!="variants"}, "variants":options,
                     "recommended_quant":best["quant"] if best else None,
                     "recommended_tag":best["tag"] if best else None,
-                    "verdict":best["status"] if best else "not compatible on detected hardware"})
+                    "verdict":best["status"] if best else "No listed quality-preserving quantization fits reliably"})
     return {"hardware":{"memory_architecture":hw.get("memory_architecture","unknown"),
                         "unified_memory_gb":hw.get("unified_memory_gb"),
                         "ram_total_gb":hw.get("ram_total_gb"),
