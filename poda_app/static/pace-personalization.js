@@ -128,6 +128,37 @@
       }catch(err){toast(errorDetail(err).message,'danger');}
     };
     await refreshSkills();
+    const memoryLearning=el('section',{class:'card stack'},el('h2',{},'Memory learning · Hindsight'),
+      note('PODA keeps its encrypted memory graph authoritative. Optional Hindsight adds local multi-strategy retrieval and consolidations; it must run on this Mac using only Ollama. No external provider or automatic service installation.'));
+    const memoryStatus=el('div',{class:'stack-sm'});
+    const enableMemory=el('input',{type:'checkbox'});
+    const enableLine=el('label',{class:'check'},enableMemory,'Use local Hindsight derived index (requires manually installed service)');
+    const syncButton=el('button',{class:'btn btn-sm',type:'button',onclick:async()=>{
+      syncButton.disabled=true;
+      try{
+        const data=await api('/memory/hindsight/sync',{method:'POST'});
+        toast('Synchronized '+data.synchronized+' nodes; removed '+data.deleted+' deleted references','ok');
+        refreshHindsight();
+      }catch(e){toast(errorDetail(e).message,'danger');}finally{syncButton.disabled=false;}
+    }},'Sync committed memory nodes');
+    const refreshHindsight=async()=>{
+      try{
+        const data=await api('/memory/hindsight/status');
+        enableMemory.checked=!!data.enabled;enableMemory.disabled=!data.local_server_reachable&&!data.enabled;
+        syncButton.disabled=!data.enabled;
+        memoryStatus.replaceChildren(note('Local service '+(data.local_server_reachable?'reachable':'not connected')+
+           ' · '+data.indexed_nodes+' indexed PODA nodes. '+data.warning));
+      }catch(e){memoryStatus.replaceChildren(note(errorDetail(e).message));}
+    };
+    enableMemory.onchange=async()=>{
+      const value=enableMemory.checked;
+      try{await api('/memory/hindsight/config',{method:'PUT',body:{enabled:value}});toast('Hindsight configuration updated','ok');}
+      catch(e){enableMemory.checked=!value;toast(errorDetail(e).message,'danger');}
+      refreshHindsight();
+    };
+    memoryLearning.append(enableLine,memoryStatus,syncButton);
+    view.querySelector('.screen')?.append(memoryLearning);
+    await refreshHindsight();
     inspector.append(note('Your preferred work speed is calculated from your own estimates and actual completion durations; no cloud model is used to store this data.'));
     await refresh();
   }
