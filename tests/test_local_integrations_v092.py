@@ -144,3 +144,51 @@ def test_untrusted_email_times_need_timezone():
           "date_start":"2026-10-26T15:00","all_day":False,"confidence":0.96}
     assert normalize([base],body)[0]["kind"]=="tentative"
     assert normalize([{**base,"date_start":"2026-10-26T15:00:00-04:00"}],body)[0]["kind"]=="confirmed"
+
+
+def test_hindsight_sync_replaces_and_deletes_with_same_poda_id(monkeypatch):
+    from poda_app.runtime.db import connect
+    import uuid
+    source_id=str(uuid.uuid4())
+    db=connect()
+    try:
+        db.execute("""INSERT INTO memory_nodes(id,title,node_type,summary,content,created_at,updated_at)
+                     VALUES (?,?,'memory',?,?,?,?)""",
+                   (source_id,"Temporary document","first","facts",
+                    "2000-01-01T00:00:00+00:00","2000-01-01T00:00:00+00:00"))
+        db.commit()
+    finally:db.close()
+    calls=[]
+    monkeypatch.setattr(hindsight_bridge,"enabled",lambda:True)
+    monkeypatch.setattr(hindsight_bridge,"_request",
+        lambda method,path,payload=None: calls.append((method,path,payload)) or {"success":True})
+    try:
+        first=hindsight_bridge.sync_once(limit=1)
+        assert first["synchronized"]==1,first
+        created=[c for c in calls if c[0]=="POST" and
+                c[2]["items"][0]["document_id"]=="poda-node-"+source_id]
+        assert len(created)==1
+        db=connect()
+        try:
+            db.execute("UPDATE memory_nodes SET content='new corrected content' WHERE id=?",(source_id,))
+            db.commit()
+        finally:db.close()
+        next_run=hindsight_bridge.sync_once(limit=1)
+        assert next_run["synchronized"]==1,next_run
+        assert len([c for c in calls if c[0]=="POST" and
+                    c[2]["items"][0]["document_id"]=="poda-node-"+source_id])==2
+        db=connect()
+        try:
+            db.execute("DELETE FROM memory_nodes WHERE id=?",(source_id,))
+            db.commit()
+        finally:db.close()
+        hindsight_bridge.sync_once(limit=1)
+        assert any(method=="DELETE" and path.endswith("poda-node-"+source_id)
+                   for method,path,_ in calls)
+    finally:
+        db=connect()
+        try:
+            db.execute("DELETE FROM hindsight_node_index WHERE poda_node_id=?",(source_id,))
+            db.execute("DELETE FROM memory_nodes WHERE id=?",(source_id,))
+            db.commit()
+        finally:db.close()
