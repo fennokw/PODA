@@ -1,3 +1,17 @@
+# PODA v0.9.2-public — Multi-account, local models, skill context and memory bridge
+
+- Multiple connected Mail inboxes per scheduled prompt, independent account-scoped send/edit permissions and backward compatibility with single-account prompts.
+- System compares measured unified RAM, dedicated VRAM if present and disk against local general/coding/vision Ollama model and quantization requirements.
+- Encrypted disabled-by-default Personalize skill uploads; external harnesses never auto-install or execute on upload.
+- Source-code AST/structured declaration tool within existing folder grants, grounded test-receipt lessons and edit verification.
+- Optional Ollama-backed local Hindsight server, node-ID synchronization with canonical PODA memory graph, explicit memory feedback and recall exclusion.
+- Evidence-first meeting extraction demotes unsupported or timezone-less events.
+- macOS/Ollama/Notion/IMAP and Hindsight live service must still be tested on actual hardware.
+
+See `docs/LOCAL_AGENT_INTEGRATIONS.md` for upstream research and limitations.
+
+---
+
 # PODA v0.9.1-public — Daily Automation reliability patch
 
 - Fixed the verifier's false encryption failure: the throwaway smoke-test database intentionally uses plaintext SQLite, while normal production remains SQLCipher-required.

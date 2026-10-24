@@ -1,57 +1,58 @@
 /* First-party local Ollama catalog and profile management. */
 (function(){
-  'use strict';
-  const {el,api,toast,confirmDialog,errorDetail}=window.PODA;
-  const note=s=>el('p',{class:'small muted'},s);
-  const btn=(name,fn)=>el('button',{type:'button',class:'btn btn-sm',onclick:fn},name);
-  async function mount(target){
-    target.replaceChildren(note('Loading installed Ollama models and current Qwen quantization options...'));
-    let data;
-    try{data=await api('/system/model-manager/catalog');}
-    catch(err){target.replaceChildren(note(errorDetail(err).message));return;}
-    const installed=data.installed||[];
-    const title=el('h3',{},'Choose local models for each PODA profile');
-    const reg=el('div',{class:'stack-sm'},title,
-      note('PODA can use any Ollama model installed on your Mac, including custom or imported models. Select one for each chat profile. Embedding models are excluded.'));
-    const chatModels=installed.filter(m=>!/embed|nomic-/i.test(m));
-    for(const profile of ['fast','balanced','deep']){
-      const chosen=data.selected?.[profile]||'';
-      const select=el('select',{class:'input','aria-label':profile+' model'},
-        el('option',{value:''},'Auto (based on installed models)'),
-        ...chatModels.map(m=>el('option',{value:m,selected:chosen===m},m)));
-      const save=btn('Use this model',async()=>{
-        if(!select.value){toast('Choose an installed model','danger');return;}
-        try{await api('/system/model-manager/profile',{method:'PUT',body:{profile,model:select.value}});
-          toast(profile+' profile updated. New replies use '+select.value,'ok');}
-        catch(err){toast(errorDetail(err).message,'danger');}
-      });
-      reg.append(el('div',{class:'model-profile-row'},el('strong',{},profile),
-        select,save,btn('Install model...',()=>installPrompt(profile))));
+ 'use strict';
+ const {el,api,toast,confirmDialog,errorDetail}=window.PODA;
+ const note=s=>el('p',{class:'small muted'},s);
+ const btn=(name,fn)=>el('button',{type:'button',class:'btn btn-sm',onclick:fn},name);
+ async function mount(target){
+  target.replaceChildren(note('Checking installed Ollama models and actual RAM / VRAM / disk capacity...'));
+  let data;try{data=await api('/system/model-manager/catalog');}catch(e){target.replaceChildren(note(errorDetail(e).message));return;}
+  const section=el('div',{class:'stack-sm'},el('h3',{},'Fully local Ollama model comparison'));
+  const h=data.hardware||{};
+  section.append(note('Measured capacity · RAM '+(h.ram_total_gb??'unavailable')+' GB · '+(h.gpu_shared_with_ram?
+    'GPU shares unified memory (not additional VRAM)':('Dedicated VRAM '+(h.gpu_dedicated_vram_gb??'not measurable')+' GB'))+
+    ' · disk free '+(h.disk_free_gb??'unavailable')+' GB. '+(data.disclaimer||'')));
+  const roles=['all','general','coding','vision'];
+  const filter=el('select',{class:'input','aria-label':'Model type'},...roles.map(v=>el('option',{value:v},v==='all'?'All model types':v)));
+  const results=el('div',{class:'stack-sm'});
+  const openInstall=async tag=>{
+    if(!(await confirmDialog({title:'Download local Ollama weights?',body:'Install '+tag+
+      ' on this Mac. This downloads weights but PODA does not enable cloud inference. Confirm exact model license and disk usage.',confirmLabel:'Open Terminal'})))return;
+    try{const r=await api('/system/model-manager/install-terminal',{method:'POST',body:{tag}});
+      toast(r.command+' opened in Terminal; refresh after completion.','ok',9000);
+    }catch(e){toast(errorDetail(e).message,'danger');}
+  };
+  const refresh=()=>{
+    results.replaceChildren();
+    for(const f of (data.families||[])){
+      if(filter.value!=='all'&&filter.value!==f.role)continue;
+      const card=el('div',{class:'card stack-sm'},el('strong',{},f.family+' · '+f.role),
+        note(f.notes),note(f.verdict+' · Suggested quantization: '+(f.recommended_quant||'none fits')));
+      for(const variant of f.variants||[]){
+        card.append(el('div',{class:'row'},note(variant.tag+' · '+variant.quant+' · '+variant.disk_gb+
+          ' GB disk · est. '+variant.estimated_resident_gb+' GB resident · '+variant.status+
+          (variant.installed?' · installed':'')),
+        btn('Install',()=>openInstall(variant.tag))));
+      }
+      results.append(card);
     }
-    const catalog=el('div',{class:'stack-sm'},el('h3',{},'Qwen quantization choices'),
-      note('Available Qwen 3.6 / 3.5 tags. RAM estimates reserve about 6 GB for the OS plus KV cache; they are guides, not guaranteed performance. A Q4 model is smaller; Q8 and BF16 generally require more memory.'));
-    const selectQuant=el('select',{class:'input','aria-label':'Qwen model variant'});
-    const options=data.recommendations||[];
-    options.sort((a,b)=>a.disk_gb-b.disk_gb);
-    for(const c of options){
-      const label=c.tag+' · '+c.disk_gb+' GB download · '+c.verdict+(c.installed?' · installed':'');
-      selectQuant.append(el('option',{value:c.tag},label));
-    }
-    async function openInstall(tag){
-      if(!(await confirmDialog({title:'Open Ollama installation in Terminal?',body:'Install '+tag+' using a local Terminal window and Ollama. This downloads model weights onto your Mac and can use significant disk space. PODA will not install anything without your click.',confirmLabel:'Open Terminal'})))return;
-      try{
-        const x=await api('/system/model-manager/install-terminal',{method:'POST',body:{tag}});
-        toast(x.command+' opened in Terminal. Wait for Ollama to finish, then refresh.','ok',10000);
-      }catch(err){toast(errorDetail(err).message,'danger');}
-    }
-    async function installPrompt(profile){
-      const tag=window.prompt('Enter an Ollama model tag to install for '+profile+' (example: qwen3.6:27b-q4_K_M)');
-      if(tag?.trim())await openInstall(tag.trim());
-    }
-    catalog.append(el('div',{class:'model-install-row'},selectQuant,
-      btn('Install selected quantization in Terminal',()=>openInstall(selectQuant.value)),
-      btn('Refresh installed models',()=>mount(target))));
-    target.replaceChildren(reg,catalog);
+  };
+  filter.onchange=refresh;refresh();
+  section.append(filter,results);
+  const profiles=el('div',{class:'stack-sm'},el('h3',{},'Installed models for PODA profiles'),
+    note('Only locally installed tags can be assigned. Install weights first, then select a profile.'));
+  const installed=(data.installed||[]).filter(x=>!/embed|nomic-|cloud/i.test(x));
+  for(const p of ['fast','balanced','deep']){
+    const select=el('select',{class:'input'},el('option',{value:''},'Choose installed model'),
+      ...installed.map(tag=>el('option',{value:tag},tag)));
+    select.value=data.selected?.[p]||'';
+    profiles.append(el('div',{class:'model-profile-row'},el('strong',{},p),select,
+      btn('Use model',async()=>{if(!select.value)return toast('Select a model','danger');
+        try{await api('/system/model-manager/profile',{method:'PUT',body:{profile:p,model:select.value}});toast('Profile updated','ok');}
+        catch(e){toast(errorDetail(e).message,'danger');}})));
   }
-  window.PODAModelManager={mount};
+  profiles.append(btn('Refresh local inventory',()=>mount(target)));
+  target.replaceChildren(profiles,section);
+ }
+ window.PODAModelManager={mount};
 })();

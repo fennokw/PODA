@@ -134,7 +134,13 @@ def recall(query: str, limit: int = 18, conn=None, depth: str = "auto", thinking
                 return default
         weight_text, weight_geo = setting("retrieval_text_weight", 0.72), setting("retrieval_geometry_weight", 0.28)
         w_self, w_surface = setting("retrieval_unified_self_weight", 0.6), setting("retrieval_unified_surface_weight", 0.4)
-        node_rows = {r["id"]: r for r in rows(conn, "SELECT * FROM memory_nodes WHERE node_type IN ('memory','surface')")}
+        from .hindsight_bridge import ensure_tables as hindsight_tables, recall_node_ids, enabled as hindsight_enabled
+        hindsight_tables(conn)
+        inactive={r["poda_node_id"] for r in rows(conn,
+          "SELECT poda_node_id FROM poda_memory_feedback WHERE assessment IN ('incorrect','outdated')")}
+        node_rows = {r["id"]: r for r in rows(conn, "SELECT * FROM memory_nodes WHERE node_type IN ('memory','surface')")
+                     if r["id"] not in inactive}
+        enhanced_ids=recall_node_ids(query) if hindsight_enabled() else []
         if not node_rows:
             return {"query": query, "results": [], "mode": "empty", "depth_used": depth, "surfaces": []}
         surface_ids = [i for i, r in node_rows.items() if r["node_type"] == "surface"]
@@ -209,7 +215,8 @@ def recall(query: str, limit: int = 18, conn=None, depth: str = "auto", thinking
             superseded = bool(row.get("superseded_by")) or bool(row.get("valid_until"))
             base = weight_text * text_signal + weight_geo * geo
             provenance_penalty = (1.0 - provenance_weight) * 0.25
-            final = base + trigger + 0.04 * importance + 0.03 * recency - provenance_penalty
+            hindsight_boost = (0.20 / (1+enhanced_ids.index(nid))) if nid in enhanced_ids else 0.0
+            final = base + trigger + hindsight_boost + 0.04 * importance + 0.03 * recency - provenance_penalty
             if superseded:
                 final -= 0.15
             if final <= 0.0:
@@ -217,7 +224,7 @@ def recall(query: str, limit: int = 18, conn=None, depth: str = "auto", thinking
             scored[nid] = (final, {"text_cosine": round(text_cos, 3), "self_cosine": round(self_cos, 3), "unified_context": round(unified, 3), "surface_score": round(surf_score, 3),
                                    "surface_id": sid, "lexical_bm25": round(lex, 3), "geometry_cosine": round(geo, 3), "trigger_boost": round(trigger, 3),
                                    "provenance_weight": provenance_weight, "provenance_penalty": round(provenance_penalty, 3), "importance": round(importance, 2),
-                                   "recency": round(recency, 3), "superseded": superseded, "geometry_estimated": geo_estimated, "provenance": provenance})
+                                   "recency": round(recency, 3), "hindsight_boost":round(hindsight_boost,3), "superseded": superseded, "geometry_estimated": geo_estimated, "provenance": provenance})
         surfaces_ranked = sorted(((scored[i][0], i) for i in surface_ids if i in scored), reverse=True)
         members_ranked = sorted(((scored[i][0], i) for i in member_ids if i in scored), reverse=True)
         surface_set = set(surface_ids)
@@ -269,7 +276,7 @@ def recall(query: str, limit: int = 18, conn=None, depth: str = "auto", thinking
         return {"query": query, "results": results, "mode": mode, "depth_used": depth, "surfaces": surfaces_summary,
                 "weights": {"text": weight_text, "geometry": weight_geo, "unified_self": w_self, "unified_surface": w_surface},
                 "embedding_model": config.EMBED_MODEL, "embedded": len(vectors), "lexical_hits": len(lexical),
-                "in_depth_loaded": depth == "deep"}
+                "in_depth_loaded": depth == "deep", "hindsight_matched_nodes":len(enhanced_ids)}
     finally:
         if own:
             conn.close()

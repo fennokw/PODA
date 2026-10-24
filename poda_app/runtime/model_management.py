@@ -35,7 +35,7 @@ class InstallRequest(BaseModel):
 @router.get("/catalog")
 def catalog():
     hw = hardware.probe()
-    return models.catalog(hw["unified_memory_gb"], hw.get("ollama", {}).get("models", []))
+    return models.catalog(hw, hw.get("ollama", {}).get("models", []))
 
 
 @router.put("/profile")

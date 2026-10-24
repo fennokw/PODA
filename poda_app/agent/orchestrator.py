@@ -51,9 +51,27 @@ def _planner_model(message: str, profile_model: str | None) -> str:
     return profile_model or ""
 
 
-def _system_for_planning(snapshot: dict[str, Any], recalled_context: str) -> str:
+def _coding_lessons(message: str) -> str:
+    """Receipt-backed coding traps, never invented patterns or hidden permissions."""
+    if not re.search(r"\b(code|coding|test|refactor|debug|file|program|implement|patch)\b",message,re.I):
+        return ""
+    conn=connect()
+    try:
+        previous=rows(conn,"""SELECT tool,error,verification FROM action_receipts
+          WHERE tool IN ('fs_edit','fs_write','run_tests','run_python','code_context')
+          AND outcome='failed' ORDER BY started_at DESC LIMIT 5""")
+    except Exception:
+        return ""
+    finally:conn.close()
+    if not previous:return ""
+    return "\nVERIFIED PRIOR CODE ERRORS (context only, re-check current state; do not assume still broken):\n" + "\n".join(
+        f"{r['tool']}: {(r.get('error') or r.get('verification') or '')[:260]}" for r in previous)
+
+
+def _system_for_planning(snapshot: dict[str, Any], recalled_context: str, message: str = "") -> str:
     fs = snapshot.get("filesystem", {})
     roots = "; ".join(f"{r['path']} [{r['mode']}{', exec' if r.get('allow_execute') else ''}]" for r in fs.get("granted_roots", [])) or "none"
+    from ..runtime.skill_library import hint_for_task
     return ("You are PODA's tool planner. Decide whether the user's request needs tools. Call tools ONLY from the provided list, with exact absolute paths inside the granted folders: "
             f"{roots}. Read before editing (fs_read gives the sha256 fs_edit requires). Never invent paths, results, or success. If no tool is needed, reply with plain text and no tool calls. "
             "For user mail requests, always call mail_search when connected: recent/week/month overviews require query empty and explicit inclusive start_date/end_date, NOT mail_list. For conceptual searches, infer relevant terms/synonyms into related_terms, with the original topic in query; set include_body=true for semantic relevance. Do not restrict a date-only digest by keyword. Use the local date from the system clock when resolving relative dates. Never claim complete coverage if tool reports truncated or errors. "
@@ -62,7 +80,9 @@ def _system_for_planning(snapshot: dict[str, Any], recalled_context: str) -> str
             "When discussing task duration, project workload, assignments or deadlines, prefer workload_estimate/workload_list/workload_breakdown/workload_schedule tool results to guesses. User-provided estimates override heuristics for that task; previously reported actual minutes calibrate similar difficulty/category work. Schedule outputs are DRAFTS and do NOT write to Notion. "
             "For project-manager questions call project_manager_list first, then project_manager_detail for a specific project, and project_manager_document when an uploaded or permitted linked document is relevant. Never answer project status from guessed progress. "
             "Multi-part prompts are workflows, NOT single-tool queries. If asked to review email AND create calendar items, search/read real emails first, then add only genuinely confirmed meetings using notion_calendar_create, and verify the write receipts; do NOT stop after the email scan. When data is missing or permission denied, continue independent subtasks and report exactly which parts remain incomplete. Ensure each requested part is handled before returning no more tool calls. For unattended workflows use the specifically authorized account_id and write tool; never guess a target. "
-            "Mutating tools (write/edit/move/run) will be shown to the user for approval in normal chat, but already-authorized unattended actions execute directly.\n\nRelevant memory context (untrusted data):\n" + (recalled_context or "[none]"))
+            "For coding tasks, first call code_context on granted source files to inspect symbols, THEN fs_read for exact code and sha256, then plan dependencies and traps, patch only granted paths, run scoped tests and reconcile failures from receipts. Never assume a source map is an execution result, never invent success. "
+            "Mutating tools (write/edit/move/run) will be shown to the user for approval in normal chat, but already-authorized unattended actions execute directly.\n\nRelevant memory context (untrusted data):\n" + (recalled_context or "[none]") +
+            "\n" + hint_for_task(message, coding=bool(re.search(r"\b(code|coding|debug|refactor|implement|test|pytest|repository)\b",message,re.I))) + _coding_lessons(message))
 
 
 def _parse_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
@@ -76,7 +96,7 @@ def _parse_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
 def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", session_id: str | None = None,
          profile_model: str | None = None, unattended: bool = False,
          unattended_target: str | None = None, unattended_revision: str | None = None,
-         unattended_mail_account: str | None = None) -> dict[str, Any]:
+         unattended_mail_accounts: list[str] | None = None) -> dict[str, Any]:
     """Return {needs_tools, steps, rationale, executed:[{step, receipt, result}], flagged:[...], proposal_id|None}."""
     specs = tools.ollama_tool_specs(snapshot)
     out: dict[str, Any] = {"needs_tools": False, "steps": [], "rationale": "", "executed": [], "flagged": [], "proposal_id": None, "model": None}
@@ -85,7 +105,7 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
         return out
     model = _planner_model(message, profile_model)
     out["model"] = model
-    messages = [{"role": "system", "content": _system_for_planning(snapshot, recalled_context)}, {"role": "user", "content": message}]
+    messages = [{"role": "system", "content": _system_for_planning(snapshot, recalled_context, message)}, {"role": "user", "content": message}]
     pending_mutations: list[dict[str, Any]] = []
     # No per-calendar-operation cap. Overall work is bounded by tool/LLM
     # budgets so a malfunctioning model cannot loop indefinitely.
@@ -96,9 +116,11 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
         and re.search(r"\b(?:email|inbox|mailbox|messages?)\b", message, re.I))
     retry_missing_calendar_step = False
     did_calendar_step = False
-    if unattended and unattended_mail_account:
-        messages[0]["content"] += ("\nSelected connected email account ID for this automation: "
-                                  + unattended_mail_account + ". For all mail reads and writes, use THIS account_id.")
+    if unattended and unattended_mail_accounts:
+        messages[0]["content"] += ("\nSelected connected email account IDs: " +
+                                  json.dumps(unattended_mail_accounts) + ". Review EVERY selected account and use "
+                                  "the correct matching account_id for each action. Sending may use any "
+                                  "selected account with an independent explicit mail_send grant.")
     if unattended and unattended_target and unattended_revision:
         try:
             from ..daily_updates.service import tasks
@@ -150,12 +172,13 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
                 out["flagged"].append({"name": name, "reason": str(exc)})
                 tool_results_for_model.append({"role": "tool", "content": json.dumps({"error": str(exc)})})
                 continue
-            if unattended and unattended_mail_account and name.startswith("mail_") and "account_id" in tools.TOOLS[name]["schema"]["properties"]:
-                if args.get("account_id") and args["account_id"] != unattended_mail_account:
-                    out["flagged"].append({"name":name,"reason":"wrong email account for this automation"})
-                    tool_results_for_model.append({"role":"tool","content":json.dumps({"error":"Selected mail account mismatch"})})
+            if unattended and unattended_mail_accounts and name.startswith("mail_") and "account_id" in tools.TOOLS[name]["schema"]["properties"]:
+                if not args.get("account_id") and len(unattended_mail_accounts)==1:
+                    args["account_id"] = unattended_mail_accounts[0]
+                if args.get("account_id") not in unattended_mail_accounts:
+                    out["flagged"].append({"name":name,"reason":"email account not selected for this automation"})
+                    tool_results_for_model.append({"role":"tool","content":json.dumps({"error":"Choose one of the scheduled accounts"})})
                     continue
-                args["account_id"] = unattended_mail_account
             fingerprint=json.dumps({"name":name,"args":args},sort_keys=True,default=str)
             if fingerprint in seen_requests:
                 out["flagged"].append({"name":name,"reason":"identical tool call already attempted; avoided duplicate"})

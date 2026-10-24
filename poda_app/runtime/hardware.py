@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import platform
+import re
 import shutil
 import subprocess
 from typing import Any
@@ -39,14 +40,19 @@ def probe() -> dict[str, Any]:
     mem_total = int(_sysctl("hw.memsize") or 0)
     vm = _vm_stat()
     free_like = vm.get("pages_free", 0) + vm.get("pages_inactive", 0) + vm.get("pages_speculative", 0) + vm.get("pages_purgeable", 0)
-    disk = shutil.disk_usage(str(config.BASE_DIR))
+    disk = shutil.disk_usage(str(config.DATA_DIR if config.DATA_DIR.exists() else config.BASE_DIR))
     metal = None
+    dedicated_vram = None
+    architecture = "unified" if platform.system()=="Darwin" and platform.machine()=="arm64" else "separate_or_unknown"
     try:
         sp = subprocess.run(["system_profiler", "SPDisplaysDataType"], capture_output=True, text=True, timeout=15).stdout
         for line in sp.splitlines():
-            if "Metal" in line:
+            if "Metal" in line and ":" in line and not metal:
                 metal = line.split(":", 1)[1].strip()
-                break
+            if re.search(r"VRAM.*(?:Total|Dedicated)|VRAM \(",line,re.I):
+                m=re.search(r"([\d.]+)\s*(GB|MB)",line,re.I)
+                if m and architecture != "unified":
+                    dedicated_vram = round(float(m.group(1)) / (1024 if m.group(2).upper()=="MB" else 1),1)
     except Exception:
         pass
     ollama_state = ollama.status()
@@ -55,8 +61,9 @@ def probe() -> dict[str, Any]:
         "cores": int(_sysctl("hw.ncpu") or 0),
         "unified_memory_bytes": mem_total,
         "unified_memory_gb": round(mem_total / 1024**3, 1),
-        "memory_available_estimate_bytes": free_like,
-        "memory_available_estimate_gb": round(free_like / 1024**3, 1),
+        "ram_total_gb": round(mem_total/1024**3,1),
+        "memory_architecture": architecture,
+        "gpu_memory_dedicated_gb": dedicated_vram,
         "disk_free_gb": round(disk.free / 1024**3, 1),
         "disk_total_gb": round(disk.total / 1024**3, 1),
         "metal": metal,

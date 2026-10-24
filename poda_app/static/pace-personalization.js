@@ -91,6 +91,101 @@
       }catch(err){toast(errorDetail(err).message,'danger');}
       finally{save.disabled=false;}
     };
+    const skills=el('section',{class:'card stack'},el('h2',{},'Skills & harness reference uploads'),
+      note('Markdown or ZIP containing SKILL.md. Encrypted locally, disabled initially; never executes uploaded scripts.'));
+    view.querySelector('.screen')?.append(skills);
+    const formSkills=el('form',{class:'stack'});
+    const skillName=input('name','','text',{placeholder:'Optional skill name'});
+    const skillCategory=el('select',{class:'input'},...['general','coding','scheduling','email','harness'].map(x=>el('option',{value:x},x)));
+    const skillFile=el('input',{class:'input',type:'file',accept:'.md,.txt,.zip'});
+    const skillList=el('div',{class:'stack-sm'});
+    formSkills.append(field('Name',skillName),field('Category',skillCategory),field('SKILL.md / .txt / .zip',skillFile),
+      el('button',{class:'btn btn-primary',type:'submit'},'Upload (inactive)'));
+    skills.append(formSkills,skillList);
+    const refreshSkills=async()=>{
+      try{
+        const data=await api('/personalize/skills');skillList.replaceChildren();
+        for(const item of data.skills||[]){
+          const toggle=el('input',{type:'checkbox',checked:!!item.enabled});
+          toggle.onchange=async()=>{try{await api('/personalize/skills/'+encodeURIComponent(item.id),{method:'PUT',body:{enabled:toggle.checked}});
+            toast('Skill updated','ok');}catch(e){toggle.checked=!toggle.checked;toast(errorDetail(e).message,'danger');}};
+          const remove=el('button',{class:'btn btn-sm',type:'button',onclick:async()=>{
+            if(!(await confirmDialog({title:'Delete skill?',body:'Remove this reference from PODA.',confirmLabel:'Delete'})))return;
+            await api('/personalize/skills/'+encodeURIComponent(item.id),{method:'DELETE'});refreshSkills();
+          }},'Delete');
+          skillList.append(el('div',{class:'row'},el('label',{class:'check'},toggle,item.name+' ('+item.category+')'),remove));
+        }
+        if(!data.skills?.length)skillList.append(note('No custom skills.'));
+      }catch(e){skillList.replaceChildren(note(errorDetail(e).message));}
+    };
+    formSkills.onsubmit=async e=>{
+      e.preventDefault();if(!skillFile.files?.[0])return toast('Choose a file','danger');
+      const fd=new FormData();fd.append('file',skillFile.files[0]);fd.append('name',skillName.value);fd.append('category',skillCategory.value);
+      try{
+        const resp=await fetch('/personalize/skills',{method:'POST',body:fd,credentials:'same-origin'});
+        if(!resp.ok){const data=await resp.json();throw Error(data.detail||'Upload failed');}
+        formSkills.reset();toast('Skill stored locally, disabled by default','ok');refreshSkills();
+      }catch(err){toast(errorDetail(err).message,'danger');}
+    };
+    await refreshSkills();
+    const memoryLearning=el('section',{class:'card stack'},el('h2',{},'Memory learning · Hindsight'),
+      note('PODA keeps its encrypted memory graph authoritative. Optional Hindsight adds local multi-strategy retrieval and consolidations; it must run on this Mac using only Ollama. No external provider or automatic service installation.'));
+    const memoryStatus=el('div',{class:'stack-sm'});
+    const enableMemory=el('input',{type:'checkbox'});
+    const enableLine=el('label',{class:'check'},enableMemory,'Use local Hindsight derived index (requires manually installed service)');
+    const syncButton=el('button',{class:'btn btn-sm',type:'button',onclick:async()=>{
+      syncButton.disabled=true;
+      try{
+        const data=await api('/memory/hindsight/sync',{method:'POST'});
+        toast('Synchronized '+data.synchronized+' nodes; removed '+data.deleted+' deleted references','ok');
+        refreshHindsight();
+      }catch(e){toast(errorDetail(e).message,'danger');}finally{syncButton.disabled=false;}
+    }},'Sync committed memory nodes');
+    const refreshHindsight=async()=>{
+      try{
+        const data=await api('/memory/hindsight/status');
+        enableMemory.checked=!!data.enabled;enableMemory.disabled=!data.local_server_reachable&&!data.enabled;
+        syncButton.disabled=!data.enabled;
+        memoryStatus.replaceChildren(note('Local service '+(data.local_server_reachable?'reachable':'not connected')+
+           ' · '+data.indexed_nodes+' indexed PODA nodes. '+data.warning));
+      }catch(e){memoryStatus.replaceChildren(note(errorDetail(e).message));}
+    };
+    enableMemory.onchange=async()=>{
+      const value=enableMemory.checked;
+      try{await api('/memory/hindsight/config',{method:'PUT',body:{enabled:value}});toast('Hindsight configuration updated','ok');}
+      catch(e){enableMemory.checked=!value;toast(errorDetail(e).message,'danger');}
+      refreshHindsight();
+    };
+    const reviewQuery=input('memory-search','','text',{placeholder:'Search memory to correct or restore'});
+    const reviewResults=el('div',{class:'stack-sm'});
+    const searchMemory=el('button',{class:'btn btn-sm',type:'button',onclick:async()=>{
+      if(!reviewQuery.value.trim())return;
+      try{
+        const result=await api('/memory/search?q='+encodeURIComponent(reviewQuery.value.trim())+'&limit=12');
+        reviewResults.replaceChildren();
+        for(const node of result.results||[]){
+          if(node.node_type!=='memory')continue;
+          const choice=el('select',{class:'input'},
+            ...['helpful','incorrect','outdated','restore'].map(t=>el('option',{value:t},t)));
+          const commit=el('button',{class:'btn btn-sm',type:'button',onclick:async()=>{
+            try{
+              await api('/memory/hindsight/feedback',{method:'POST',
+                body:{node_id:node.id,assessment:choice.value,reason:'User-reviewed in Personalize'}});
+              toast('Memory quality updated in PODA graph','ok');
+            }catch(err){toast(errorDetail(err).message,'danger');}
+          }},'Apply');
+          reviewResults.append(el('div',{class:'stack-sm'},el('strong',{},node.title||'Untitled memory'),
+             note((node.summary||'').slice(0,250)),el('div',{class:'row'},choice,commit)));
+        }
+        if(!reviewResults.childNodes.length)reviewResults.append(note('No matching memories.'));
+      }catch(err){toast(errorDetail(err).message,'danger');}
+    }},'Find memories');
+    memoryLearning.append(enableLine,memoryStatus,syncButton,
+      el('h3',{},'Correct outdated or misleading memories'),
+      note('Changes affect retrieval immediately; the underlying node remains visible and can be restored.'),
+      reviewQuery,searchMemory,reviewResults);
+    view.querySelector('.screen')?.append(memoryLearning);
+    await refreshHindsight();
     inspector.append(note('Your preferred work speed is calculated from your own estimates and actual completion durations; no cloud model is used to store this data.'));
     await refresh();
   }

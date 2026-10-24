@@ -65,7 +65,7 @@ def system_models() -> dict[str, Any]:
     hw = hardware.probe()
     reg = models.registry(hw.get("ollama", {}).get("models") or [], hw.get("unified_memory_gb"))
     reg["benchmarks"] = models.recorded_benchmarks()
-    reg["hardware"] = {k: hw.get(k) for k in ("chip", "unified_memory_gb", "memory_available_estimate_gb", "metal", "macos")}
+    reg["hardware"] = {k: hw.get(k) for k in ("chip", "unified_memory_gb", "ram_total_gb", "memory_architecture", "gpu_memory_dedicated_gb", "disk_free_gb", "metal", "macos")}
     return reg
 
 

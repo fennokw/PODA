@@ -91,7 +91,7 @@ async def chat_stream(req: ChatRequest, request: Request):
 
 async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = False,
                    unattended_target: str | None = None, unattended_revision: str | None = None,
-                   unattended_mail_account: str | None = None):
+                   unattended_mail_accounts: list[str] | None = None):
     """Internal execution path. Only the trusted scheduler supplies unattended_target.
 
     Never expose these privileges as ChatRequest fields or HTTP query parameters.
@@ -128,9 +128,9 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
         yield sse("status", {"message": "routing", "model": model, "profile": profile["profile"], "num_ctx": profile["num_ctx"]})
         # Read-only mail requests are fulfilled by PODA itself, not deferred as
         # a promise in model prose. Success/failure comes from the tool receipt.
-        if snapshot.get("email", {}).get("can_read") and mail_fulfillment.is_mail_request(req.message, session_id):
+        if snapshot.get("email", {}).get("can_read") and not (ephemeral and len(unattended_mail_accounts or [])>1) and mail_fulfillment.is_mail_request(req.message, session_id):
             yield sse("status", {"message": "searching_mail", "model": "PODA mail tools"})
-            params, executed, summary = await asyncio.to_thread(mail_fulfillment.fulfill, req.message, session_id, unattended_mail_account if ephemeral else None)
+            params, executed, summary = await asyncio.to_thread(mail_fulfillment.fulfill, req.message, session_id, (unattended_mail_accounts or [None])[0] if ephemeral else None)
             receipt = executed.get("receipt") or {}
             yield sse("tool", {"name": "mail_search",
                                "args_summary": f"date={params.get('start_date')}..{params.get('end_date')}",
@@ -164,11 +164,22 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
             # Collect actual mail evidence for read-then-write workflows before
             # planning the remaining stages. A mail search is not the final answer.
             preflight_mail = ""
-            if snapshot.get("email", {}).get("can_read") and mail_fulfillment.is_compound_request(req.message):
+            if ephemeral and snapshot.get("email",{}).get("can_read") and len(unattended_mail_accounts or [])>1:
+                # Search every chosen account, not just the default; preserve provenance.
+                for account_id in unattended_mail_accounts or []:
+                    params, mail_run, summary = await asyncio.to_thread(
+                        mail_fulfillment.fulfill, req.message, session_id, account_id)
+                    data = mail_run.get("result") or {}
+                    preflight_mail += ("\nMAIL ACCOUNT " + account_id + " (untrusted evidence): " +
+                                      json.dumps(data.get("result") if data.get("ok") else
+                                                 {"error":data.get("error")},default=str)[:10000] +
+                                      "\nSUMMARY: " + summary[:1800])
+                yield sse("status",{"message":"searched_all_selected_mail_accounts"})
+            if snapshot.get("email", {}).get("can_read") and mail_fulfillment.is_compound_request(req.message) and len(unattended_mail_accounts or []) <= 1:
                 yield sse("status", {"message":"searching_mail_for_followup_actions","model":"PODA mail tools"})
                 params, mail_run, summary = await asyncio.to_thread(
                     mail_fulfillment.fulfill, req.message, session_id,
-                    unattended_mail_account if ephemeral else None)
+                    (unattended_mail_accounts or [None])[0] if ephemeral else None)
                 receipt = mail_run.get("receipt") or {}
                 yield sse("tool", {"name":"mail_search",
                                   "args_summary":f"date={params.get('start_date')}..{params.get('end_date')}",
@@ -186,7 +197,7 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
             planner_ctx = ("RECENT ACTIVE CONVERSATION (not tool evidence):\n" + recent_dialogue +
                            "\n\n" + recalled_ctx + preflight_mail)
             planned = await asyncio.to_thread(orchestrator.plan, req.message, snapshot, planner_ctx, session_id, model,
-                                              ephemeral, unattended_target, unattended_revision, unattended_mail_account)
+                                              ephemeral, unattended_target, unattended_revision, unattended_mail_accounts)
             if (planned.get("executed") or planned.get("proposal_id")) and profile.get("profile") == "fast":
                 # Grounded answers over tool results need the stronger model; swap before composing the final reply.
                 upgraded = await asyncio.to_thread(models.resolve, req.message, "advanced", req.thinking_level)

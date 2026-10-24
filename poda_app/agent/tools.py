@@ -5,7 +5,7 @@ import json
 from typing import Any, Callable
 
 from ..runtime.db import connect
-from . import fs_tools, exec_tools, grants, receipts
+from . import fs_tools, exec_tools, grants, receipts, code_context
 
 
 def _memory_search(query: str, limit: int = 10) -> dict[str, Any]:
@@ -98,6 +98,8 @@ def _schema(props: dict[str, Any], required: list[str]) -> dict[str, Any]:
 
 
 TOOLS: dict[str, dict[str, Any]] = {
+    "code_context": {"description": "Cortex-style static source symbol/import map for a granted file. Use BEFORE editing to ground code changes. Does not execute the file.", "mutating": False, "requires_confirmation": False, "needs": "fs_read",
+                "handler": code_context.inspect_code, "schema": _schema({"path": _str("Exact path to a granted source code file")}, ["path"])},
     "fs_list": {"description": "List files and folders inside a granted folder (depth ≤ 2).", "mutating": False, "requires_confirmation": False, "needs": "fs_read",
                 "handler": fs_tools.fs_list, "schema": _schema({"path": _str("Absolute path inside a granted folder"), "depth": _int("Recursion depth 0-2", 0, 2)}, ["path"])},
     "fs_read": {"description": "Read a UTF-8 text file inside a granted folder; returns content and sha256.", "mutating": False, "requires_confirmation": False, "needs": "fs_read",

@@ -1,3 +1,13 @@
+## PODA v0.9.2 — local models, multi-email automation and guided memory
+
+Daily Automation can scan several previously connected inboxes and grant independent, revocable per-account send/edit rights without re-entering credentials. **System** compares local Ollama general, coding and vision families using measured Mac memory, VRAM and disk rather than a misleading "available unified memory" estimate. **Personalize** adds encrypted opt-in Markdown skill uploads and local Hindsight status/sync.
+
+Coding tasks can use permission-gated AST and source-symbol lookup before editing, followed by verified test/receipt feedback. PODA's existing visible memory graph stays canonical and supports incorrect/outdated feedback; optional local Ollama-backed Hindsight can add a derived index. The external Cortex Rust MCP servers and full Hindsight engine are NOT bundled or auto-installed. Details: [Local agent integrations](docs/LOCAL_AGENT_INTEGRATIONS.md).
+
+**Upgrade:** Update from `main`, preserving state under macOS Application Support. Run `VERIFY_PODA.command` in the existing Python environment. Optional Hindsight is off by default, and new uploaded skills are inactive by default.
+
+---
+
 # PODA — Personal Organization Digital Assistant
 
 ## PODA v0.9.1: reliable daily automations and safer local verification
