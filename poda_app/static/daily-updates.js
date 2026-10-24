@@ -36,54 +36,66 @@
         permissionCatalog=grants.permissions||[];
         mailAccounts=grants.mail_accounts||[];
       } catch(e) { permissionArea.append(note(errorDetail(e).message)); }
+      const selectedAccounts=new Set();
+      const mailAccountArea=el('div',{class:'stack-sm'});
+      const renderMailAccounts=()=>{
+        mailAccountArea.replaceChildren(note('Select any combination of already-connected inboxes for this automation. Each outgoing email still needs its own approved sending permission.'));
+        for(const account of mailAccounts){
+          const box=el('input',{type:'checkbox',checked:selectedAccounts.has(account.id)});
+          box.onchange=()=>{if(box.checked)selectedAccounts.add(account.id);else selectedAccounts.delete(account.id);redrawPermissions();};
+          mailAccountArea.append(el('label',{class:'check'},box,account.account_name+' · '+account.address_masked));
+        }
+        if(!mailAccounts.length)mailAccountArea.append(note('No accounts connected. Add one in Mail first.'));
+      };
       const redrawPermissions=()=>{
-        permissionArea.replaceChildren(el('h4',{},'Persistent unattended permissions'),
-          note('Select only actions and exact targets this automation may change. Revoked when paused, edited or deleted. Sensitive permissions can modify real data without asking again.'));
+        permissionArea.replaceChildren(el('h4',{},'Unattended action permissions'),
+          note('Each action and target must be approved separately. Mail grants are per selected account; no blanket send permission.'));
         for(const entry of permissionCatalog){
-          const grant=configuredPermissions.find(p=>p.tool===entry.tool);
-          const check=el('input',{type:'checkbox',checked:!!grant,disabled:!entry.available && !grant});
-          const scopeControls={};
-          const section=el('div',{class:'stack-sm'},el('label',{class:'check'},check,entry.label+' ('+entry.tool+')'),
-            !entry.available?note(entry.reason):null);
-          for(const f of entry.fields||[]){
-            let ctl;
-            if(f.name==='account_id'){
-              ctl=el('select',{class:'input',name:f.name},
-                el('option',{value:''},mailAccounts.length?'Select an existing Mail account':'No connected Mail accounts'),
-                ...mailAccounts.map(a=>el('option',{value:a.id},a.account_name+' · '+a.address_masked)));
-              ctl.value=grant?.scope?.[f.name]||'';
-            }else if(f.name==='action'){
-              ctl=el('select',{class:'input',name:f.name},
-                ...['mark_read','mark_unread','flag','unflag','archive'].map(x=>el('option',{value:x},x.replace('_',' '))));
-              ctl.value=grant?.scope?.[f.name]||'mark_read';
-            }else{
-              ctl=input(f.name,grant?.scope?.[f.name]||'','text',{placeholder:f.label});
+          const isMail=entry.tool.startsWith('mail_');
+          const grants=configuredPermissions.filter(p=>p.tool===entry.tool);
+          const section=el('div',{class:'stack-sm'},el('strong',{},entry.label));
+          const allowedAccounts=isMail?mailAccounts.filter(a=>selectedAccounts.has(a.id)):[null];
+          if(isMail && !allowedAccounts.length){section.append(note('Select an inbox above first.'));permissionArea.append(section);continue;}
+          for(const account of allowedAccounts){
+            const grant=grants.find(g=>!account||g.scope.account_id===account.id);
+            const scoped={};
+            const header=el('label',{class:'check'});
+            const enabledGrant=el('input',{type:'checkbox',checked:!!grant,disabled:!entry.available && !grant});
+            header.append(enabledGrant,account?account.account_name+' · '+account.address_masked:'Allow this action');
+            const block=el('div',{class:'stack-sm'},header);
+            for(const f of entry.fields||[]){
+              if(f.name==='account_id')continue;
+              let ctl;
+              if(f.name==='action'){
+                ctl=el('select',{class:'input'},...['mark_read','mark_unread','flag','unflag','archive'].map(v=>el('option',{value:v},v.replace('_',' '))));
+                ctl.value=grant?.scope?.[f.name]||'mark_read';
+              }else ctl=input(f.name,grant?.scope?.[f.name]||'','text',{placeholder:f.label});
+              scoped[f.name]=ctl;
+              block.append(field(f.label,ctl));
             }
-            scopeControls[f.name]=ctl;section.append(field(f.label,ctl));
-          }
-          check.onchange=()=>{
-            const idx=configuredPermissions.findIndex(p=>p.tool===entry.tool);
-            if(idx>=0)configuredPermissions.splice(idx,1);
-            if(check.checked)configuredPermissions.push({tool:entry.tool,scope:Object.fromEntries(Object.entries(scopeControls).map(([k,v])=>[k,v.value]))});
-          };
-          for(const [key,ctl] of Object.entries(scopeControls)){
-            const storeScope=()=>{
-              const g=configuredPermissions.find(p=>p.tool===entry.tool);if(g)g.scope[key]=ctl.value;
+            const sync=()=>{
+              const index=configuredPermissions.findIndex(g=>g.tool===entry.tool && (!account||g.scope.account_id===account.id));
+              if(index>=0)configuredPermissions.splice(index,1);
+              if(enabledGrant.checked)configuredPermissions.push({tool:entry.tool,scope:{
+                ...(account?{account_id:account.id}:{}),
+                ...Object.fromEntries(Object.entries(scoped).map(([k,v])=>[k,v.value]))
+              }});
             };
-            ctl.oninput=storeScope;ctl.onchange=storeScope;
+            enabledGrant.onchange=sync;
+            for(const ctl of Object.values(scoped)){ctl.onchange=sync;ctl.oninput=sync;}
+            section.append(block);
           }
+          if(!entry.available)section.append(note(entry.reason));
           permissionArea.append(section);
         }
       };
+      renderMailAccounts();
       redrawPermissions();
-      const mailSelection=el('select',{class:'input','aria-label':'Mail account for automated email reads'},
-        el('option',{value:''},'Default connected account'),
-        ...mailAccounts.map(a=>el('option',{value:a.id},a.account_name+' · '+a.address_masked)));
       const save=el('button',{class:'btn btn-primary',type:'submit'},'Save automation');
       form.append(el('h3',{},'Create daily automation'),
         field('Name',title),field('Automation prompt',prompt),
         field('Times (24-hour, comma separated)',times),field('Time zone (IANA)',tz),
-        field('Connected mail account for email access',mailSelection),
+        field('Connected inboxes',mailAccountArea),
         note('Accounts are loaded from the Mail page. No passwords, account IDs or access codes need to be entered here.'),
         el('label',{class:'check'},enabled,'Active'),
         permissionArea,save);
@@ -91,7 +103,7 @@
         e.preventDefault();save.disabled=true;
         const payload={title:title.value,prompt:prompt.value,times:times.value.split(',').map(x=>x.trim()).filter(Boolean),
                        timezone:tz.value.trim(),enabled:enabled.checked,
-                       permissions:configuredPermissions,mail_account_id:mailSelection.value||null};
+                       permissions:configuredPermissions,mail_account_ids:Array.from(selectedAccounts)};
         try{
           await api(editing?'/daily-updates/'+encodeURIComponent(editing):'/daily-updates',
             {method:editing?'PUT':'POST',body:payload});
@@ -114,14 +126,15 @@
             }),
             button('Edit',()=>{
               editing=s.id;title.value=s.title;prompt.value=s.prompt;times.value=s.times.join(', ');
-              tz.value=s.timezone;enabled.checked=s.enabled;mailSelection.value=s.mail_account_id||'';
+              tz.value=s.timezone;enabled.checked=s.enabled;selectedAccounts.clear();for(const id of (s.mail_account_ids|| (s.mail_account_id?[s.mail_account_id]:[]))) selectedAccounts.add(id);
+              renderMailAccounts();
               configuredPermissions.splice(0,configuredPermissions.length,...(JSON.parse(s.permissions_json||'[]')));
               redrawPermissions();save.textContent='Save changes';title.focus();
             }),
             button(s.enabled?'Pause':'Resume',async()=>{
               try{
                 await api('/daily-updates/'+encodeURIComponent(s.id),{method:'PUT',
-                  body:{title:s.title,prompt:s.prompt,times:s.times,timezone:s.timezone,enabled:!s.enabled,permissions:JSON.parse(s.permissions_json||'[]'),mail_account_id:s.mail_account_id||null}});
+                  body:{title:s.title,prompt:s.prompt,times:s.times,timezone:s.timezone,enabled:!s.enabled,permissions:JSON.parse(s.permissions_json||'[]'),mail_account_ids:s.mail_account_ids|| (s.mail_account_id?[s.mail_account_id]:[])}});
                 render();
               }catch(err){toast(errorDetail(err).message,'danger');}
             }),
