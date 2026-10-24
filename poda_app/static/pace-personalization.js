@@ -156,7 +156,34 @@
       catch(e){enableMemory.checked=!value;toast(errorDetail(e).message,'danger');}
       refreshHindsight();
     };
-    memoryLearning.append(enableLine,memoryStatus,syncButton);
+    const reviewQuery=input('memory-search','','text',{placeholder:'Search memory to correct or restore'});
+    const reviewResults=el('div',{class:'stack-sm'});
+    const searchMemory=el('button',{class:'btn btn-sm',type:'button',onclick:async()=>{
+      if(!reviewQuery.value.trim())return;
+      try{
+        const result=await api('/memory/search?q='+encodeURIComponent(reviewQuery.value.trim())+'&limit=12');
+        reviewResults.replaceChildren();
+        for(const node of result.results||[]){
+          if(node.node_type!=='memory')continue;
+          const choice=el('select',{class:'input'},
+            ...['helpful','incorrect','outdated','restore'].map(t=>el('option',{value:t},t)));
+          const commit=el('button',{class:'btn btn-sm',type:'button',onclick:async()=>{
+            try{
+              await api('/memory/hindsight/feedback',{method:'POST',
+                body:{node_id:node.id,assessment:choice.value,reason:'User-reviewed in Personalize'}});
+              toast('Memory quality updated in PODA graph','ok');
+            }catch(err){toast(errorDetail(err).message,'danger');}
+          }},'Apply');
+          reviewResults.append(el('div',{class:'stack-sm'},el('strong',{},node.title||'Untitled memory'),
+             note((node.summary||'').slice(0,250)),el('div',{class:'row'},choice,commit)));
+        }
+        if(!reviewResults.childNodes.length)reviewResults.append(note('No matching memories.'));
+      }catch(err){toast(errorDetail(err).message,'danger');}
+    }},'Find memories');
+    memoryLearning.append(enableLine,memoryStatus,syncButton,
+      el('h3',{},'Correct outdated or misleading memories'),
+      note('Changes affect retrieval immediately; the underlying node remains visible and can be restored.'),
+      reviewQuery,searchMemory,reviewResults);
     view.querySelector('.screen')?.append(memoryLearning);
     await refreshHindsight();
     inspector.append(note('Your preferred work speed is calculated from your own estimates and actual completion durations; no cloud model is used to store this data.'));
