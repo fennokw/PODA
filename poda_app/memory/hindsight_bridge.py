@@ -33,7 +33,10 @@ def _path(suffix:str)->str:
 
 def _request(method:str,path:str,payload:dict|None=None)->dict:
     # Fixed loopback host, no user-controllable address and no environment proxy.
-    with httpx.Client(base_url=BASE,timeout=20,trust_env=False,follow_redirects=False) as client:
+    # Local Ollama fact extraction can exceed ordinary HTTP read budgets;
+    # recall is bounded tightly so chat remains responsive on outage.
+    operation_timeout = 120 if method=="POST" and path.endswith("/memories") else 8
+    with httpx.Client(base_url=BASE,timeout=operation_timeout,trust_env=False,follow_redirects=False) as client:
         response=client.request(method,path,json=payload)
         response.raise_for_status()
         return response.json() if response.content else {}
@@ -54,9 +57,10 @@ def _document_id(node_id:str)->str:
 
 def _canonical_nodes(db):
     # No invisible automation transcripts; only visible committed memory nodes.
-    return rows(db,"""SELECT n.id,n.title,n.summary,n.content,n.parent_id,n.tags_json,n.importance
+    return rows(db,"""SELECT n.id,n.title,n.summary,n.content,n.parent_id,n.surface_id,n.tags_json,n.importance
               FROM memory_nodes n LEFT JOIN poda_memory_feedback f ON f.poda_node_id=n.id
-              WHERE n.node_type='memory' AND COALESCE(f.assessment,'') NOT IN ('incorrect','outdated')
+              WHERE n.node_type='memory' AND n.superseded_by IS NULL AND n.valid_until IS NULL
+                AND COALESCE(f.assessment,'') NOT IN ('incorrect','outdated')
               ORDER BY n.updated_at ASC""")
 
 
@@ -83,12 +87,13 @@ def sync_once(limit:int=MAX_SYNC_PER_CALL)->dict[str,Any]:
         for n in all_nodes:
             if synced>=limit:break
             text="\n".join(x for x in (n["title"],n["summary"],n["content"]) if x)[:8000]
-            checksum=hashlib.sha256((text+"|"+str(n["parent_id"])).encode()).hexdigest()
+            checksum=hashlib.sha256((text+"|"+str(n["parent_id"])+"|"+str(n["surface_id"])).encode()).hexdigest()
             old=existing.get(n["id"])
             if old and old["content_sha"]==checksum and old["status"]=="synced":continue
             payload={"async":False,"items":[{"content":text,
                 "document_id":_document_id(n["id"]), "context":"PODA canonical memory node",
                 "metadata":{"poda_node_id":n["id"],"parent_id":str(n["parent_id"] or ""),
+                            "surface_id":str(n["surface_id"] or ""),
                             "origin":"PODA","priority":str(n["importance"] or 0.5)}}]}
             try:
                 _request("POST",_path("/memories"),payload)
