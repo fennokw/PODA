@@ -91,6 +91,43 @@
       }catch(err){toast(errorDetail(err).message,'danger');}
       finally{save.disabled=false;}
     };
+    const skills=el('section',{class:'card stack'},el('h2',{},'Skills & harness reference uploads'),
+      note('Markdown or ZIP containing SKILL.md. Encrypted locally, disabled initially; never executes uploaded scripts.'));
+    view.querySelector('.screen')?.append(skills);
+    const formSkills=el('form',{class:'stack'});
+    const skillName=input('name','','text',{placeholder:'Optional skill name'});
+    const skillCategory=el('select',{class:'input'},...['general','coding','scheduling','email','harness'].map(x=>el('option',{value:x},x)));
+    const skillFile=el('input',{class:'input',type:'file',accept:'.md,.txt,.zip'});
+    const skillList=el('div',{class:'stack-sm'});
+    formSkills.append(field('Name',skillName),field('Category',skillCategory),field('SKILL.md / .txt / .zip',skillFile),
+      el('button',{class:'btn btn-primary',type:'submit'},'Upload (inactive)'));
+    skills.append(formSkills,skillList);
+    const refreshSkills=async()=>{
+      try{
+        const data=await api('/personalize/skills');skillList.replaceChildren();
+        for(const item of data.skills||[]){
+          const toggle=el('input',{type:'checkbox',checked:!!item.enabled});
+          toggle.onchange=async()=>{try{await api('/personalize/skills/'+encodeURIComponent(item.id),{method:'PUT',body:{enabled:toggle.checked}});
+            toast('Skill updated','ok');}catch(e){toggle.checked=!toggle.checked;toast(errorDetail(e).message,'danger');}};
+          const remove=el('button',{class:'btn btn-sm',type:'button',onclick:async()=>{
+            if(!(await confirmDialog({title:'Delete skill?',body:'Remove this reference from PODA.',confirmLabel:'Delete'})))return;
+            await api('/personalize/skills/'+encodeURIComponent(item.id),{method:'DELETE'});refreshSkills();
+          }},'Delete');
+          skillList.append(el('div',{class:'row'},el('label',{class:'check'},toggle,item.name+' ('+item.category+')'),remove));
+        }
+        if(!data.skills?.length)skillList.append(note('No custom skills.'));
+      }catch(e){skillList.replaceChildren(note(errorDetail(e).message));}
+    };
+    formSkills.onsubmit=async e=>{
+      e.preventDefault();if(!skillFile.files?.[0])return toast('Choose a file','danger');
+      const fd=new FormData();fd.append('file',skillFile.files[0]);fd.append('name',skillName.value);fd.append('category',skillCategory.value);
+      try{
+        const resp=await fetch('/personalize/skills',{method:'POST',body:fd,credentials:'same-origin'});
+        if(!resp.ok){const data=await resp.json();throw Error(data.detail||'Upload failed');}
+        formSkills.reset();toast('Skill stored locally, disabled by default','ok');refreshSkills();
+      }catch(err){toast(errorDetail(err).message,'danger');}
+    };
+    await refreshSkills();
     inspector.append(note('Your preferred work speed is calculated from your own estimates and actual completion durations; no cloud model is used to store this data.'));
     await refresh();
   }
