@@ -534,6 +534,15 @@ def node_to_api(node: dict[str, Any]) -> dict[str, Any]:
 def list_graph(conn, include_transient: bool = False) -> dict[str, Any]:
     where = "" if include_transient else "WHERE node_type != 'transient'"
     nodes = [node_to_api(n) for n in rows(conn, f"SELECT * FROM memory_nodes {where} ORDER BY importance DESC, updated_at DESC")]
+    # The same graph reflects local Hindsight feedback; no shadow tree.
+    from .hindsight_bridge import ensure_tables as ensure_hindsight_tables
+    ensure_hindsight_tables(conn)
+    feedback={row["poda_node_id"]:row for row in rows(conn,
+        "SELECT poda_node_id,assessment,reason,updated_at FROM poda_memory_feedback")}
+    for node in nodes:
+        mark=feedback.get(node["id"])
+        node["memory_quality"]=mark["assessment"] if mark else "unreviewed"
+        node["memory_quality_reason"]=mark["reason"] if mark else ""
     visible = {n["id"] for n in nodes}
     links = [l for l in rows(conn, "SELECT * FROM memory_links ORDER BY strength DESC") if l["source_id"] in visible and l["target_id"] in visible]
     return {"nodes": nodes, "links": links}
