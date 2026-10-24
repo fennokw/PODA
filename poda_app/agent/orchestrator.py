@@ -76,7 +76,7 @@ def _parse_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
 def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", session_id: str | None = None,
          profile_model: str | None = None, unattended: bool = False,
          unattended_target: str | None = None, unattended_revision: str | None = None,
-         unattended_mail_account: str | None = None) -> dict[str, Any]:
+         unattended_mail_accounts: list[str] | None = None) -> dict[str, Any]:
     """Return {needs_tools, steps, rationale, executed:[{step, receipt, result}], flagged:[...], proposal_id|None}."""
     specs = tools.ollama_tool_specs(snapshot)
     out: dict[str, Any] = {"needs_tools": False, "steps": [], "rationale": "", "executed": [], "flagged": [], "proposal_id": None, "model": None}
@@ -96,9 +96,11 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
         and re.search(r"\b(?:email|inbox|mailbox|messages?)\b", message, re.I))
     retry_missing_calendar_step = False
     did_calendar_step = False
-    if unattended and unattended_mail_account:
-        messages[0]["content"] += ("\nSelected connected email account ID for this automation: "
-                                  + unattended_mail_account + ". For all mail reads and writes, use THIS account_id.")
+    if unattended and unattended_mail_accounts:
+        messages[0]["content"] += ("\nSelected connected email account IDs: " +
+                                  json.dumps(unattended_mail_accounts) + ". Review EVERY selected account and use "
+                                  "the correct matching account_id for each action. Sending may use any "
+                                  "selected account with an independent explicit mail_send grant.")
     if unattended and unattended_target and unattended_revision:
         try:
             from ..daily_updates.service import tasks
@@ -150,12 +152,13 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
                 out["flagged"].append({"name": name, "reason": str(exc)})
                 tool_results_for_model.append({"role": "tool", "content": json.dumps({"error": str(exc)})})
                 continue
-            if unattended and unattended_mail_account and name.startswith("mail_") and "account_id" in tools.TOOLS[name]["schema"]["properties"]:
-                if args.get("account_id") and args["account_id"] != unattended_mail_account:
-                    out["flagged"].append({"name":name,"reason":"wrong email account for this automation"})
-                    tool_results_for_model.append({"role":"tool","content":json.dumps({"error":"Selected mail account mismatch"})})
+            if unattended and unattended_mail_accounts and name.startswith("mail_") and "account_id" in tools.TOOLS[name]["schema"]["properties"]:
+                if not args.get("account_id") and len(unattended_mail_accounts)==1:
+                    args["account_id"] = unattended_mail_accounts[0]
+                if args.get("account_id") not in unattended_mail_accounts:
+                    out["flagged"].append({"name":name,"reason":"email account not selected for this automation"})
+                    tool_results_for_model.append({"role":"tool","content":json.dumps({"error":"Choose one of the scheduled accounts"})})
                     continue
-                args["account_id"] = unattended_mail_account
             fingerprint=json.dumps({"name":name,"args":args},sort_keys=True,default=str)
             if fingerprint in seen_requests:
                 out["flagged"].append({"name":name,"reason":"identical tool call already attempted; avoided duplicate"})
