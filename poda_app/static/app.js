@@ -1013,7 +1013,7 @@
     try { const b = await api('/system/build'); const st = await api('/system/startup').catch(() => null); inspector.append(kv([['Version', b.version], ['Build ID', el('span', { class: 'mono' }, b.build_id)], ['Memory viewer', b.memory_viewer], ['Database', el('span', { class: 'mono small' }, b.db_path)], ['Port', b.port]]), st ? el('details', { class: 'thought-panel' }, el('summary', {}, 'Startup report'), el('pre', {}, JSON.stringify(st, null, 2))) : null); } catch (err) { inspector.appendChild(errorNode(err)); }
     load(hwBox, async () => {
       const h = await api('/system/hardware');
-      return el('div', { class: 'stack-sm' }, el('div', { class: 'stats' }, ...[[h.chip || 'unknown', 'chip'], [`${h.unified_memory_gb} GB`, 'unified memory'], [`${h.memory_available_estimate_gb} GB`, 'available estimate'], [`${h.disk_free_gb} GB`, 'disk free'], [h.metal || 'n/a', 'metal'], [h.ollama?.version || (h.ollama?.reachable ? 'reachable' : 'unreachable'), 'ollama']].map(([v, k]) => el('div', { class: 'stat' }, el('span', { class: 'v' }, v), el('span', { class: 'k' }, k)))),
+      return el('div', { class: 'stack-sm' }, el('div', { class: 'stats' }, ...[[h.chip || 'unknown', 'chip'], [`${h.unified_memory_gb} GB`, 'unified memory'], [h.gpu_memory_dedicated_gb===null ? 'shared / unavailable' : h.gpu_memory_dedicated_gb+' GB','dedicated VRAM'], [`${h.disk_free_gb} GB`, 'disk free'], [h.metal || 'n/a', 'metal'], [h.ollama?.version || (h.ollama?.reachable ? 'reachable' : 'unreachable'), 'ollama']].map(([v, k]) => el('div', { class: 'stat' }, el('span', { class: 'v' }, v), el('span', { class: 'k' }, k)))),
         (h.ollama_resident || []).length ? el('div', { class: 'row' }, el('span', { class: 'faint small' }, 'Resident now:'), ...h.ollama_resident.map((m) => el('span', { class: 'chip' }, `${m.name} `, el('b', {}, `${fmtBytes(m.size_vram || m.size)} · ctx ${m.context_length || '?'}`)))) : el('p', { class: 'faint small' }, 'No model is resident in memory right now.'));
     });
     async function drawModels() {
@@ -1022,10 +1022,10 @@
         const profiles = el('table', { class: 'table' }, el('thead', {}, el('tr', {}, el('th', {}, 'Profile'), el('th', {}, 'Model'), el('th', {}, 'Context'), el('th', {}, 'Max output'), el('th', {}, 'Thinking'), el('th', {}, ''))));
         profiles.appendChild(el('tbody', {}, ...Object.entries(m.profiles || {}).map(([name, p]) => el('tr', {}, el('td', {}, el('strong', {}, name)), el('td', { class: 'mono' }, p.model || el('span', { class: 'faint' }, 'none installed')), el('td', { class: 'num' }, `${(p.num_ctx / 1024).toFixed(0)}K`), el('td', { class: 'num' }, p.num_predict), el('td', {}, p.think ? 'on' : 'off'),
           el('td', {}, p.model ? el('button', { class: 'btn btn-sm', onclick: () => bench(p.model, p.num_ctx) }, 'Benchmark') : null)))));
-        const q = el('table', { class: 'table' }, el('thead', {}, el('tr', {}, el('th', {}, 'Qwen3.6 tag'), el('th', {}, 'Disk'), el('th', {}, 'Kind'), el('th', {}, 'Installed'), el('th', {}, 'Verdict on this Mac'))));
-        q.appendChild(el('tbody', {}, ...(m.qwen36 || []).map((c) => el('tr', {}, el('td', { class: 'mono' }, c.tag), el('td', { class: 'num' }, `${c.disk_gb} GB`), el('td', {}, c.kind), el('td', {}, yesNo(c.installed)), el('td', {}, pill(c.verdict, c.memory_safe_32k ? 'ok' : c.memory_safe_8k ? 'warn' : 'danger'))))));
-        return el('div', { class: 'stack' }, el('div', { class: 'row' }, el('span', { class: 'chip' }, 'installed ', el('b', {}, (m.installed || []).join(', ') || 'none')), el('span', { class: 'chip' }, 'embedding ', el('b', {}, `${m.embedding} ${m.embedding_installed ? '' : '(missing)'}`))), profiles,
-          el('div', { class: 'stack-sm' }, el('h3', {}, 'Qwen3.6 assessment'), el('p', { class: 'small muted' }, `Unified memory ${m.unified_memory_gb} GB. Verdicts reserve headroom for macOS, PODA, and KV cache. PODA never pulls models silently.`), q));
+        return el('div', { class: 'stack' }, el('div', { class: 'row' },
+          el('span', { class: 'chip' }, 'installed ', el('b', {}, (m.installed || []).join(', ') || 'none')),
+          el('span', { class: 'chip' }, 'embedding ', el('b', {}, m.embedding+' '+(m.embedding_installed?'':'(missing)'))),
+          el('span', { class: 'small muted' }, 'Compare all local model families and their quantizations above.')),profiles);
       });
     }
     async function drawBench() {
