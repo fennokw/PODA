@@ -159,6 +159,11 @@ def test_hindsight_sync_replaces_and_deletes_with_same_poda_id(monkeypatch):
         db.commit()
     finally:db.close()
     calls=[]
+    # Keep reconciliation bounded to the synthetic source: other test fixtures
+    # may have earlier/null updated_at values and must not make this order-dependent.
+    real_nodes=hindsight_bridge._canonical_nodes
+    monkeypatch.setattr(hindsight_bridge,"_canonical_nodes",
+                        lambda db:[n for n in real_nodes(db) if n["id"]==source_id])
     monkeypatch.setattr(hindsight_bridge,"enabled",lambda:True)
     monkeypatch.setattr(hindsight_bridge,"_request",
         lambda method,path,payload=None: calls.append((method,path,payload)) or {"success":True})
