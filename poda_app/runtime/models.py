@@ -10,6 +10,7 @@ from typing import Any
 
 from . import config, ollama
 from . import hardware
+from . import model_catalog
 from .db import connect, now_iso, rows, get_setting, set_setting
 
 # Official Ollama library Qwen tags; sizes are approximate download weights, not resident RAM.
@@ -129,12 +130,13 @@ def set_profile(profile: str, model: str, installed: list[str]) -> None:
     set_setting("model_profile_"+profile, model)
 
 
-def catalog(mem: float, installed: list[str]) -> dict[str, Any]:
-    candidates = qwen36_assessment(mem, installed)
-    return {"recommendations": candidates,
-            "installed": installed,
-        "selected": selected_profiles(), "selected": selected_profiles(),
-            "disclaimer": "Memory fit is estimated, not guaranteed. Context size, GPU offloading and other apps affect actual performance."}
+def catalog(hw: dict[str, Any] | float, installed: list[str]) -> dict[str, Any]:
+    # Float support retained for older in-process callers; do not invent hardware.
+    measured = hw if isinstance(hw,dict) else {"unified_memory_gb":hw,"ram_total_gb":hw,
+        "memory_architecture":"unified","disk_free_gb":0}
+    assessment = model_catalog.assess(measured,installed)
+    return {"recommendations":qwen36_assessment(float(measured.get("unified_memory_gb") or 0),installed),
+            "installed":installed,"selected":selected_profiles(), **assessment}
 
 
 def recorded_benchmarks() -> list[dict[str, Any]]:
