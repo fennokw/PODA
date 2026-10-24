@@ -30,6 +30,7 @@ from .workload.pace_router import router as pace_router
 from .runtime.model_management import router as model_manager_router
 from .daily_updates.router import router as daily_updates_router
 from .daily_updates import service as daily_service
+from .runtime.skill_library import router as skills_router
 
 STARTUP_REPORT: dict = {}
 
@@ -60,7 +61,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=config.APP_NAME, version=config.VERSION, lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.middleware("http")(security_middleware)
 
-for r in (runtime_router, memory_router, chat_router, chat_runs_router, agent_router, planner_router, pace_router, workload_router, privacy_router, notion_router, email_router, software_router, imports_router, project_manager_router, model_manager_router, daily_updates_router):
+for r in (runtime_router, memory_router, chat_router, chat_runs_router, agent_router, planner_router, pace_router, workload_router, privacy_router, notion_router, email_router, software_router, imports_router, project_manager_router, model_manager_router, daily_updates_router, skills_router):
     app.include_router(r)
 
 
