@@ -119,3 +119,28 @@ def test_code_context_requires_existing_grant(tmp_path):
     p.write_text("def update_calendar():\n    return True\n")
     result=inspect_code(str(p))
     assert not result["ok"]
+
+
+def test_code_context_static_symbols_respect_grants(tmp_path):
+    from poda_app.agent import grants
+    from poda_app.agent.code_context import inspect_code
+    source=tmp_path/"service.py"
+    source.write_text("from math import sqrt\nclass Engine:\n    def plan(self):\n        return sqrt(4)\n")
+    grant=grants.add_grant(str(tmp_path),"read","static code test")
+    try:
+        result=inspect_code(str(source))
+        assert result["ok"],result
+        assert {"Engine","plan"}.issubset({s["name"] for s in result["result"]["symbols"]})
+        assert result["result"]["dependencies"][0]["module"]=="math"
+    finally:
+        grants.revoke_grant(grant["id"])
+
+
+def test_untrusted_email_times_need_timezone():
+    from poda_app.connectors.email.extraction import normalize
+    body="Confirmed meeting on Monday at 3 PM."
+    base={"kind":"confirmed","title":"Team meeting",
+          "evidence_span":"meeting on Monday at 3 PM",
+          "date_start":"2026-10-26T15:00","all_day":False,"confidence":0.96}
+    assert normalize([base],body)[0]["kind"]=="tentative"
+    assert normalize([{**base,"date_start":"2026-10-26T15:00:00-04:00"}],body)[0]["kind"]=="confirmed"
