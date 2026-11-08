@@ -5,7 +5,7 @@
 (function () {
   'use strict';
   const { $, $$, el, api, errorDetail, toast, confirmDialog, promptDialog, pill, fmtTime, loadBuild } = window.PODA;
-  $('#knowledgeExplorer').append(window.PODAKnowledge.explorer(id => memoryScene?.focusNode(id)));
+  $('#knowledgeExplorer').append(window.PODAKnowledge.explorer(id => openLinkedMemory(id, true)));
   const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -644,6 +644,16 @@
     if (node.node_type === 'root') { panel.innerHTML = ''; panel.append(el('div', { class: 'node-kind' }, 'Root node'), el('p', { class: 'muted small' }, 'The PODA root is protected.')); return; }
     if (node.node_type === 'memory') renderMemoryDetail(node); else if (node.node_type === 'surface') renderSurfaceEditor(node); else renderCloudEditor(node);
   }
+  function openLinkedMemory(id, openFacts = false) {
+    if (memoryScene?.focusNode(id)) {
+      const facts = $('#nodePanel [data-knowledge-editor]');
+      if (openFacts && facts) facts.open = true;
+      return;
+    }
+    const facts = window.PODAKnowledge.editor(id, () => memoryDraftDirty);
+    $('#nodePanel').replaceChildren(facts);
+    facts.open = true;
+  }
 
   // ----- Search backed by the full database -----
   function searchParams() {
@@ -722,7 +732,7 @@
     api('/memory/surfaces').then((r) => { surfaceList = r.surfaces || r.results || null; }).catch(() => { surfaceList = null; });
     showNode(null); runSearch();
     const focus = new URLSearchParams(location.hash.replace(/^#/, '')).get('focus');
-    if (focus) { setTimeout(() => { if (!memoryScene.focusNode(focus)) toast('Linked memory is not in the rendered scene.', 'danger'); }, 120); }
+    if (focus) openLinkedMemory(focus);
   }
 
   $('#backToPoda').onclick = async () => { if (memoryDraftDirty && !(await confirmDialog({ title: 'Discard uncommitted memory changes?', body: 'Returning to chat abandons the current draft.', confirmLabel: 'Discard and return', danger: true }))) return; window.location.assign('/'); };
@@ -765,7 +775,7 @@
   };
   function showFatal(err) { const f = $('#viewerFatal'); f.textContent = `OPEN3D MEMORY VIEWER ERROR: ${errorDetail(err).message}`; f.hidden = false; setStatus('VIEWER FAILED', 'error'); }
   window.addEventListener('beforeunload', (e) => { if (memoryDraftDirty) { e.preventDefault(); e.returnValue = ''; } });
-  window.addEventListener('hashchange', () => { const focus = new URLSearchParams(location.hash.replace(/^#/, '')).get('focus'); if (focus && memoryScene) memoryScene.focusNode(focus); });
+  window.addEventListener('hashchange', () => { const focus = new URLSearchParams(location.hash.replace(/^#/, '')).get('focus'); if (focus && memoryScene) openLinkedMemory(focus); });
 
   loadBuild();
   loadMemoryViewer().catch(showFatal);

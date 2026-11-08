@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from time import perf_counter
 import unicodedata
 import uuid
 
@@ -217,6 +218,12 @@ def recall(conn, query: str, hops: int = 3, limit: int = 12) -> list[dict]:
         (json.dumps(seeds), hops, hops, hops, limit))
 
 
+def timed_recall(conn, query: str) -> tuple[list[dict], float]:
+    started = perf_counter()
+    facts = recall(conn, query)
+    return facts, round((perf_counter() - started) * 1000, 2)
+
+
 def context_block(facts: list[dict]) -> str:
     if not facts:
         return ""
@@ -226,8 +233,9 @@ def context_block(facts: list[dict]) -> str:
         relationship = f"{fact['subject_name']} → {fact['predicate']} → {fact['object_name']}"
         qualifier = f" ({fact['qualifier']})" if fact["qualifier"] else ""
         line = (f"- {relationship}{qualifier} [memory {fact['memory_id']}]. "
-                f"Evidence: {json.dumps(fact['evidence'][:220], ensure_ascii=False)}")
+                f"Evidence: {json.dumps(fact['evidence'], ensure_ascii=False)}")
         if sum(map(len, lines)) + len(line) > 4600:
+            lines.append("[Additional relationships omitted from this prompt.]")
             break
         lines.append(line)
     return "\n".join(lines)

@@ -43,9 +43,20 @@ def test_chat_emits_tool_and_proposal_events(client, monkeypatch, tmp_folder):
         tool_ev = next(d for e, d in events if e == "tool")
         assert tool_ev["name"] == "fs_read" and tool_ev["outcome"] == "succeeded" and tool_ev["receipt_id"]
         proposal = next(d for e, d in events if e == "proposal")
+        session_id = next(d["session_id"] for e, d in events if e == "session")
+        history_url = f"/chat/session/{session_id}/messages"
         assert proposal["steps"][0]["tool"] == "fs_write" and not (tmp_folder / "copy.md").exists()
+        saved = client.get(history_url).json()
+        activity = saved["messages"][-1]["workflow_activity"]
+        assert [entry["event"] for entry in activity if entry["event"] != "status"] == ["recall", "tool", "proposal", "done"]
+        assert next(entry for entry in activity if entry["event"] == "tool")["receipt_id"] == tool_ev["receipt_id"]
+        assert str(tmp_folder) not in json.dumps(activity) and "alpha beta" not in json.dumps(activity)
+        assert saved["workflows"][0]["status"] == "pending"
+        assert any(item["session_id"] == session_id for item in client.get("/chat/sessions").json()["sessions"])
+        assert client.get("/chat/session/unrelated-session/messages").json()["workflows"] == []
         approved = client.post(f"/agent/proposals/{proposal['proposal_id']}/approve").json()
         assert approved["status"] == "executed" and (tmp_folder / "copy.md").read_text() == "alpha beta"
+        assert client.get(history_url).json()["workflows"][0]["receipts"][0]["outcome"] == "succeeded"
 
         async def report_stream(messages, model, options=None, tools=None, think=None, timeout=900):
             assert "ACTION RECEIPTS" in messages[0]["content"] and "fs_write" in messages[0]["content"]
@@ -69,9 +80,41 @@ def test_chat_emits_tool_and_proposal_events(client, monkeypatch, tmp_folder):
         followup = next(data for name, data in _events(continued.text) if name == "proposal")
         assert [step["args"]["path"] for step in followup["steps"]] == [str(tmp_folder / "next.md")]
         assert not (tmp_folder / "next.md").exists()
+        assert client.post("/chat/stream", json={
+            "message": "Continue again", "continuation_of": proposal["proposal_id"], "resume_workflow": True
+        }).status_code == 409
         assert client.post("/chat/stream", json={"message": "Continue", "session_id": "unrelated-session",
                                                    "continuation_of": proposal["proposal_id"],
                                                    "resume_workflow": True}).status_code == 404
+        assert client.post(f"/agent/proposals/{followup['proposal_id']}/approve").json()["status"] == "executed"
+        assert client.get(history_url).json()["workflows"][1]["has_followup"]
+
+        async def final_stream(messages, *args, **kwargs):
+            assert proposal["proposal_id"][:8] in messages[0]["content"]
+            assert followup["proposal_id"][:8] in messages[0]["content"]
+            yield {"message": {"content": "Reviewed all receipts."}, "done": True}
+
+        attempted_models = []
+
+        def fallback_plan(messages, model, **kwargs):
+            attempted_models.append(model)
+            if model == "rejected-local":
+                raise orchestrator.ollama.OllamaError("local model does not support tools")
+            return {"message": {"tool_calls": [
+                {"function": {"name": "fs_write", "arguments": {"path": str(tmp_folder / name), "content": content}}}
+                for name, content in (("copy.md", "alpha beta"), ("next.md", "next"), ("third.md", "third"))
+            ]}}
+
+        monkeypatch.setattr(chat_router.ollama, "chat_stream", final_stream)
+        monkeypatch.setattr(orchestrator, "_planner_models", lambda *args: ["rejected-local", "llama3.2:3b"])
+        monkeypatch.setattr(orchestrator.ollama, "chat", fallback_plan)
+        resumed = client.post("/chat/stream", json={
+            "message": "Continue from the latest checkpoint", "continuation_of": followup["proposal_id"], "resume_workflow": True})
+        events = _events(resumed.text)
+        assert attempted_models == ["rejected-local", "llama3.2:3b"]
+        assert any(event == "status" and data["message"] == "planner_fallback" for event, data in events)
+        third = next(data for event, data in events if event == "proposal")
+        assert [step["args"]["path"] for step in third["steps"]] == [str(tmp_folder / "third.md")]
     finally:
         grants.revoke_grant(g["id"])
 

@@ -36,12 +36,20 @@ def test_alias_traversal_and_feedback(client, monkeypatch):
              "In March Avery North delegates to Morgan West.", qualifier="In March"),
     ]
     ids = [add_source(item["evidence"]) for item in examples]
+    decoy = fact("Supplier Rules", "policy", "approved_by", "Founder", "role",
+                 "Supplier Rules are approved by the Founder.")
+    decoy_id = add_source(decoy["evidence"])
     try:
+        queued = client.get("/memory/knowledge/review-queue").json()["sources"]
+        assert set(ids) <= {item["id"] for item in queued}
         for node_id, item in zip(ids, examples):
             assert save(client, node_id, [item]).status_code == 200
+        assert save(client, decoy_id, [decoy]).status_code == 200
+        assert not set(ids) & {item["id"] for item in client.get("/memory/knowledge/review-queue").json()["sources"]}
         assert client.get("/memory/knowledge", params={"q": "Refund Policyholder"}).json()["facts"] == []
         result = client.get("/memory/knowledge", params={"q": "Who approves under the refund policy in March?"})
         facts = result.json()["facts"]
+        assert result.json()["graph_ms"] >= 0
         assert [f["memory_id"] for f in facts] == ids
         assert [f["hop"] for f in facts] == [1, 2, 3]
         assert facts[-1]["qualifier"] == "In March"
@@ -67,7 +75,7 @@ def test_alias_traversal_and_feedback(client, monkeypatch):
         assert client.get("/memory/knowledge", params={"q": "Refund Policy"}).json()["facts"] == []
     finally:
         with connect() as db:
-            for node_id in ids:
+            for node_id in [*ids, decoy_id]:
                 db.execute("DELETE FROM memory_nodes WHERE id=?", (node_id,))
                 db.execute("DELETE FROM poda_memory_feedback WHERE poda_node_id=?", (node_id,))
 

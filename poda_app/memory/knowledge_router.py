@@ -29,7 +29,7 @@ def _memory(conn, memory_id: str) -> dict:
 def _source(conn, memory_id: str) -> dict:
     node = _memory(conn, memory_id)
     facts = knowledge.read_facts(conn, memory_id)
-    return {"source": knowledge.source_text(node), "facts": facts,
+    return {"title": node["title"], "source": knowledge.source_text(node), "facts": facts,
             "revision": knowledge.source_revision(node, facts),
             "kinds": get_args(knowledge.EntityKind), "predicates": get_args(knowledge.Predicate),
             "active": node.get("valid_until") is None and node.get("superseded_by") is None
@@ -41,7 +41,8 @@ def _source(conn, memory_id: str) -> dict:
 def query_graph(q: Annotated[str, Query(min_length=1, max_length=4000)]) -> dict:
     conn = connect()
     try:
-        return {"facts": knowledge.recall(conn, q)}
+        facts, elapsed = knowledge.timed_recall(conn, q)
+        return {"facts": facts, "graph_ms": elapsed}
     finally:
         conn.close()
 
@@ -51,6 +52,27 @@ def get_source(memory_id: str) -> dict:
     conn = connect()
     try:
         return _source(conn, memory_id)
+    finally:
+        conn.close()
+
+
+@router.get("/review-queue")
+def review_queue() -> dict:
+    """Show existing candidate notes without running the model or committing facts."""
+    from ..runtime.db import rows
+
+    conn = connect()
+    try:
+        sources = rows(conn, """SELECT m.id, m.title,
+                    substr(COALESCE(NULLIF(m.user_text, ''), m.content), 1, 220) AS preview
+                FROM memory_nodes m LEFT JOIN poda_memory_feedback q ON q.poda_node_id=m.id
+                WHERE m.node_type='memory' AND m.superseded_by IS NULL AND m.valid_until IS NULL
+                    AND COALESCE(m.speaker, '') != 'assistant' AND COALESCE(m.memory_kind, '') != 'summary'
+                    AND trim(COALESCE(NULLIF(m.user_text, ''), m.content, '')) != ''
+                    AND COALESCE(q.assessment, '') NOT IN ('incorrect', 'outdated')
+                    AND NOT EXISTS (SELECT 1 FROM knowledge_facts f WHERE f.memory_id=m.id)
+                ORDER BY m.pinned DESC, m.updated_at DESC, m.id LIMIT 20""")
+        return {"sources": sources}
     finally:
         conn.close()
 

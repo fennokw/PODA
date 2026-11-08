@@ -92,6 +92,36 @@
     const recallBox = el('div', { class: 'stack-sm' }, el('p', { class: 'faint small' }, 'Send a message to see which memories were recalled and why.'));
     const sessionBox = el('div', { class: 'stack-sm' });
     inspector.append(el('div', { class: 'stack-sm' }, el('h3', {}, 'Why was this recalled?'), recallBox), el('div', { class: 'divider' }), el('div', { class: 'stack-sm' }, el('h3', {}, 'Last response'), sessionBox));
+    const checkpointBox = el('div', { class: 'stack-sm', hidden: true }, el('h3', {}, 'Workflow checkpoints'));
+    inspector.append(checkpointBox);
+    const recentChats = el('select', { 'aria-label': 'Open a recent chat' });
+    const recentChatsBox = el('label', { class: 'stack-sm', hidden: true }, el('strong', {}, 'Recent chats'), recentChats);
+    inspector.prepend(recentChatsBox);
+    const proposalCards = new Map();
+    const proposalMessages = new Map();
+
+    async function loadRecentChats() {
+      const data = await api('/chat/sessions').catch(() => null);
+      if (!data?.sessions?.length) return;
+      recentChats.replaceChildren(el('option', { value: '' }, 'Open a previous chat…'),
+        ...data.sessions.map((item) => el('option', { value: item.session_id }, item.label || fmtTime(item.updated_at))));
+      recentChats.value = askState.sessionId || '';
+      recentChatsBox.hidden = false;
+    }
+    recentChats.onchange = () => {
+      if (!recentChats.value) return;
+      if (askState.controller) {
+        recentChats.value = askState.sessionId || '';
+        toast('Wait for the current response to finish or stop it first.', 'warn');
+        return;
+      }
+      askState.sessionId = recentChats.value;
+      askState.runId = null;
+      askState.transcript = [];
+      persistSession();
+      renderRoute();
+    };
+    loadRecentChats();
 
     textarea.addEventListener('input', () => { textarea.style.height = 'auto'; textarea.style.height = Math.min(textarea.scrollHeight, 180) + 'px'; });
     textarea.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); composer.requestSubmit(); } });
@@ -106,6 +136,36 @@
       messages.scrollTop = messages.scrollHeight;
       return { wrap, bubble, metaRow };
     }
+    function workflowActivity(wrap) {
+      const activity = el('ol', { class: 'small' });
+      const title = el('summary', {}, 'Workflow activity');
+      const trace = el('details', { class: 'thought-panel', hidden: true }, title, activity);
+      wrap.append(trace);
+      return (text) => {
+        trace.hidden = false;
+        activity.append(el('li', {}, text));
+        if (activity.children.length > 81) activity.children[1].remove();
+        title.textContent = `Workflow activity · ${activity.children.length}`;
+      };
+    }
+    function recallActivity(relationships, memories, elapsed) {
+      const timing = Number.isFinite(elapsed) ? ` · graph ${elapsed} ms` : '';
+      return `Recalled ${relationships} relationships and ${memories} memories${timing}`;
+    }
+    function restoreActivity(wrap, entries) {
+      if (!entries?.length) return;
+      const add = workflowActivity(wrap);
+      for (const entry of entries) {
+        if (entry.event === 'status') add([entry.message?.replaceAll('_', ' '), entry.model, entry.profile].filter(Boolean).join(' · '));
+        if (entry.event === 'recall') add(recallActivity(entry.relationships, entry.memories, entry.graph_ms));
+        if (entry.event === 'tool') add([entry.name, entry.outcome, entry.receipt_id ? '#' + entry.receipt_id.slice(0, 8) : ''].filter(Boolean).join(' · '));
+        if (entry.event === 'proposal') {
+          add(`Proposed ${entry.actions} actions for review`);
+          proposalMessages.set(entry.proposal_id, wrap);
+        }
+        if (entry.event === 'done') add('Response finished · ' + entry.model);
+      }
+    }
     function showEmpty() {
       const suggestions = ['What can you do with files?', 'What is on my Notion calendar this week?', 'Summarize what you remember about my projects', 'Rank my current projects'];
       messages.appendChild(el('div', { class: 'hero-empty' },
@@ -117,19 +177,28 @@
 
     // Restore only THIS local session from PODA's encrypted store after a full page navigation.
     // We intentionally do not save conversation text to browser localStorage/sessionStorage.
-    if (!askState.transcript.length && askState.sessionId) {
+    let savedWorkflows = [];
+    if (askState.sessionId) {
       try {
         const history = await api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/messages?limit=120');
+        savedWorkflows = history.workflows || [];
         askState.transcript = (history.messages || []).filter((m) => m.role === 'user' || m.role === 'assistant')
-          .map((m) => ({ role: m.role, content: m.content, at: m.created_at }));
-        if (askState.runId && askState.transcript.at(-1)?.role === 'assistant') {
+          .map((m) => ({ role: m.role, content: m.content, at: m.created_at, activity: m.workflow_activity }));
+        if (askState.runId) {
           const run = await api('/chat/runs/' + encodeURIComponent(askState.runId)).catch(() => null);
-          if (!run || run.state !== 'running') { askState.runId = null; persistSession(); }
+          if (!run || (run.state !== 'running' && askState.transcript.at(-1)?.role === 'assistant')) {
+            askState.runId = null; persistSession();
+          }
         }
       } catch { /* Server might have restarted; active run status will report that accurately. */ }
     }
-    if (askState.transcript.length) for (const m of askState.transcript) addMessage(m.role, m.content, m.at);
+    if (askState.transcript.length) for (const m of askState.transcript) restoreActivity(addMessage(m.role, m.content, m.at).wrap, m.activity);
     else showEmpty();
+    for (const workflow of savedWorkflows) {
+      const parent = proposalMessages.get(workflow.id) || checkpointBox;
+      if (parent === checkpointBox) checkpointBox.hidden = false;
+      renderProposal(parent, { ...workflow, proposal_id: workflow.id });
+    }
     messages.scrollTop = messages.scrollHeight;
     function newChat() {
       if (askState.runId) api('/chat/runs/' + encodeURIComponent(askState.runId) + '/cancel', { method: 'POST' }).catch(() => {});
@@ -137,7 +206,10 @@
       // Finalize rolling short-term turns into visible second-brain memories.
       if (askState.sessionId) api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/flush', { method: 'POST' }).catch(() => {});
       askState.sessionId = null; askState.runId = null; askState.transcript = [];
+      proposalCards.clear(); proposalMessages.clear();
+      checkpointBox.replaceChildren(el('h3', {}, 'Workflow checkpoints')); checkpointBox.hidden = true;
       persistSession();
+      loadRecentChats();
       messages.innerHTML = ''; showEmpty(); statusLine.innerHTML = ''; recallBox.innerHTML = ''; sessionBox.innerHTML = '';
       recallBox.appendChild(el('p', { class: 'faint small' }, 'Send a message to see which memories were recalled and why.'));
       toast('Fresh conversation started', 'ok'); textarea.focus();
@@ -209,16 +281,8 @@
       bubble.classList.add('streaming');
       const thoughts = el('details', { class: 'thought-panel', hidden: true }, el('summary', {}, el('span', { class: 'live' }), 'Thought stream'), el('pre'));
       const badges = el('div', { class: 'msg-badges' });
-      const activity = el('ol', { class: 'small' });
-      const traceTitle = el('summary', {}, 'Workflow activity');
-      const trace = el('details', { class: 'thought-panel', hidden: true }, traceTitle, activity);
-      function addActivity(text) {
-        trace.hidden = false;
-        activity.append(el('li', {}, text));
-        if (activity.children.length > 80) activity.firstElementChild.remove();
-        traceTitle.textContent = `Workflow activity · ${activity.children.length}`;
-      }
-      wrap.insertBefore(thoughts, bubble); wrap.append(badges, trace);
+      wrap.insertBefore(thoughts, bubble); wrap.append(badges);
+      const addActivity = workflowActivity(wrap);
       let full = '', thoughtText = '', raf = 0, finished = false;
       const paint = () => { raf = 0; bubble.innerHTML = md.render(full); messages.scrollTop = messages.scrollHeight; };
       const schedule = () => { if (!raf) raf = requestAnimationFrame(paint); };
@@ -256,7 +320,7 @@
             switch (event) {
               case 'session': if (data.session_id) { askState.sessionId = data.session_id; persistSession(); } break;
               case 'status': addActivity([String(data.message || '').replaceAll('_', ' '), data.model, data.detail].filter(Boolean).join(' · ')); if (data.message === 'cancelled') finished = true; setStatus(data.message === 'routing' ? `Routing to ${data.model} (${data.profile || ''}, ${data.num_ctx ? data.num_ctx / 1024 + 'K ctx' : ''})` : data.message === 'recalling' ? 'Recalling memories…' : data.message === 'cancelled' ? 'Cancelled' : `${data.message} · ${data.model || ''}`, data.message !== 'cancelled'); break;
-              case 'recall': addActivity(`Recalled ${data.knowledge_facts?.length || 0} relationships and ${data.results?.length || 0} memories`); renderRecall(data); badges.appendChild(pill(`${(data.surfaces || (data.results || []).filter((r) => r.tier === 'surface')).length ? `${(data.surfaces || (data.results || []).filter((r) => r.tier === 'surface')).length} surface · ` : ''}${(data.results || []).filter((r) => r.tier !== 'surface').length} memories recalled`, 'lav')); if (data.depth_used === 'deep') badges.appendChild(pill('deep dive', 'lav')); break;
+              case 'recall': addActivity(recallActivity(data.knowledge_facts?.length || 0, data.results?.length || 0, data.graph_ms)); renderRecall(data); badges.appendChild(pill(`${(data.surfaces || (data.results || []).filter((r) => r.tier === 'surface')).length ? `${(data.surfaces || (data.results || []).filter((r) => r.tier === 'surface')).length} surface · ` : ''}${(data.results || []).filter((r) => r.tier !== 'surface').length} memories recalled`, 'lav')); if (data.depth_used === 'deep') badges.appendChild(pill('deep dive', 'lav')); break;
               case 'thought': thoughtText += data.token || ''; thoughts.hidden = false; $('pre', thoughts).textContent = thoughtText.slice(-6000); break;
               case 'token': full += data.token || ''; schedule(); break;
               case 'tool': {
@@ -266,7 +330,11 @@
                 badges.appendChild(el('span', { class: 'receipt-chip', title: data.args_summary || '' }, pill(data.outcome || 'ran', ok ? 'ok' : data.outcome === 'failed' ? 'danger' : 'accent'), el('span', {}, data.name), data.verification ? el('span', { class: 'mono' }, data.verification) : null, data.receipt_id ? el('span', { class: 'mono' }, `#${String(data.receipt_id).slice(0, 8)}`) : null)); break;
               }
               case 'receipt': badges.appendChild(el('span', { class: 'receipt-chip' }, pill(data.outcome || 'receipt', data.outcome === 'success' ? 'ok' : 'accent'), el('span', {}, data.tool || 'action'), el('span', { class: 'mono' }, `#${String(data.id || data.receipt_id || '').slice(0, 8)}`))); break;
-              case 'proposal': addActivity('Waiting for approval of ' + (data.steps || []).length + ' actions'); renderProposal(wrap, data, addActivity); break;
+              case 'proposal':
+                addActivity('Waiting for approval of ' + (data.steps || []).length + ' actions');
+                if (!proposalCards.has(data.proposal_id)) renderProposal(wrap, data, addActivity);
+                if (resumeWorkflow) proposalCards.get(continuationOf)?.querySelector('[data-resume-workflow]')?.remove();
+                break;
               case 'done': {
                 addActivity('Response finished · ' + (data.model || 'PODA'));
                 finished = true;
@@ -296,35 +364,63 @@
       }
     }
 
-    function renderProposal(wrap, data, addActivity) {
-      const card = el('div', { class: 'proposal', role: 'group', 'aria-label': 'Proposed actions' },
-        el('div', { class: 'row-between' }, el('strong', {}, 'PODA proposes these actions'), pill('needs approval', 'lav')),
+    function renderProposal(wrap, data, addActivity = () => {}) {
+      const status = data.status || 'pending';
+      const card = el('div', { class: 'proposal', role: 'group', 'aria-label': 'Workflow proposal' },
+        el('div', { class: 'row-between' }, el('strong', {}, status === 'pending' ? 'PODA proposes these actions' : 'Workflow checkpoint'),
+          pill(status === 'pending' ? 'needs approval' : status, status === 'executed' ? 'ok' : 'lav')),
         data.rationale ? el('p', { class: 'small muted' }, data.rationale) : null,
-        el('ol', {}, ...(data.steps || []).map((s) => el('li', {}, el('span', {}, s.summary || s.tool), ' ', el('span', { class: 'chip' }, s.tool), s.requires_confirmation ? pill('confirm', 'warn') : null))));
-      const approve = el('button', { class: 'btn btn-primary btn-sm' }, 'Approve and run');
-      const reject = el('button', { class: 'btn btn-ghost btn-sm' }, 'Reject');
-      approve.onclick = async () => {
-        approve.disabled = reject.disabled = true;
-        try {
-          const r = await api(`/agent/proposals/${encodeURIComponent(data.proposal_id)}/approve`, { method: 'POST' });
-          card.appendChild(el('div', { class: 'row' }, ...((r.receipts || []).map((rc) => el('span', { class: 'receipt-chip' }, pill(rc.outcome || 'done', rc.outcome === 'success' ? 'ok' : 'danger'), rc.tool, el('span', { class: 'mono' }, `#${String(rc.id || '').slice(0, 8)}`))))));
-          const status = r.status || r.proposal?.status || 'unknown';
-          card.appendChild(pill(status, status === 'executed' ? 'ok' : 'warn'));
-          addActivity('Proposal · ' + status);
-          if (['executed', 'failed'].includes(status)) {
-            const next = el('button', { class: 'btn btn-sm', type: 'button', onclick: async () => {
-              if (askState.controller) { toast('Wait for the current response to finish first.', 'warn'); return; }
-              next.disabled = true;
-              await send('Continue the original request.', data.proposal_id, null, true);
-            } }, 'Continue original workflow');
-            card.append(next);
-            await send('Report the outcome using the receipts.', data.proposal_id);
+        el('ol', {}, ...(data.steps || []).map((step) =>
+          el('li', {}, step.summary || step.tool, ' ', step.requires_confirmation ? pill('confirm', 'warn') : null))),
+        ...(data.receipts || []).map((receipt) =>
+          el('span', { class: 'receipt-chip', title: receipt.verification || '' },
+            pill(receipt.outcome, receipt.outcome === 'succeeded' ? 'ok' : 'warn'), receipt.tool,
+            el('span', { class: 'mono' }, '#' + receipt.id.slice(0, 8)))));
+      const proposalUrl = '/agent/proposals/' + encodeURIComponent(data.proposal_id);
+      if (status === 'pending') {
+        const approve = el('button', { class: 'btn btn-primary btn-sm' }, 'Approve and run');
+        const reject = el('button', { class: 'btn btn-ghost btn-sm' }, 'Reject');
+        async function decide(approved) {
+          const sessionId = askState.sessionId;
+          approve.disabled = reject.disabled = true;
+          try {
+            const result = await api(proposalUrl + (approved ? '/approve' : '/reject'), { method: 'POST' });
+            const nextStatus = result.proposal?.status || result.status;
+            addActivity('Proposal · ' + nextStatus);
+            renderProposal(wrap, { ...data, status: nextStatus, receipts: result.receipts || [] }, addActivity);
+            if (approved && cardSessionIsOpen(sessionId) && ['executed', 'failed'].includes(nextStatus)) {
+              await send('Report the outcome using the receipts.', data.proposal_id);
+            }
+          } catch (err) {
+            card.append(errorNode(err));
+            approve.disabled = reject.disabled = false;
           }
-        } catch (err) { card.appendChild(errorNode(err)); approve.disabled = reject.disabled = false; }
-      };
-      reject.onclick = async () => { approve.disabled = reject.disabled = true; try { await api(`/agent/proposals/${encodeURIComponent(data.proposal_id)}/reject`, { method: 'POST' }); card.appendChild(pill('rejected', 'danger')); } catch (err) { card.appendChild(errorNode(err)); } };
-      card.appendChild(el('div', { class: 'row' }, approve, reject));
-      wrap.appendChild(card); messages.scrollTop = messages.scrollHeight;
+        }
+        approve.onclick = () => decide(true);
+        reject.onclick = () => decide(false);
+        card.append(el('div', { class: 'row' }, approve, reject));
+      } else if (['executed', 'failed'].includes(status) && !data.has_followup) {
+        const next = el('button', { class: 'btn btn-sm', type: 'button', 'data-resume-workflow': '1' }, 'Continue original workflow');
+        next.onclick = async () => {
+          if (askState.controller) { toast('Wait for the current response to finish first.', 'warn'); return; }
+          next.disabled = true;
+          try { await send('Continue the original request.', data.proposal_id, null, true); }
+          finally { next.disabled = false; }
+        };
+        card.append(next);
+      } else if (status === 'interrupted') {
+        card.append(el('p', { class: 'small muted' }, 'Execution stopped before verification finished. Check the target and recorded receipts before requesting another action.'));
+      } else if (status === 'running') {
+        card.append(el('button', { class: 'btn btn-sm', type: 'button', onclick: renderRoute }, 'Refresh checkpoint'));
+      }
+      const existing = proposalCards.get(data.proposal_id);
+      if (existing) existing.replaceWith(card);
+      else wrap.append(card);
+      proposalCards.set(data.proposal_id, card);
+    }
+
+    function cardSessionIsOpen(sessionId) {
+      return sessionId === askState.sessionId && view.contains(messages);
     }
 
     composer.addEventListener('submit', (e) => { e.preventDefault(); const text = textarea.value.trim(); if (!text) return; textarea.value = ''; textarea.style.height = 'auto'; send(text); });

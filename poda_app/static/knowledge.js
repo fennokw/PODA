@@ -16,21 +16,34 @@
       if (!question.value.trim()) return;
       search.disabled = true;
       try {
-        const { facts } = await api('/memory/knowledge?q=' + encodeURIComponent(question.value.trim()));
+        const { facts, graph_ms } = await api('/memory/knowledge?q=' + encodeURIComponent(question.value.trim()));
         results.replaceChildren(...facts.map(fact => el('div', { class: 'recall-item' },
           el('strong', {}, `${fact.subject_name} → ${fact.predicate.replaceAll('_', ' ')} → ${fact.object_name}`),
           fact.qualifier ? note(fact.qualifier) : null, note(fact.evidence),
           button(`Source · ${fact.source_title} · hop ${fact.hop}`, () => focus(fact.memory_id)))));
-        if (!facts.length) results.append(note('No committed relationships match that name or alias.'));
+        results.prepend(note(facts.length ? `${facts.length} relationships · ${graph_ms} ms`
+          : 'No committed relationships match that name or alias.'));
       } catch (error) { results.replaceChildren(note(errorDetail(error).message)); }
       finally { search.disabled = false; }
     };
+    const queue = el('div', { class: 'stack-sm', 'aria-live': 'polite' });
+    const review = button('Find memories to review', async () => {
+      review.disabled = true;
+      try {
+        const { sources } = await api('/memory/knowledge/review-queue');
+        queue.replaceChildren(...sources.map(source => el('div', { class: 'recall-item' },
+          button(source.title || 'Untitled memory', () => focus(source.id)), note(source.preview))));
+        if (!sources.length) queue.append(note('No active source memories are waiting for facts.'));
+      } catch (error) { queue.replaceChildren(note(errorDetail(error).message)); }
+      finally { review.disabled = false; }
+    });
     return el('details', { class: 'thought-panel' }, el('summary', {}, 'Knowledge relationships'),
-      note('Walk up to three links from a matching entity. Select a memory point to review its relationships.'), form, results);
+      note('Walk up to three links from a matching entity. Select a memory point to review its relationships.'),
+      form, results, review, queue);
   }
 
   function editor(nodeId, hasSourceDraft) {
-    const box = el('details', { class: 'thought-panel' }, el('summary', {}, 'Knowledge facts'));
+    const box = el('details', { class: 'thought-panel', 'data-knowledge-editor': '1' }, el('summary', {}, 'Knowledge facts'));
     const body = el('div', { class: 'stack-sm' });
     box.append(body);
     const url = '/memory/knowledge/source/' + encodeURIComponent(nodeId);
@@ -48,6 +61,7 @@
 
     function render(data) {
       body.replaceChildren();
+      body.append(el('strong', {}, data.title || 'Source memory'));
       if (!data.source.trim()) {
         body.append(note('Add user-authored text to this memory before creating facts.'));
         return;

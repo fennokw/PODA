@@ -310,6 +310,9 @@ SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS agent_proposals (
         id TEXT PRIMARY KEY, session_id TEXT, created_at TEXT NOT NULL, status TEXT NOT NULL, plan_json TEXT NOT NULL,
         receipt_ids_json TEXT, decided_at TEXT)""",
+    """CREATE INDEX IF NOT EXISTS idx_agent_proposal_session ON agent_proposals(session_id)""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_proposal_followup
+        ON agent_proposals(json_extract(plan_json, '$.continuation_of')) WHERE status!='rejected'""",
     """CREATE TABLE IF NOT EXISTS llm_imports (
         id TEXT PRIMARY KEY, provider TEXT NOT NULL, source_filename TEXT, fingerprint TEXT NOT NULL UNIQUE,
         conversation_count INTEGER DEFAULT 0, message_count INTEGER DEFAULT 0, memory_count INTEGER DEFAULT 0, cloud_count INTEGER DEFAULT 0,

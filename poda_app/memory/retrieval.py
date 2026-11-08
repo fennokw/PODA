@@ -141,10 +141,11 @@ def recall(query: str, limit: int = 18, conn=None, depth: str = "auto", thinking
           "SELECT poda_node_id FROM poda_memory_feedback WHERE assessment IN ('incorrect','outdated')")}
         node_rows = {r["id"]: r for r in rows(conn, "SELECT * FROM memory_nodes WHERE node_type IN ('memory','surface')")
                      if r["id"] not in inactive}
-        graph_facts = knowledge.recall(conn, query)
+        graph_facts, graph_ms = knowledge.timed_recall(conn, query)
         enhanced_ids=recall_node_ids(query) if hindsight_enabled() else []
         if not node_rows:
-            return {"query": query, "results": [], "mode": "empty", "depth_used": depth, "surfaces": [], "knowledge_facts": graph_facts}
+            return {"query": query, "results": [], "mode": "empty", "depth_used": depth, "surfaces": [],
+                    "knowledge_facts": graph_facts, "graph_ms": graph_ms}
         surface_ids = [i for i, r in node_rows.items() if r["node_type"] == "surface"]
         member_ids = [i for i, r in node_rows.items() if r["node_type"] == "memory"]
         lexical = lexical_scores(conn, query)
@@ -277,7 +278,8 @@ def recall(query: str, limit: int = 18, conn=None, depth: str = "auto", thinking
         surfaces_summary = [{"id": i, "title": node_rows[i].get("title"), "score": round(sc, 4), "member_count": int(node_rows[i].get("member_count") or 0)} for sc, i in surfaces_ranked[:8]]
         return {"query": query, "results": results, "mode": mode, "depth_used": depth, "surfaces": surfaces_summary,
                 "weights": {"text": weight_text, "geometry": weight_geo, "unified_self": w_self, "unified_surface": w_surface},
-                "knowledge_facts": graph_facts, "embedding_model": config.EMBED_MODEL, "embedded": len(vectors), "lexical_hits": len(lexical),
+                "knowledge_facts": graph_facts, "graph_ms": graph_ms,
+                "embedding_model": config.EMBED_MODEL, "embedded": len(vectors), "lexical_hits": len(lexical),
                 "in_depth_loaded": depth == "deep", "hindsight_matched_nodes":len(enhanced_ids)}
     finally:
         if own:
