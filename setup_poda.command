@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
+VENV="${PODA_VENV_DIR:-.venv}"
 echo "PODA setup for macOS (Apple Silicon)"
 find_python() {
   for candidate in python3.14 python3.13 python3.12 python3.11 python3 python; do
@@ -15,14 +16,14 @@ if [ -z "$PYTHON_BIN" ]; then
   echo "ERROR: Python 3.11+ is required. Install from https://www.python.org/downloads/macos/ and rerun."; open "https://www.python.org/downloads/macos/" || true; exit 1
 fi
 echo "Using $($PYTHON_BIN --version) at $(command -v "$PYTHON_BIN")"
-if [ -d .venv ] && ! .venv/bin/python -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,11) else 1)' >/dev/null 2>&1; then
-  echo "Existing .venv is too old; rebuilding."; rm -rf .venv
+if [ -d "$VENV" ] && ! "$VENV/bin/python" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3,11) else 1)' >/dev/null 2>&1; then
+  echo "The existing virtual environment is unusable. Move it aside and retry."; exit 1
 fi
-[ -d .venv ] || "$PYTHON_BIN" -m venv .venv
-.venv/bin/python -m pip install --upgrade pip setuptools wheel >/dev/null
-.venv/bin/python -m pip install --upgrade -r requirements.txt
+[ -d "$VENV" ] || "$PYTHON_BIN" -m venv "$VENV"
+"$VENV/bin/python" -m pip install --upgrade pip setuptools wheel >/dev/null
+"$VENV/bin/python" -m pip install --upgrade -r requirements.txt
 
-verify_open3d() { .venv/bin/python -c 'import open3d; print(open3d.__version__)'; }
+verify_open3d() { "$VENV/bin/python" -c 'import open3d; print(open3d.__version__)'; }
 if ! OUT="$(verify_open3d 2>&1)"; then
   echo "Open3D cannot load: $OUT"
   if echo "$OUT" | grep -qi 'libusb'; then
@@ -39,7 +40,7 @@ if ! OUT="$(verify_open3d 2>&1)"; then
   fi
   verify_open3d >/dev/null || { echo "Open3D still fails to import. Run ./repair_open3d.command"; exit 1; }
 fi
-.venv/bin/python - <<'PY'
+"$VENV/bin/python" - <<'PY'
 import sys, fastapi, pydantic, uvicorn, requests, httpx, dateutil, cryptography, open3d
 try:
     from sqlcipher3 import dbapi2 as sc; enc = f"SQLCipher {sc.connect(':memory:').execute('PRAGMA cipher_version').fetchone()[0]}"
@@ -48,7 +49,7 @@ print(f"PODA runtime verified on Python {sys.version.split()[0]} | FastAPI {fast
 PY
 PODA_DATA_DIR="${PODA_DATA_DIR:-$HOME/Library/Application Support/PODA-Public}"
 mkdir -p "$PODA_DATA_DIR" && chmod 700 "$PODA_DATA_DIR"
-if ! .venv/bin/python -c 'from sqlcipher3 import dbapi2' >/dev/null 2>&1; then
+if ! "$VENV/bin/python" -c 'from sqlcipher3 import dbapi2' >/dev/null 2>&1; then
   echo 'ERROR: SQLCipher is REQUIRED for public-release personal storage. Resolve setup before starting PODA.'
   exit 1
 fi

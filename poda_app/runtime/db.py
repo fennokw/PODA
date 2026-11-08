@@ -397,6 +397,12 @@ def init_schema(conn) -> list[str]:
     for table, column, decl in COLUMN_MIGRATIONS:
         if add_column(conn, table, column, decl):
             applied.append(f"{table}.{column}")
+    from ..memory.hindsight_bridge import ensure_tables as ensure_memory_feedback
+    from ..memory.knowledge import SCHEMA as knowledge_schema
+
+    ensure_memory_feedback(conn)
+    for statement in knowledge_schema:
+        conn.execute(statement)
     conn.execute("UPDATE memory_nodes SET position_source='semantic' WHERE position_source IS NULL OR position_source=''")
     conn.execute("UPDATE memory_nodes SET reference_triggers='' WHERE reference_triggers IS NULL")
     conn.execute("UPDATE memory_nodes SET memory_kind='durable' WHERE memory_kind IS NULL OR memory_kind=''")

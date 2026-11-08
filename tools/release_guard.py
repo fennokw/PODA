@@ -26,8 +26,8 @@ ALLOWED_TOP_FILES = {
     "repair_open3d.command", "repair_poda_setup.command",
     "install_ollama_models.command", "PACKAGE_PODA.command",
 }
-ALLOWED_DIRS = {"poda_app", "tests", "docs", "tools", ".github"}
-ALLOWED_EXT = {".py", ".js", ".css", ".html", ".svg", ".md", ".yml", ".yaml", ".txt"}
+ALLOWED_DIRS = {"poda_app", "tests", "docs", "tools", ".github", "desktop"}
+ALLOWED_EXT = {".py", ".js", ".css", ".html", ".svg", ".md", ".yml", ".yaml", ".txt", ".cjs", ".json", ".command"}
 BLOCKED_PARTS = {
     ".git", ".venv", "__pycache__", ".pytest_cache", ".backups", ".patch_backups",
     "data", "logs", "screenshots", "dist", "sandbox", "node_modules", ".mypy_cache", ".ruff_cache",
@@ -56,12 +56,12 @@ def shipping_paths() -> list[Path]:
             result.append(item)
         elif item.is_dir() and item.name in ALLOWED_DIRS:
             for path in sorted(item.rglob("*")):
-                if path.is_symlink():
-                    raise ValueError(f"Refusing symlink: {path.relative_to(ROOT)}")
-                if not path.is_file():
-                    continue
                 rel = path.relative_to(ROOT)
                 if any(p in BLOCKED_PARTS for p in rel.parts):
+                    continue
+                if path.is_symlink():
+                    raise ValueError(f"Refusing symlink: {rel}")
+                if not path.is_file():
                     continue
                 if path.suffix.lower() not in ALLOWED_EXT:
                     raise ValueError(f"Unexpected file type in authored tree: {rel}")

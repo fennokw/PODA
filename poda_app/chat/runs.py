@@ -46,6 +46,8 @@ class ChatRun:
             self.events.append((event_id, frame))
             if len(self.events) > MAX_EVENT_COUNT:
                 del self.events[:len(self.events) - MAX_EVENT_COUNT]
+            if frame.startswith("event: error"):
+                self.state = "failed"
             if frame.startswith("event: token"):
                 try:
                     data = json.loads(next(line[5:].strip() for line in frame.splitlines() if line.startswith("data:")))
@@ -114,6 +116,11 @@ async def create_run(req: ChatRequest) -> dict[str, Any]:
     if not req.message.strip() or len(req.message) > 30000:
         raise HTTPException(status_code=422, detail="message must contain 1–30,000 characters")
     # Assign session ID at run creation so cancellation and reconnect share the same session.
+    if req.continuation_of and not req.session_id:
+        from ..agent.orchestrator import get_proposal
+        proposal = await asyncio.to_thread(get_proposal, req.continuation_of)
+        if proposal:
+            req = req.model_copy(update={"session_id": proposal["session_id"]})
     if not req.session_id:
         req = req.model_copy(update={"session_id": str(uuid.uuid4())})
     run = ChatRun(run_id=str(uuid.uuid4()), started=time.monotonic())

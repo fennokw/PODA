@@ -169,6 +169,17 @@
       recallBox.innerHTML = '';
       const results = data.results || [];
       const depth = data.depth_used || 'auto';
+      const facts = data.knowledge_facts || [];
+      if (facts.length) {
+        recallBox.append(el('div', { class: 'recall-group' }, el('span', { class: 'recall-group-title' }, 'Knowledge relationships')));
+        for (const fact of facts) {
+          recallBox.append(el('div', { class: 'recall-item' },
+            el('strong', {}, `${fact.subject_name} → ${fact.predicate.replaceAll('_', ' ')} → ${fact.object_name}`),
+            fact.qualifier ? el('div', { class: 'small' }, fact.qualifier) : null,
+            el('a', { class: 'small', href: `/memory-viewer#focus=${encodeURIComponent(fact.memory_id)}` },
+              `${fact.source_title} · hop ${fact.hop}`)));
+        }
+      }
       const surfacesRead = (data.surfaces || []).length ? data.surfaces : results.filter((r) => r.tier === 'surface');
       recallBox.appendChild(el('div', { class: 'row small faint' },
         el('span', {}, `mode ${data.mode || 'hybrid'}`),
@@ -190,7 +201,7 @@
       }
     }
 
-    async function send(text, continuationOf, resumeId = null) {
+    async function send(text, continuationOf, resumeId = null, resumeWorkflow = false) {
       if (askState.controller) return;
       if (!continuationOf && !resumeId) { const at = new Date().toISOString(); addMessage('user', text, at); askState.transcript.push({ role: 'user', content: text, at }); }
       const empty = $('.hero-empty', messages); if (empty) empty.remove();
@@ -198,7 +209,16 @@
       bubble.classList.add('streaming');
       const thoughts = el('details', { class: 'thought-panel', hidden: true }, el('summary', {}, el('span', { class: 'live' }), 'Thought stream'), el('pre'));
       const badges = el('div', { class: 'msg-badges' });
-      wrap.insertBefore(thoughts, bubble); wrap.appendChild(badges);
+      const activity = el('ol', { class: 'small' });
+      const traceTitle = el('summary', {}, 'Workflow activity');
+      const trace = el('details', { class: 'thought-panel', hidden: true }, traceTitle, activity);
+      function addActivity(text) {
+        trace.hidden = false;
+        activity.append(el('li', {}, text));
+        if (activity.children.length > 80) activity.firstElementChild.remove();
+        traceTitle.textContent = `Workflow activity · ${activity.children.length}`;
+      }
+      wrap.insertBefore(thoughts, bubble); wrap.append(badges, trace);
       let full = '', thoughtText = '', raf = 0, finished = false;
       const paint = () => { raf = 0; bubble.innerHTML = md.render(full); messages.scrollTop = messages.scrollHeight; };
       const schedule = () => { if (!raf) raf = requestAnimationFrame(paint); };
@@ -208,6 +228,7 @@
       sendBtn.disabled = true; stopBtn.hidden = false; setStatus('Contacting PODA…', true);
       const body = { message: text, mode: askState.mode, thinking_level: askState.thinking, use_memory: askState.useMemory, session_id: askState.sessionId };
       if (continuationOf) body.continuation_of = continuationOf;
+      if (resumeWorkflow) body.resume_workflow = true;
       try {
         if (!resumeId) {
           const started = await api('/chat/runs', { method: 'POST', body });
@@ -234,18 +255,20 @@
             let data; try { data = JSON.parse(dataText); } catch { continue; }
             switch (event) {
               case 'session': if (data.session_id) { askState.sessionId = data.session_id; persistSession(); } break;
-              case 'status': if (data.message === 'cancelled') finished = true; setStatus(data.message === 'routing' ? `Routing to ${data.model} (${data.profile || ''}, ${data.num_ctx ? data.num_ctx / 1024 + 'K ctx' : ''})` : data.message === 'recalling' ? 'Recalling memories…' : data.message === 'cancelled' ? 'Cancelled' : `${data.message} · ${data.model || ''}`, data.message !== 'cancelled'); break;
-              case 'recall': renderRecall(data); badges.appendChild(pill(`${(data.surfaces || (data.results || []).filter((r) => r.tier === 'surface')).length ? `${(data.surfaces || (data.results || []).filter((r) => r.tier === 'surface')).length} surface · ` : ''}${(data.results || []).filter((r) => r.tier !== 'surface').length} memories recalled`, 'lav')); if (data.depth_used === 'deep') badges.appendChild(pill('deep dive', 'lav')); break;
+              case 'status': addActivity([String(data.message || '').replaceAll('_', ' '), data.model, data.detail].filter(Boolean).join(' · ')); if (data.message === 'cancelled') finished = true; setStatus(data.message === 'routing' ? `Routing to ${data.model} (${data.profile || ''}, ${data.num_ctx ? data.num_ctx / 1024 + 'K ctx' : ''})` : data.message === 'recalling' ? 'Recalling memories…' : data.message === 'cancelled' ? 'Cancelled' : `${data.message} · ${data.model || ''}`, data.message !== 'cancelled'); break;
+              case 'recall': addActivity(`Recalled ${data.knowledge_facts?.length || 0} relationships and ${data.results?.length || 0} memories`); renderRecall(data); badges.appendChild(pill(`${(data.surfaces || (data.results || []).filter((r) => r.tier === 'surface')).length ? `${(data.surfaces || (data.results || []).filter((r) => r.tier === 'surface')).length} surface · ` : ''}${(data.results || []).filter((r) => r.tier !== 'surface').length} memories recalled`, 'lav')); if (data.depth_used === 'deep') badges.appendChild(pill('deep dive', 'lav')); break;
               case 'thought': thoughtText += data.token || ''; thoughts.hidden = false; $('pre', thoughts).textContent = thoughtText.slice(-6000); break;
               case 'token': full += data.token || ''; schedule(); break;
               case 'tool': {
+                addActivity([data.name, data.outcome, data.verification].filter(Boolean).join(' · '));
                 const ok = ['success', 'succeeded', 'verified'].includes(String(data.outcome || ''));
                 if (data.name === 'memory_dive') { badges.appendChild(el('span', { class: 'receipt-chip dive', title: data.args_summary || '' }, pill(ok ? 'read' : (data.outcome || 'ran'), ok ? 'lav' : 'danger'), el('span', {}, `Read in-depth memory: ${data.surface_title || data.args_summary || 'surface'}`), data.receipt_id ? el('span', { class: 'mono' }, `#${String(data.receipt_id).slice(0, 8)}`) : null)); break; }
                 badges.appendChild(el('span', { class: 'receipt-chip', title: data.args_summary || '' }, pill(data.outcome || 'ran', ok ? 'ok' : data.outcome === 'failed' ? 'danger' : 'accent'), el('span', {}, data.name), data.verification ? el('span', { class: 'mono' }, data.verification) : null, data.receipt_id ? el('span', { class: 'mono' }, `#${String(data.receipt_id).slice(0, 8)}`) : null)); break;
               }
               case 'receipt': badges.appendChild(el('span', { class: 'receipt-chip' }, pill(data.outcome || 'receipt', data.outcome === 'success' ? 'ok' : 'accent'), el('span', {}, data.tool || 'action'), el('span', { class: 'mono' }, `#${String(data.id || data.receipt_id || '').slice(0, 8)}`))); break;
-              case 'proposal': renderProposal(wrap, data); break;
+              case 'proposal': addActivity('Waiting for approval of ' + (data.steps || []).length + ' actions'); renderProposal(wrap, data, addActivity); break;
               case 'done': {
+                addActivity('Response finished · ' + (data.model || 'PODA'));
                 finished = true;
                 const tps = data.eval_count && data.eval_duration_ms ? (data.eval_count / (data.eval_duration_ms / 1000)).toFixed(1) : null;
                 metaRow.append(el('span', {}, fmtTime(new Date().toISOString())), pill(data.model || 'PODA', data.profile === 'gate' || data.profile === 'ledger' ? 'accent' : 'muted'), tps ? el('span', { class: 'mono' }, `${tps} tok/s`) : null);
@@ -273,7 +296,7 @@
       }
     }
 
-    function renderProposal(wrap, data) {
+    function renderProposal(wrap, data, addActivity) {
       const card = el('div', { class: 'proposal', role: 'group', 'aria-label': 'Proposed actions' },
         el('div', { class: 'row-between' }, el('strong', {}, 'PODA proposes these actions'), pill('needs approval', 'lav')),
         data.rationale ? el('p', { class: 'small muted' }, data.rationale) : null,
@@ -285,8 +308,18 @@
         try {
           const r = await api(`/agent/proposals/${encodeURIComponent(data.proposal_id)}/approve`, { method: 'POST' });
           card.appendChild(el('div', { class: 'row' }, ...((r.receipts || []).map((rc) => el('span', { class: 'receipt-chip' }, pill(rc.outcome || 'done', rc.outcome === 'success' ? 'ok' : 'danger'), rc.tool, el('span', { class: 'mono' }, `#${String(rc.id || '').slice(0, 8)}`))))));
-          card.appendChild(pill('approved', 'ok'));
-          await send('Report the outcome using the receipts.', data.proposal_id);
+          const status = r.status || r.proposal?.status || 'unknown';
+          card.appendChild(pill(status, status === 'executed' ? 'ok' : 'warn'));
+          addActivity('Proposal · ' + status);
+          if (['executed', 'failed'].includes(status)) {
+            const next = el('button', { class: 'btn btn-sm', type: 'button', onclick: async () => {
+              if (askState.controller) { toast('Wait for the current response to finish first.', 'warn'); return; }
+              next.disabled = true;
+              await send('Continue the original request.', data.proposal_id, null, true);
+            } }, 'Continue original workflow');
+            card.append(next);
+            await send('Report the outcome using the receipts.', data.proposal_id);
+          }
         } catch (err) { card.appendChild(errorNode(err)); approve.disabled = reject.disabled = false; }
       };
       reject.onclick = async () => { approve.disabled = reject.disabled = true; try { await api(`/agent/proposals/${encodeURIComponent(data.proposal_id)}/reject`, { method: 'POST' }); card.appendChild(pill('rejected', 'danger')); } catch (err) { card.appendChild(errorNode(err)); } };

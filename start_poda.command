@@ -67,7 +67,7 @@ fi
 PODA_DATA_DIR="${PODA_DATA_DIR:-$HOME/Library/Application Support/PODA-Public}"
 export PODA_DATA_DIR
 mkdir -p "$PODA_DATA_DIR/logs" && chmod 700 "$PODA_DATA_DIR" "$PODA_DATA_DIR/logs"
-.venv/bin/python -m uvicorn poda_app.main:app --host 127.0.0.1 --port "${PORT}" --no-server-header >>"$PODA_DATA_DIR/logs/server.log" 2>&1 &
+PODA_PORT="$PORT" .venv/bin/python -m poda_app.server >>"$PODA_DATA_DIR/logs/server.log" 2>&1 &
 SERVER_PID=$!
 cleanup(){ kill "$SERVER_PID" 2>/dev/null || true; }
 trap cleanup INT TERM EXIT

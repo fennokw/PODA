@@ -53,6 +53,25 @@ def test_chat_emits_tool_and_proposal_events(client, monkeypatch, tmp_folder):
         monkeypatch.setattr(chat_router.ollama, "chat_stream", report_stream)
         r2 = client.post("/chat/stream", json={"message": "Report what you did", "continuation_of": proposal["proposal_id"]})
         assert any(e == "done" for e, _ in _events(r2.text))
+
+        async def continue_stream(messages, *args, **kwargs):
+            assert "PENDING PROPOSAL" in messages[0]["content"]
+            assert "ACTION RECEIPTS" in messages[0]["content"]
+            yield {"message": {"content": "Ready to continue."}, "done": True}
+
+        monkeypatch.setattr(chat_router.ollama, "chat_stream", continue_stream)
+        monkeypatch.setattr(orchestrator.ollama, "chat", lambda *a, **kw: {"message": {"tool_calls": [
+            {"function": {"name": "fs_write", "arguments": {"path": str(tmp_folder / "copy.md"), "content": "alpha beta"}}},
+            {"function": {"name": "fs_write", "arguments": {"path": str(tmp_folder / "next.md"), "content": "next"}}},
+        ]}})
+        continued = client.post("/chat/stream", json={
+            "message": "Continue", "continuation_of": proposal["proposal_id"], "resume_workflow": True})
+        followup = next(data for name, data in _events(continued.text) if name == "proposal")
+        assert [step["args"]["path"] for step in followup["steps"]] == [str(tmp_folder / "next.md")]
+        assert not (tmp_folder / "next.md").exists()
+        assert client.post("/chat/stream", json={"message": "Continue", "session_id": "unrelated-session",
+                                                   "continuation_of": proposal["proposal_id"],
+                                                   "resume_workflow": True}).status_code == 404
     finally:
         grants.revoke_grant(g["id"])
 
@@ -67,3 +86,45 @@ def test_agent_endpoints(client):
     assert client.get("/agent/proposals").status_code == 200
     assert client.post("/agent/proposals/nope/approve").status_code == 404
     assert client.get("/agent/receipts").json()["receipts"]
+
+
+def test_proposal_only_runs_once_when_two_approvals_overlap(client, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from uuid import uuid4
+
+    from poda_app.agent import orchestrator
+    from poda_app.runtime.db import connect, now_iso
+
+    proposal_id = str(uuid4())
+    reached, release = Event(), Event()
+    calls = []
+    plan = {"steps": [{"tool": "run_tests", "args": {"cwd": "/synthetic"}}], "allow_repair": True}
+    with connect() as db:
+        db.execute("INSERT INTO agent_proposals VALUES (?,?,?,?,?,?,?)",
+                   (proposal_id, None, now_iso(), "pending", json.dumps(plan), "[]", None))
+
+    def execute(tool, *args, **kwargs):
+        calls.append(tool)
+        reached.set()
+        assert release.wait(3)
+        return {"receipt": {"id": "example-receipt", "outcome": "failed"},
+                "result": {"ok": False, "error": "synthetic failure"}}
+
+    monkeypatch.setattr(orchestrator.tools, "execute", execute)
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            first = pool.submit(orchestrator.approve, proposal_id)
+            try:
+                assert reached.wait(3)
+                assert orchestrator.approve(proposal_id)["status"] == "running"
+                assert orchestrator.reject(proposal_id)["status"] == "running"
+            finally:
+                release.set()
+            result = first.result(timeout=3)
+            assert result["status"] == "failed"
+            assert result["proposal"]["receipt_ids"] == ["example-receipt"]
+            assert calls == ["run_tests"]
+    finally:
+        with connect() as db:
+            db.execute("DELETE FROM agent_proposals WHERE id=?", (proposal_id,))

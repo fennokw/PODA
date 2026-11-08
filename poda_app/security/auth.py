@@ -55,6 +55,10 @@ def _session_ok(request: Request) -> bool:
 
 
 async def security_middleware(request: Request, call_next):
+    if config.DESKTOP_TOKEN and not hmac.compare_digest(
+        request.headers.get("x-poda-desktop", "").encode(), config.DESKTOP_TOKEN.encode()
+    ):
+        return JSONResponse({"detail": "This PODA backend belongs to the desktop app."}, status_code=401)
     path = request.url.path
     host = request.headers.get("host", "")
     if host and host.split(":")[0] not in {"127.0.0.1", "localhost"}:

@@ -93,13 +93,16 @@ def embed(texts: list[str], model: str | None = None, timeout: float = 180) -> l
 
 
 def chat(messages: list[dict[str, Any]], model: str, options: dict[str, Any] | None = None,
-         tools: list[dict[str, Any]] | None = None, timeout: float = 600, think: bool | None = None) -> dict[str, Any]:
+         tools: list[dict[str, Any]] | None = None, timeout: float = 600, think: bool | None = None,
+         format: str | None = None) -> dict[str, Any]:
     """Non-streaming chat; used for tool-selection and classification turns."""
     payload: dict[str, Any] = {"model": model, "messages": messages, "stream": False, "keep_alive": "30m", "options": options or {}}
     if tools:
         payload["tools"] = tools
     if think is not None:
         payload["think"] = think
+    if format is not None:
+        payload["format"] = format
     r = requests.post(config.OLLAMA_CHAT_URL, json=payload, timeout=timeout)
     if not r.ok:
         raise OllamaError(f"Ollama {r.status_code}: {r.text[:400]}")

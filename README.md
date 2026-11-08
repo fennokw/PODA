@@ -1,3 +1,11 @@
+## PODA v0.9.3 — desktop app and source-linked knowledge
+
+**PODA.app** opens the existing interface as a macOS app. It keeps the same local Ollama models, encrypted data, connector settings and Daily Automation schedules. The Memory Viewer now supports typed, evidence-backed relationships with three-hop recall and clickable sources. Chat adds a per-response workflow activity panel and continuation from approved action receipts.
+
+See [Desktop setup and knowledge relationships](docs/DESKTOP_AND_KNOWLEDGE.md) for the macOS build, first launch and migration steps.
+
+---
+
 ## PODA v0.9.2 — local models, multi-email automation and guided memory
 
 Daily Automation can scan several previously connected inboxes and grant independent, revocable per-account send/edit rights without re-entering credentials. **System** compares local Ollama general, coding and vision families using measured Mac memory, VRAM and disk rather than a misleading "available unified memory" estimate. **Personalize** adds encrypted opt-in Markdown skill uploads and local Hindsight status/sync.

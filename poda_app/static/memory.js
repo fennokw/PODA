@@ -5,6 +5,7 @@
 (function () {
   'use strict';
   const { $, $$, el, api, errorDetail, toast, confirmDialog, promptDialog, pill, fmtTime, loadBuild } = window.PODA;
+  $('#knowledgeExplorer').append(window.PODAKnowledge.explorer(id => memoryScene?.focusNode(id)));
   const REDUCED_MOTION = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -568,7 +569,8 @@
       el('label', { class: 'label' }, 'Draft position (x, y, z)'), xyz.wrap,
       node.source_message_id ? el('p', { class: 'faint small mono' }, `source message ${String(node.source_message_id).slice(0, 8)}${node.response_message_id ? ` · reply ${String(node.response_message_id).slice(0, 8)}` : ''} · ${fmtTime(node.created_at)}`) : el('p', { class: 'faint small' }, `created ${fmtTime(node.created_at)}`),
       el('div', { class: 'node-actions' }, el('button', { class: 'btn btn-sm', onclick: () => memoryScene?.focusNode(node.id) }, 'Focus'), del),
-      el('div', { class: 'panel-title', style: { marginTop: '8px' } }, 'Version history'), versionHistory(node.id));
+      el('div', { class: 'panel-title', style: { marginTop: '8px' } }, 'Version history'), versionHistory(node.id),
+      window.PODAKnowledge.editor(node.id, () => memoryDraftDirty));
     title.oninput = () => { node.title = title.value; markDirty('title', node); };
     content.oninput = () => { node.content = content.value; node.summary = content.value.trim().replace(/\s+/g, ' ').slice(0, 420); markDirty('memory text', node); };
     triggers.oninput = () => { node.reference_triggers = triggers.value; markDirty('reference triggers', node); };
