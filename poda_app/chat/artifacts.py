@@ -15,11 +15,12 @@ FORMATS = {
     "yaml": {"yaml", "yml"}, "yml": {"yaml", "yml"}, "sh": {"sh", "bash", "shell"},
     "mmd": {"mmd", "mermaid"},
 }
-_EXTENSION = "|".join((*FORMATS, *DOCUMENT_INPUT))
+_EXTENSION = "|".join((*FORMATS, *DOCUMENT_INPUT, "zip"))
 _NAME = re.compile(rf"(?<![\w./\\])([\w][\w.-]{{0,79}}\.({_EXTENSION}))\b", re.I)
 _REQUEST = re.compile(r"\b(download(?:able)?|(?:create|make|write|generate|save|output|export|give me|provide|return|send me|convert)\b.{0,120}\b(?:files?|csv|tsv|json|markdown|plain text|script|pdf|word document|docx|excel(?: workbook)?|xlsx|spreadsheet))\b", re.I | re.S)
 _TYPES = r"csv|tsv|json|markdown|plain text|python|javascript|typescript|html|css|svg|yaml|shell|bash|pdf|docx|xlsx|word(?: document)?|excel(?: workbook)?|spreadsheet"
 _OUTPUT_TYPE = re.compile(rf"\b(?:as|into|in)\s+(?:an?\s+)?({_TYPES})\b", re.I)
+_ZIP_OUTPUT = re.compile(r"\b(?:(?:as|into|in)\s+(?:an?\s+)?zip|zip\s+(?:file|archive|export))\b", re.I)
 _TYPED = re.compile(rf"\b({_TYPES})\s+(?:file|script)\b|\b(?:a|an)\s+(csv|tsv|json|markdown|plain text|pdf|docx|xlsx|word document|excel(?: workbook)?|spreadsheet)\b", re.I)
 _NAMED = re.compile(r"\b(?:named|called|as)\s+[`'\"]?([\w][\w.-]{0,100}\.[a-z0-9]{1,12})\b", re.I)
 _QUOTED_NAME = re.compile(r"""\b(?:named|called|as)\s+([`'"])([\w][\w .-]{0,130}\.[a-z0-9]{1,12})\1""", re.I)
@@ -47,12 +48,17 @@ def requested_name(message: str) -> str | None:
     mentioned = next((m for m in _NAME.finditer(message) if m[1].casefold() != "mermaid.js"), None)
     wants_diagram = is_mermaid_request(message) and creates_attachment(message)
     names_file = (named or quoted or mentioned) and re.search(r"\b(create|generate|make|write|export|give me|provide)\b", message, re.I)
-    if not (_REQUEST.search(message) or wants_diagram or names_file):
+    wants_zip = _ZIP_OUTPUT.search(message) and creates_attachment(message)
+    if not (_REQUEST.search(message) or wants_diagram or wants_zip or names_file):
         return None
-    if quoted:
-        return quoted[2]
-    if named:
-        return named[1]
+    explicit = quoted[2] if quoted else named[1] if named else None
+    if wants_zip:
+        if explicit and explicit.lower().endswith(".zip"):
+            return explicit
+        archive = next((m[1] for m in _NAME.finditer(message) if m[2].lower() == "zip"), None)
+        return archive or "poda-output.zip"
+    if explicit:
+        return explicit
     match = _OUTPUT_TYPE.search(message) or _TYPED.search(message)
     if match:
         ext = next(value.lower() for value in match.groups() if value)
@@ -71,7 +77,7 @@ def is_attachment_retry(message: str) -> bool:
 
 
 def creates_attachment(message: str) -> bool:
-    return bool(re.search(r"\b(create|generate|make|write|save|export|convert|output)\b", message, re.I))
+    return bool(re.search(r"\b(create|generate|make|write|save|export|convert|output|package|bundle|zip)\b", message, re.I))
 
 
 def refers_to_workspace(message: str, recent: str | None, names: list[str]) -> bool:
@@ -94,11 +100,16 @@ def source_language(name: str) -> str:
         return "text"
     if ext == "mmd":
         return "mermaid"
+    if ext == "zip":
+        return "json"
     return next((lang for lang, suffix in _LABELS.items() if suffix == ext), ext if ext in FORMATS else "base64")
 
 
 def generated_source(reply: str, name: str, *, mermaid: bool = False) -> tuple[str, str] | None:
     ext = name.rsplit(".", 1)[-1].lower()
+    if ext == "zip":
+        body = file_body(reply, "output.json")
+        return (body, "auto") if body else None
     if ext in {"md", "mmd"}:
         body = _mermaid_source(reply, markdown=ext == "md")
         if body or mermaid or ext == "mmd":

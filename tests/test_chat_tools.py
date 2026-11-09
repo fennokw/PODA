@@ -361,3 +361,93 @@ def test_mermaid_markdown_attachment_preserves_an_explicit_document_and_checks_s
     assert artifacts.requested_name(outside) is None
     cap = {"filesystem": {"general_user_file_create": False}}
     assert "outside PODA Sandbox" in gate.unsupported_action_response(outside, cap)
+
+
+def test_chat_creates_one_verified_zip_instead_of_separate_files(client, monkeypatch):
+    from io import BytesIO
+    from zipfile import ZipFile
+
+    from poda_app.agent import sandbox_files
+    from poda_app.chat import router as chat_router
+
+    task = 'Make me a short python script named rainbow.py that says "hello world" in an animated rainbow graphic in a zip file export.'
+    members = {"rainbow.py": "print('hello world')\n", "requirements.txt": "pygame\n"}
+    known = {row["filename"] for row in sandbox_files.files()}
+    calls = iter([{"message": {"tool_calls": [{"function": {"name": "sandbox_write", "arguments": {
+        "path": "rainbow.py", "content": "ignored"}}}]}}, {"message": {"content": "Ready to package."}}])
+    monkeypatch.setattr(chat_router.orchestrator, "_planner_models", lambda _: ["test"])
+    monkeypatch.setattr(chat_router.ollama, "chat", lambda *a, **k: next(calls))
+    monkeypatch.setattr(chat_router.models, "resolve", lambda *a, **k: {
+        "model": "test", "profile": "fast", "num_ctx": 8192, "options": {}})
+
+    async def fake_stream(messages, *args, **kwargs):
+        assert "poda-output.zip" in messages[0]["content"] and "PODA builds one real ZIP" in messages[0]["content"]
+        body = json.dumps([{"filename": name, "content": content} for name, content in members.items()])
+        yield {"message": {"content": f"Would you like me to proceed?\n```json\n{body}\n```"}, "done": True}
+
+    monkeypatch.setattr(chat_router.ollama, "chat_stream", fake_stream)
+    assert not grants.list_grants()
+    response = client.post("/chat/stream", json={"message": task, "use_memory": False})
+    events = _events(response.text)
+    assert not any(event == "proposal" for event, _ in events)
+    assert "Would you like" not in response.text
+    download = dict(events)["done"]["download"]
+    name = download["sandbox_file"]
+    assert name == "poda-output.zip"
+    assert {row["filename"] for row in sandbox_files.files()} - known == {name}
+    with ZipFile(BytesIO(client.get(f"/agent/sandbox/download/{name}").content)) as zipped:
+        assert zipped.testzip() is None
+        assert {name: zipped.read(name).decode() for name in zipped.namelist()} == members
+    assert sandbox_files.sandbox_write("bad.zip", '[{"filename":"../escape","content":"x"}]')["ok"] is False
+
+
+def test_previous_zip_checkpoint_reports_receipts_and_packs_saved_bytes(client, monkeypatch):
+    from io import BytesIO
+    from zipfile import ZipFile
+
+    from poda_app.agent import tools
+    from poda_app.chat import router as chat_router
+    from poda_app.memory import store
+    from poda_app.runtime.db import connect, now_iso
+
+    sid, proposal = "zip-checkpoint-session", "zip-checkpoint-proposal"
+    filename, content = "zip-checkpoint.py", "print('verified')\n"
+    task = "Create a short Python script in a ZIP file named checkpoint.zip."
+    store.save_message("user", task, session_id=sid, defer_memory=True)
+    store.save_message("assistant", "The script needs approval.", session_id=sid, defer_memory=True)
+    run = tools.execute("sandbox_write", {"path": filename, "content": content}, approved=True, session_id=sid)
+    plan = {"message": task, "steps": [{"tool": "sandbox_write", "args": {"path": filename, "content": content}}]}
+    db = connect()
+    try:
+        db.execute("""INSERT INTO agent_proposals (id, session_id, created_at, status, plan_json, receipt_ids_json)
+                      VALUES (?, ?, ?, 'executed', ?, ?)""",
+                   (proposal, sid, now_iso(), json.dumps(plan), json.dumps([run["receipt"]["id"]])))
+        db.commit()
+    finally:
+        db.close()
+    monkeypatch.setattr(chat_router.models, "resolve", lambda *a, **k: {})
+    report = client.post("/chat/stream", json={"message": "Report the outcome using the receipts.", "continuation_of": proposal})
+    assert "Saved and verified" in report.text and "Continue original workflow" in report.text
+    resumed = client.post("/chat/stream", json={"message": "Continue the original workflow.", "continuation_of": proposal,
+                                              "resume_workflow": True})
+    download = dict(_events(resumed.text))["done"]["download"]
+    assert download["sandbox_file"] == "checkpoint.zip"
+    with ZipFile(BytesIO(client.get("/agent/sandbox/download/checkpoint.zip").content)) as zipped:
+        assert zipped.namelist() == [filename] and zipped.read(filename).decode() == content
+
+
+def test_storage_folder_opener_uses_active_profile_only(client, monkeypatch):
+    from poda_app.runtime import config, router as runtime_router
+
+    opened = []
+    if config.WINDOWS:
+        monkeypatch.setattr(runtime_router.os, "startfile", lambda path: opened.append(path))
+    else:
+        monkeypatch.setattr(runtime_router.shutil, "which", lambda _: "/usr/bin/xdg-open")
+        monkeypatch.setattr(runtime_router.subprocess, "run", lambda args, **kwargs: opened.append(args[1]))
+    storage = client.get("/system/storage").json()
+    assert storage["data_directory"] == str(config.DATA_DIR)
+    assert storage["database"] == str(config.DB_PATH)
+    assert client.post("/system/storage/open", headers={"Origin": "https://other.test"}).status_code == 403
+    response = client.post("/system/storage/open", json={"path": "/unrelated"})
+    assert response.status_code == 200 and opened == [str(config.DATA_DIR)]

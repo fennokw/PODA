@@ -110,7 +110,8 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
          unattended_target: str | None = None, unattended_revision: str | None = None,
          unattended_mail_accounts: list[str] | None = None, *,
          emit: Callable[[str, dict], None] | None = None, stop: Event | None = None,
-         previous_steps: list[dict] | None = None, continuation_of: str | None = None) -> dict[str, Any]:
+         previous_steps: list[dict] | None = None, continuation_of: str | None = None,
+         reply_archive: bool = False) -> dict[str, Any]:
     """Return {needs_tools, steps, rationale, executed:[{step, receipt, result}], flagged:[...], proposal_id|None}."""
     specs = tools.ollama_tool_specs(snapshot)
     out: dict[str, Any] = {"needs_tools": False, "steps": [], "rationale": "", "executed": [], "flagged": [], "proposal_id": None, "model": None}
@@ -139,6 +140,9 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
         and re.search(r"\b(?:email|inbox|mailbox|messages?)\b", message, re.I))
     retry_missing_calendar_step = False
     did_calendar_step = False
+    if reply_archive:
+        messages[0]["content"] += ("\nThe reply writer packages the ZIP. Use tools only to gather inputs or perform separately "
+                                   "requested edits. Do not propose writes for new archive members.")
     if unattended and unattended_mail_accounts:
         messages[0]["content"] += ("\nSelected connected email account IDs: " +
                                   json.dumps(unattended_mail_accounts) + ". Review EVERY selected account and use "
@@ -219,6 +223,9 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
                     out["flagged"].append({"name":name,"reason":"email account not selected for this automation"})
                     tool_results_for_model.append({"role":"tool","content":json.dumps({"error":"Choose one of the scheduled accounts"})})
                     continue
+            if reply_archive and name == "sandbox_write" and not args.get("expected_sha256"):
+                tool_results_for_model.append({"role": "tool", "content": "The reply writer will package these files into a ZIP."})
+                continue
             fingerprint=json.dumps({"name":name,"args":args},sort_keys=True,default=str)
             if fingerprint in seen_requests:
                 out["flagged"].append({"name":name,"reason":"identical tool call already attempted; avoided duplicate"})

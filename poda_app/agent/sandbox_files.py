@@ -4,11 +4,13 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
+import io
 import json
 import os
 import re
 import stat
 import tempfile
+import zipfile
 from pathlib import Path
 from threading import RLock
 
@@ -94,6 +96,23 @@ def read_bytes(name: str) -> bytes:
     return _read(root() / filename(name))
 
 
+def pack_archive(entries: list[tuple[str, bytes]]) -> bytes:
+    if not 1 <= len(entries) <= 64:
+        raise ValueError("A ZIP needs 1 to 64 files.")
+    if sum(len(data) for _, data in entries) > MAX_BYTES:
+        raise ValueError("ZIP contents may be up to 16 MiB before compression.")
+    names = set()
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for name, data in entries:
+            name = filename(name)
+            if name.casefold() in names:
+                raise ValueError("ZIP filenames must be distinct.")
+            names.add(name.casefold())
+            archive.writestr(name, data)
+    return output.getvalue()
+
+
 def _source_path(name: str, digest: str) -> Path:
     key = hashlib.sha256((os.path.normcase(name) + ":" + digest).encode("utf-8")).hexdigest()
     return _directory(root(), ".poda-sources") / key
@@ -146,6 +165,18 @@ def save_content(name: str, content: str, *, encoding: str = "auto",
     if encoding != "auto":
         raise ValueError("Use encoding auto or base64.")
     data = content.encode("utf-8")
+    if ext == "zip":
+        if len(data) > MAX_SOURCE_BYTES:
+            raise ValueError("Generated ZIP source may be up to 512 KiB.")
+        entries = json.loads(content)
+        if not isinstance(entries, list) or any(
+            not isinstance(item, dict) or set(item) != {"filename", "content"}
+            or not isinstance(item["filename"], str) or not isinstance(item["content"], str)
+            for item in entries
+        ):
+            raise ValueError("ZIP source must be a JSON array of filename and content strings.")
+        archive = pack_archive([(item["filename"], item["content"].encode("utf-8")) for item in entries])
+        return save(name, archive, expected_sha256=expected_sha256, unique=unique)
     if ext in DOCUMENT_INPUT:
         if not content.strip() or len(data) > MAX_SOURCE_BYTES:
             raise ValueError("A generated document needs between 1 byte and 512 KiB of source text.")
