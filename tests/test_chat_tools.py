@@ -303,3 +303,61 @@ def test_chat_routes_revision_of_last_workspace_file_without_folder_grant(client
     res = client.post("/chat/stream", json={"message": "Change the file to say new text.", "use_memory": False, "session_id": session_id})
     assert calls and dict(_events(res.text))["done"]["model"] == "test"
     assert sandbox_files.sandbox_read(filename)["result"]["sha256"] == saved["sha256"]
+
+
+@pytest.mark.parametrize("retry", [False, True])
+def test_mermaid_markdown_export_without_a_folder_grant(client, monkeypatch, retry):
+    from poda_app.agent import sandbox_files
+    from poda_app.chat import router as chat_router
+    from poda_app.memory import store
+
+    task = "Create a mermaid.js flow chart of the process to creating a startup and output it as a Markdown file."
+    refusal = "The runtime ledger says I cannot create or edit files."
+    chart = "graph LR\n    A[Define Problem] --> B[Research Solutions]"
+    expected = f"```mermaid\n{chart}\n```\n"
+    session_id = f"mermaid-markdown-{retry}"
+    if retry:
+        store.save_message("user", task, session_id=session_id, defer_memory=True)
+        store.save_message("assistant", f"{refusal}\n\n{expected}", session_id=session_id, defer_memory=True)
+        store.save_message("user", "Try again.", session_id=session_id, defer_memory=True)
+        store.save_message("assistant", refusal, session_id=session_id, defer_memory=True)
+
+    async def fake_stream(messages, *args, **kwargs):
+        assert messages[-1]["content"] == task
+        assert "poda-output.md" in messages[0]["content"] and "No user folder grant is needed" in messages[0]["content"]
+        yield {"message": {"content": refusal + "\n\n"}, "done": False}
+        yield {"message": {"content": expected + "\nCan you confirm the steps?"}, "done": True}
+
+    monkeypatch.setattr(chat_router.ollama, "chat_stream", fake_stream)
+    monkeypatch.setattr(chat_router.models, "resolve", lambda *a, **k: {
+        "model": "test", "profile": "fast", "num_ctx": 8192, "options": {}})
+    monkeypatch.setattr(chat_router.orchestrator, "tool_prerequisites_exist", lambda _: False)
+    assert not grants.list_grants()
+    response = client.post("/chat/stream", json={"message": "Now try." if retry else task,
+                                                "session_id": session_id, "use_memory": False})
+    events = _events(response.text)
+    assert "".join(data["token"] for event, data in events if event == "token") == expected
+    download = dict(events)["done"]["download"]
+    assert download["sandbox_file"].endswith(".md") and download["error"] is None
+    assert sandbox_files.read_bytes(download["sandbox_file"]).decode() == expected
+    saved = client.get(f"/chat/session/{session_id}/messages").json()["messages"]
+    assert saved[-1]["download"] == download
+    assert client.get(f"/chat/session/{session_id}/messages/{download['message_id']}/download").text == expected
+
+
+def test_mermaid_markdown_attachment_preserves_an_explicit_document_and_checks_scope():
+    from poda_app.agent import gate
+    from poda_app.chat import artifacts
+
+    document = "# Startup\n\n```mermaid\nflowchart TD\nA --> B\n```\n"
+    wrapped = f"````markdown\n{document}````"
+    assert artifacts.generated_source(wrapped, "startup.md", mermaid=True) == (document, "auto")
+    assert artifacts.generated_source("I can draft a diagram.", "startup.md", mermaid=True) is None
+    assert artifacts.requested_name("Create a Mermaid.js startup flowchart") == "poda-output.md"
+    assert artifacts.requested_name('Create a Mermaid.js diagram named "Startup process.md"') == "Startup process.md"
+    assert artifacts.requested_name("Create a Mermaid flowchart named startup.mmd") == "startup.mmd"
+    assert artifacts.generated_source(document, "startup.mmd", mermaid=True) == ("flowchart TD\nA --> B\n", "auto")
+    outside = "Save the Mermaid.js chart as a Markdown file on my Desktop."
+    assert artifacts.requested_name(outside) is None
+    cap = {"filesystem": {"general_user_file_create": False}}
+    assert "outside PODA Sandbox" in gate.unsupported_action_response(outside, cap)
