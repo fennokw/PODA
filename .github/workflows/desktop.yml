@@ -1,0 +1,39 @@
+name: PODA Desktop for macOS
+on:
+  push:
+    paths:
+      - 'desktop/**'
+      - 'poda_app/**'
+      - 'requirements.txt'
+      - 'setup_poda.command'
+      - 'tools/release_guard.py'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  apple-silicon:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Build and verify the macOS app bundle
+        working-directory: desktop
+        run: |
+          npm ci --ignore-scripts
+          npm run package:mac
+          test -x ../dist/desktop/PODA-darwin-arm64/PODA.app/Contents/Resources/backend/SETUP_DESKTOP.command
+          codesign --verify --deep --strict ../dist/desktop/PODA-darwin-arm64/PODA.app
+          ditto -c -k --sequesterRsrc --keepParent ../dist/desktop/PODA-darwin-arm64/PODA.app ../dist/PODA-macOS-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PODA-macOS-arm64
+          path: dist/PODA-macOS-arm64.zip
+          if-no-files-found: error

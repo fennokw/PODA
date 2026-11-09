@@ -47,7 +47,7 @@ def test_no_approval_proposal_for_unattended_writes(monkeypatch):
             return {"message":{"tool_calls":[{"function":{"name":"write_mock","arguments":{}}}]}}
     monkeypatch.setattr(orchestrator.ollama,"chat",OllamaStub.chat)
     monkeypatch.setattr(orchestrator.ollama,"status",lambda:{"models":["fake"]})
-    monkeypatch.setattr(orchestrator,"_planner_model",lambda *args:"fake")
+    monkeypatch.setattr(orchestrator,"_planner_models",lambda *args:["fake"])
     try:
         result=orchestrator.plan("write something",{},unattended=True)
         assert result["proposal_id"] is None
@@ -103,7 +103,7 @@ def test_unattended_planner_continues_after_mail_read(monkeypatch, client):
         {"message":{"content":"Both steps completed.","tool_calls":[]}},
     ])
     monkeypatch.setattr(orchestrator.ollama,"chat",lambda *a,**k:next(responses))
-    monkeypatch.setattr(orchestrator,"_planner_model",lambda *a:"fake")
+    monkeypatch.setattr(orchestrator,"_planner_models",lambda *a:["fake"])
     monkeypatch.setattr(permissions,"authorize",lambda *a:(True,"test-approved scope"))
     def fake_execute(name,args,approved=False,session_id=None):
         requested.append((name,approved))

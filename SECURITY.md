@@ -16,6 +16,8 @@ PODA is a local-first personal assistant, not a formal security boundary against
 |---|---|
 | Accidental public ZIP of private history | Strict source-only packager, excluded backups/DB/logs/.git, clean release history |
 | Casual non-loopback web access | Loopback socket binding, host/origin checks, session cookie and CSP |
+| Desktop backend impersonation | OS-assigned loopback port, per-launch token injected into same-origin requests by Electron, independent API session cookie, sandboxed renderer with Node integration disabled |
+| Repeated approvals | Atomic proposal claim, step-level receipts, interrupted state after a restart |
 | Stolen inactive database file | SQLCipher key kept in Keychain; database is unreadable without the key |
 | Unexpected Notion credential forwarding | HTTPS exact-host allowlist; **no redirect following** |
 | Hidden arbitrary-host IMAP egress | Legacy route disabled; Gmail connector restricts provider hosts |

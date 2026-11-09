@@ -5,6 +5,7 @@ The public GitHub repository and downloadable source ZIP include **no** personal
 | Data | Storage | Default and controls |
 |---|---|---|
 | Conversation pairs and durable user memories | SQLCipher database in private macOS Application Support (`PODA-Public`) | Kept until deleted; visible in the Memory editor, searchable and source-linked; Privacy → Retention or a confirmed memory deletion |
+| Chat workflow activity | Bounded metadata on the encrypted assistant message | Deleted with that message. Contains routing, recall counts and receipt references. |
 | Surface memories, summaries, embeddings, search index and versions | Same encrypted database | Kept until deleted or recalculated; staged edits only persist after commit; embeddings can be queued offline |
 | Capability state, receipts and action proposals | Same encrypted database | Receipts provide proof of attempted/successful tools; retention controls apply |
 | Egress log | Same encrypted database | Latest 2000 metadata records by default; body/credential content is not intentionally logged; use Privacy to clear |

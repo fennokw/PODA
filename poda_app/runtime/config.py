@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 APP_NAME = "PODA"
-VERSION = "0.9.2-public"
+VERSION = "0.9.3-public"
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 PACKAGE_DIR = BASE_DIR / "poda_app"
@@ -24,6 +24,7 @@ LOG_DIR = DATA_DIR / "logs"
 
 HOST = "127.0.0.1"
 PORT = int(os.getenv("PODA_PORT", "8787"))
+DESKTOP_TOKEN = os.getenv("PODA_DESKTOP_TOKEN", "")
 
 OLLAMA_BASE = os.getenv("PODA_OLLAMA_BASE", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_CHAT_URL = os.getenv("PODA_OLLAMA_CHAT_URL", f"{OLLAMA_BASE}/api/chat")

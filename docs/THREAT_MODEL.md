@@ -4,7 +4,7 @@ This document describes implemented boundaries, known limitations, and deliberat
 
 ## Assets and locations
 
-- SQLCipher database: chat messages, memory/surface nodes, vector embeddings, search indices, projects, capability state, action proposals/receipts, connection metadata and egress logs.
+- SQLCipher database: chat messages, memory/surface nodes, typed relationship facts and their source references, vector embeddings, search indices, projects, capability state, action proposals/receipts, connection metadata and egress logs.
 - Keychain: independently named `PODA.Public.Database`, `PODA.Public.Notion`, `PODA.Public.Gmail` and `PODA.Public.BackupKey` service secrets. No real tokens are included in source.
 - External states only if the user opts in: Notion data sources and Apple Mail/Google mail. Notion and mail providers can retain copies of API-transmitted data.
 - Application logs under private app-support `logs/`; they are plain access/error logs even though the database is encrypted. Review logs and diagnostic outputs before sharing.
@@ -14,6 +14,7 @@ This document describes implemented boundaries, known limitations, and deliberat
 | Boundary | Implementation | Residual risk |
 |---|---|---|
 | Local HTTP | Uvicorn loopback bind `127.0.0.1`, Host validation and per-process same-origin session cookie | Another process logged in as the same macOS user can generally open the UI and obtain a session |
+| Desktop | Sandboxed Electron renderer with no Node integration or preload bridge. The dedicated loopback API also requires the per-launch desktop token. | The renderer can use the active local UI session. The app does not protect against other processes that can read its process memory or environment. |
 | Browser | SameSite session, origin checks, CSP, no external scripts/fonts/telemetry | A malicious extension or compromised browser can observe visible data |
 | Storage | `PODA_DB_ENCRYPTION=required` defaults to SQLCipher; database/backup keys in Keychain; app-support directories `0700`; no silent plaintext migration in this release | An unlocked user account, privileged process, Keychain access or live database process memory can reveal content |
 | Backups | AES-256-GCM encrypted `.podabkp` stored outside checkout, key in Keychain | Losing the key can make backups unrecoverable; manual plaintext exports and historical system backups are outside PODA's control |
