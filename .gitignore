@@ -47,3 +47,5 @@ logs/
 /sandbox/
 /dist/
 *.zip
+
+/desktop/.backend/

@@ -9,7 +9,7 @@ const path = require('node:path');
 const readline = require('node:readline');
 const { setTimeout: sleep } = require('node:timers/promises');
 
-const source = app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.resolve(__dirname, '..');
+const source = app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.join(__dirname, '.backend');
 const data = path.resolve(process.env.PODA_DATA_DIR || path.join(homedir(), 'Library', 'Application Support', 'PODA-Public'));
 const header = 'X-PODA-Desktop';
 const token = randomBytes(32).toString('hex');
@@ -19,9 +19,6 @@ let origin;
 let closing = false;
 
 function runtimePath() {
-  if (!app.isPackaged && existsSync(path.join(source, '.venv', 'bin', 'python'))) {
-    return path.join(source, '.venv', 'bin', 'python');
-  }
   const version = createHash('sha256').update(readFileSync(path.join(source, 'requirements.txt'))).digest('hex').slice(0, 16);
   const runtime = path.join(data, 'desktop-runtime', version);
   return existsSync(path.join(runtime, '.ready')) ? path.join(runtime, 'bin', 'python') : null;
@@ -32,12 +29,12 @@ async function startBackend(python) {
   mkdirSync(logs, { recursive: true, mode: 0o700 });
   const log = createWriteStream(path.join(logs, 'desktop-server.log'), { flags: 'a', mode: 0o600 });
   log.on('error', console.error);
-  const processEnv = { ...process.env, PODA_DATA_DIR: data, PODA_DESKTOP_TOKEN: token, PODA_DESKTOP_PARENT_PIPE: '1',
+  const processEnv = { ...process.env, PODA_DATA_DIR: data, PODA_DESKTOP_TOKEN: token,
     PYTHONDONTWRITEBYTECODE: '1', PYTHONNOUSERSITE: '1',
     PATH: ['/opt/homebrew/bin', '/usr/local/bin', process.env.PATH || '/usr/bin:/bin'].join(path.delimiter) };
   // Packaged builds always use the existing production encryption policy.
   if (app.isPackaged) processEnv.PODA_DB_ENCRYPTION = 'required';
-  backend = spawn(python, ['-u', '-m', 'poda_app.server', '--desktop'], {
+  backend = spawn(python, ['-u', path.join(source, 'desktop_backend.py')], {
     cwd: source, env: processEnv, stdio: ['pipe', 'pipe', 'pipe'],
   });
   backend.stderr.pipe(log, { end: false });
@@ -107,7 +104,7 @@ async function start() {
       detail: 'This opens the setup script in Terminal. When setup finishes, reopen PODA. Your data and Ollama models stay in their existing locations.',
     });
     if (result.response === 0) {
-      const script = app.isPackaged ? path.join(source, 'SETUP_DESKTOP.command') : path.join(__dirname, 'SETUP_DESKTOP.command');
+      const script = path.join(source, 'SETUP_DESKTOP.command');
       const error = await shell.openPath(script);
       if (error) throw new Error(error);
     }

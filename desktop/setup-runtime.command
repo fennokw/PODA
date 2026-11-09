@@ -38,7 +38,7 @@ if ! OUT="$(verify_open3d 2>&1)"; then
       echo "Homebrew is not installed. PODA will not install Homebrew for you. Install it from https://brew.sh, then: brew install libusb"; exit 1
     fi
   fi
-  verify_open3d >/dev/null || { echo "Open3D still fails to import. Run ./repair_open3d.command"; exit 1; }
+  verify_open3d >/dev/null || { echo "Open3D still fails to import. Install libusb and rerun setup"; exit 1; }
 fi
 "$VENV/bin/python" - <<'PY'
 import sys, fastapi, pydantic, uvicorn, requests, httpx, dateutil, cryptography, open3d
@@ -53,4 +53,4 @@ if ! "$VENV/bin/python" -c 'from sqlcipher3 import dbapi2' >/dev/null 2>&1; then
   echo 'ERROR: SQLCipher is REQUIRED for public-release personal storage. Resolve setup before starting PODA.'
   exit 1
 fi
-echo "PODA Python setup complete. Next: ./install_ollama_models.command, then ./start_poda.command"
+echo "PODA Python setup complete. Open PODA.app after starting Ollama"

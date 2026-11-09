@@ -1,13 +1,7 @@
 name: PODA Desktop for macOS
 on:
   push:
-    paths:
-      - 'desktop/**'
-      - 'poda_app/**'
-      - 'requirements.txt'
-      - 'setup_poda.command'
-      - 'tools/release_guard.py'
-      - '.github/workflows/desktop.yml'
+  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
@@ -24,14 +18,35 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.13'
-      - name: Build and verify the macOS app bundle
+      - name: Build, sign and launch the macOS app
         working-directory: desktop
         run: |
           npm ci --ignore-scripts
           npm run package:mac
-          test -x ../dist/desktop/PODA-darwin-arm64/PODA.app/Contents/Resources/backend/SETUP_DESKTOP.command
-          codesign --verify --deep --strict ../dist/desktop/PODA-darwin-arm64/PODA.app
-          ditto -c -k --sequesterRsrc --keepParent ../dist/desktop/PODA-darwin-arm64/PODA.app ../dist/PODA-macOS-arm64.zip
+          bundle=../dist/desktop/PODA-darwin-arm64/PODA.app
+          backend="$bundle/Contents/Resources/backend"
+          test -x "$backend/SETUP_DESKTOP.command"
+          codesign --verify --deep --strict "$bundle"
+          brew list libusb >/dev/null || brew install libusb
+          export PODA_DATA_DIR="$RUNNER_TEMP/poda-mac-smoke"
+          export PODA_DB_KEY_HEX="$(printf '%064d' 1)"
+          "$backend/SETUP_DESKTOP.command"
+          runtime="$(find "$PODA_DATA_DIR/desktop-runtime" -name .ready -print -quit)"
+          PODA_TEST_BACKEND="$backend" "${runtime%/.ready}/bin/python" -m pytest -q test_backend.py
+          "$bundle/Contents/MacOS/PODA" >"$RUNNER_TEMP/poda-electron.log" 2>&1 &
+          desktop=$!
+          trap 'kill "$desktop" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 55); do
+            if grep -q 'Application startup complete' "$PODA_DATA_DIR/logs/desktop-server.log" 2>/dev/null; then break; fi
+            kill -0 "$desktop" 2>/dev/null || break
+            sleep 1
+          done
+          grep -q 'Application startup complete' "$PODA_DATA_DIR/logs/desktop-server.log" || {
+            cat "$RUNNER_TEMP/poda-electron.log"
+            cat "$PODA_DATA_DIR/logs/desktop-server.log" 2>/dev/null || true
+            exit 1
+          }
+          ditto -c -k --sequesterRsrc --keepParent "$bundle" ../dist/PODA-macOS-arm64.zip
       - uses: actions/upload-artifact@v4
         with:
           name: PODA-macOS-arm64
