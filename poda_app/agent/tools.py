@@ -5,7 +5,7 @@ import json
 from typing import Any, Callable
 
 from ..runtime.db import connect
-from . import fs_tools, exec_tools, grants, receipts, code_context
+from . import fs_tools, exec_tools, grants, receipts, code_context, sandbox_files
 
 
 def _memory_search(query: str, limit: int = 10) -> dict[str, Any]:
@@ -98,6 +98,12 @@ def _schema(props: dict[str, Any], required: list[str]) -> dict[str, Any]:
 
 
 TOOLS: dict[str, dict[str, Any]] = {
+    "sandbox_list": {"description": "List files in PODA Sandbox, the app-owned workspace. No user folder grant is needed.", "mutating": False, "requires_confirmation": False, "needs": None,
+                     "handler": sandbox_files.sandbox_list, "schema": _schema({}, [])},
+    "sandbox_read": {"description": "Read a PODA Sandbox file by its filename. Returns text, editable document source, or base64, and the SHA-256 needed for an edit.", "mutating": False, "requires_confirmation": False, "needs": None,
+                     "handler": sandbox_files.sandbox_read, "schema": _schema({"path": _str("Sandbox filename only"), "offset": _int("Use next_offset from the previous read", 0, 24000000)}, ["path"])},
+    "sandbox_write": {"description": "Save a file in PODA Sandbox. Use Markdown for PDF or DOCX, CSV for XLSX, plain text for text files, or exact base64 bytes for any binary format. To edit, read first and pass its SHA-256. Use the complete updated content.", "mutating": True, "requires_confirmation": True, "needs": None,
+                      "handler": sandbox_files.sandbox_write, "schema": _schema({"path": _str("Sandbox filename only"), "content": _str("Complete file source or base64 bytes"), "encoding": _str("auto (default) or base64"), "expected_sha256": _str("Required to replace an existing file")}, ["path", "content"])},
     "code_context": {"description": "Cortex-style static source symbol/import map for a granted file. Use BEFORE editing to ground code changes. Does not execute the file.", "mutating": False, "requires_confirmation": False, "needs": "fs_read",
                 "handler": code_context.inspect_code, "schema": _schema({"path": _str("Exact path to a granted source code file")}, ["path"])},
     "fs_list": {"description": "List files and folders inside a granted folder (depth ≤ 2).", "mutating": False, "requires_confirmation": False, "needs": "fs_read",

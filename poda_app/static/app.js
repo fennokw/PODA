@@ -28,6 +28,17 @@
   registerCommand({ label: 'Refresh capability ledger', kind: 'Action', run: async () => { await api('/capabilities/ledger'); toast('Ledger refreshed from runtime', 'ok'); } });
 
   // ---------- Shared helpers ----------
+  function sandboxDownloadLink(filename) {
+    return el('a', { class: 'btn btn-sm', href: '/agent/sandbox/download/' + encodeURIComponent(filename),
+      download: filename, 'data-chat-download': 'true' }, `Download ${filename}`);
+  }
+  function sandboxReceiptLink(receipt) {
+    if (receipt.tool !== 'sandbox_write' || receipt.outcome !== 'succeeded') return null;
+    try {
+      const { filename } = JSON.parse(receipt.detail);
+      return filename ? sandboxDownloadLink(filename) : null;
+    } catch { return null; }
+  }
   function section(title, meta, ...children) {
     return el('section', { class: 'card stack' }, el('div', { class: 'card-head' }, el('h2', {}, title), meta ? el('span', { class: 'meta' }, meta) : null), ...children);
   }
@@ -138,6 +149,8 @@
     }
     function addDownload(row, download, sessionId) {
       if (!download?.message_id || !sessionId || row.querySelector('[data-chat-download]')) return;
+      if (download.error) row.append(el('span', { class: 'small', role: 'status' }, download.error));
+      if (download.sandbox_file) { row.append(sandboxDownloadLink(download.sandbox_file)); return; }
       const url = `/chat/session/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(download.message_id)}/download`;
       row.append(el('a', { class: 'btn btn-sm', href: url, download: download.filename,
         'data-chat-download': 'true' }, download.filename === 'poda-response.md' ? 'Download reply' : `Download ${download.filename}`));
@@ -386,7 +399,8 @@
         ...(data.receipts || []).map((receipt) =>
           el('span', { class: 'receipt-chip', title: receipt.verification || '' },
             pill(receipt.outcome, receipt.outcome === 'succeeded' ? 'ok' : 'warn'), receipt.tool,
-            el('span', { class: 'mono' }, '#' + receipt.id.slice(0, 8)))));
+            el('span', { class: 'mono' }, '#' + receipt.id.slice(0, 8)))),
+        ...(data.receipts || []).map(sandboxReceiptLink));
       const proposalUrl = '/agent/proposals/' + encodeURIComponent(data.proposal_id);
       if (status === 'pending') {
         const approve = el('button', { class: 'btn btn-primary btn-sm' }, 'Approve and run');
@@ -904,7 +918,7 @@
   // =====================================================================
   route('files', async ({ view, inspector, setTitle, setInspectorTitle }) => {
     setTitle('Files & Agent'); setInspectorTitle('Grant model'); $('#viewCrumb').textContent = 'Scoped tools with receipts';
-    inspector.append(el('p', { class: 'small muted' }, 'PODA can only access the files and folders you grant. A file grant covers that file alone. Edit mode also creates and edits files with hash-validated patches and backups. Temporary grants expire automatically. Execution is a separate flag.'),
+    inspector.append(el('p', { class: 'small muted' }, 'PODA Sandbox has its own file access. External files and folders use grants. A file grant covers that file alone. Edit mode also creates and edits files with hash-validated patches and backups. Temporary grants expire automatically. Execution is a separate flag.'),
       el('p', { class: 'small faint' }, 'Revoking a grant removes the capability from the ledger immediately. Every write produces a receipt; a failed write never produces a success receipt.'));
     const grantsBox = el('div'); const toolsBox = el('div'); const receiptsBox = el('div'); const proposalsBox = el('div');
     const pathInput = el('input', { class: 'input', id: 'g-path', name: 'root_path', placeholder: '~/Desktop/PODA-sandbox', required: true });
@@ -932,7 +946,37 @@
       try { await api('/agent/grants', { method: 'POST', body: { root_path: fd.get('root_path'), mode: fd.get('mode'), label: fd.get('label') || null, allow_execute: fd.get('allow_execute') === 'on', ttl_minutes: +fd.get('ttl_minutes') || null } }); form.reset(); toast('Access granted. Ledger updated.', 'ok'); refresh(); }
       catch (err) { toast(errorDetail(err).message, 'danger'); }
     });
+    const sandboxBox = el('div');
+    const upload = el('input', { type: 'file', class: 'input', 'aria-label': 'Import file into PODA Sandbox' });
+    const uploadButton = el('button', { class: 'btn btn-sm', type: 'button' }, 'Import a copy');
+    uploadButton.onclick = async () => {
+      const file = upload.files[0];
+      if (!file) return toast('Choose a file to import.', 'warn');
+      uploadButton.disabled = true;
+      try {
+        const body = new FormData(); body.append('file', file);
+        const response = await fetch('/agent/sandbox/upload', { method: 'POST', body });
+        const result = await response.json();
+        if (!response.ok) throw new ApiError(response.status, result.detail);
+        toast(`Imported ${result.filename} into PODA Sandbox.`, 'ok');
+        upload.value = '';
+        refreshSandbox();
+      } catch (err) { toast(errorDetail(err).message, 'danger'); }
+      finally { uploadButton.disabled = false; }
+    };
+    function refreshSandbox() {
+      return load(sandboxBox, async () => {
+        const { files } = await api('/agent/sandbox');
+        if (!files.length) return emptyState('No sandbox files', 'Ask PODA to create a file or import a copy to work on.');
+        return el('div', { class: 'stack-sm' }, ...files.map(file => el('div', { class: 'row-between' },
+          el('span', {}, file.filename, ' ', el('span', { class: 'faint small' }, fmtBytes(file.bytes))),
+          sandboxDownloadLink(file.filename))));
+      });
+    }
     view.appendChild(el('div', { class: 'screen stack' },
+      section('PODA Sandbox', 'writable workspace · no grant required',
+        el('p', { class: 'small muted' }, 'Files created in chat are saved here. Import a copy of a file and ask PODA to revise it by name. Download a copy to your computer when you’re ready.'),
+        el('div', { class: 'row' }, upload, uploadButton), sandboxBox),
       el('div', { class: 'grid-main-side' }, section('File and path grants', 'scoped access to your files', grantsBox), section('Grant access', null, form)),
       el('div', { class: 'grid-2' }, section('Tool registry', 'what the agent can call', toolsBox), section('Pending proposals', 'awaiting your approval', proposalsBox)),
       section('Action receipts', 'the only evidence of a completed side effect', receiptsBox),
@@ -940,6 +984,7 @@
 
     async function refresh() {
       await Promise.all([
+        refreshSandbox(),
         load(grantsBox, async () => {
           const r = await api('/agent/grants'); const grants = r.grants || [];
           if (!grants.length) return emptyState('No grants', 'Grant a specific file or folder to give PODA scoped access. Chat downloads are available without a grant.');
