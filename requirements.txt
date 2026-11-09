@@ -1,0 +1,22 @@
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+httpx==0.28.1
+requests==2.32.3
+pydantic==2.13.5
+python-multipart==0.0.20
+pypdf>=5.0,<7.0
+python-dateutil==2.9.0.post0
+cryptography==50.0.2
+sqlcipher3==0.6.2; sys_platform != "win32"
+# Includes the Windows memory-lock logging fix for encrypted startup.
+sqlcipher3==0.6.5; sys_platform == "win32"
+
+open3d==0.20.0
+numpy>=2.0.0,<3.0
+
+# test tooling (small; used by VERIFY_PODA.command)
+pytest==9.1.1
+
+# The Windows vault and classic Outlook integration use native Win32/COM.
+pywin32==312; sys_platform == "win32"
+tzdata>=2025.2; sys_platform == "win32"

@@ -15,7 +15,7 @@ BACKEND = Path(os.environ.get("PODA_TEST_BACKEND", Path(__file__).parent / ".bac
 
 def test_desktop_requires_token_and_local_session(tmp_path):
     assert not (BACKEND / "poda_app" / "server.py").exists()
-    assert (BACKEND / "backend-lock.json").is_file()
+    assert (BACKEND / "poda_app" / "main.py").is_file()
     env = dict(os.environ, PODA_DATA_DIR=str(tmp_path), PODA_BACKUP_DIR=str(tmp_path / "backups"),
                PODA_DB_ENCRYPTION="off", PODA_DESKTOP_TOKEN="synthetic-local-token")
     env["PYTHONDONTWRITEBYTECODE"] = "1"

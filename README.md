@@ -1,23 +1,19 @@
-# PODA Desktop for Mac
+# PODA for Mac
 
-PODA is a local-first assistant. This repository builds the Apple Silicon desktop app. For the browser-hosted version and shared application source, use [PODA Web](https://github.com/fennokw/PODA-Web).
+PODA is a local-first assistant for chat, memory, mail, projects, and automations. This repository contains the full Apple Silicon desktop application.
 
-## Install
+## Install from source
 
-1. Download `PODA-macOS-arm64` from a successful [desktop workflow](https://github.com/fennokw/PODA/actions/workflows/desktop.yml). Extract both ZIP layers and move `PODA.app` to Applications.
-2. Install Python 3.11 or newer and Ollama. Open PODA and select **Set Up Python Runtime** on first launch. Reopen the app when setup finishes.
-3. Start Ollama. Use `ollama pull llama3.2:3b` and `ollama pull nomic-embed-text` to install starter chat and embedding models.
+1. Clone this repository or download and extract its source ZIP. Install Node.js 24, Python 3.11 or newer, and Ollama for local models. If Open3D requires libusb, install it with Homebrew using `brew install libusb`.
+2. Run `./Install-PODA.command` from the source folder. If the ZIP extractor stripped the executable bit, run `bash Install-PODA.command`.
+3. The command builds `PODA.app` from this folder, sets up the Python runtime, creates a PODA shortcut on your Desktop, and opens the app. Keep this folder in place so the shortcut can find the app. Rerun the command after pulling updates or editing the code.
 
-The build uses an ad hoc macOS signature. Existing desktop data stays in `~/Library/Application Support/PODA-Public` and its credentials stay in Keychain. Keep PODA running and the Mac awake for Daily Automation.
+Start Ollama and run `ollama pull llama3.2:3b` and `ollama pull nomic-embed-text` for starter chat and embedding models. PODA stores desktop data in `~/Library/Application Support/PODA-Public` and credentials in Keychain.
 
-## Build
+## Source layout
 
-Install Node.js 24, Python, and Git. Run the following from the checkout.
+- `poda_app/` contains the application API, UI, agent, memory, and integrations.
+- `desktop/` contains the Electron launcher, runtime setup, and packager.
+- `tests/` contains the application regression tests.
 
-```sh
-cd desktop
-npm ci --ignore-scripts
-npm run package:mac
-```
-
-The output is `dist/desktop/PODA-darwin-arm64/PODA.app`. The build embeds the pinned PODA Web runtime behind a private backend launcher. The installed app needs no PODA Web checkout or separate server.
+A prebuilt Apple Silicon package is available in the [desktop workflow artifacts](https://github.com/fennokw/PODA/actions/workflows/desktop.yml). The app uses an ad hoc macOS signature. The separate browser edition is available in [PODA Web](https://github.com/fennokw/PODA-Web).
