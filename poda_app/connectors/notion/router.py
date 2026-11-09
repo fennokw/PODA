@@ -269,13 +269,9 @@ def notion_query(req: QueryRequest) -> dict[str, Any]:
 
 @router.post("/notion/pages")
 def notion_create_page(req: CreatePageRequest) -> dict[str, Any]:
-    cfg = state.get_config()
-    if not cfg or not cfg.get("data_source_id"):
-        raise HTTPException(status_code=400, detail={"code": "not_connected", "message": "No Notion data source is connected."})
-    if not cfg.get("insert_verified"):
-        raise HTTPException(status_code=400, detail={"code": "write_unverified", "message": "Run VERIFY WRITE ACCESS before creating pages."})
     try:
         from .client import NotionClient
+        cfg = mapping.require_write("insert")
         payload: dict[str, Any] = {"parent": {"type": "data_source_id", "data_source_id": cfg["data_source_id"]}, "properties": req.properties}
         if req.children:
             payload["children"] = req.children
@@ -287,15 +283,15 @@ def notion_create_page(req: CreatePageRequest) -> dict[str, Any]:
 
 @router.patch("/notion/pages/{page_id}")
 def notion_update_page(page_id: str, req: UpdatePageRequest) -> dict[str, Any]:
-    cfg = state.get_config()
-    if not cfg or not cfg.get("update_verified"):
-        raise HTTPException(status_code=400, detail={"code": "write_unverified", "message": "Run VERIFY WRITE ACCESS before updating pages."})
     try:
         from .client import NotionClient
         payload: dict[str, Any] = {"properties": req.properties}
         if req.in_trash is not None:
             payload["in_trash"] = req.in_trash
-        page = NotionClient().update_page(page_id, payload)
+        cfg = mapping.require_write("update")
+        client = NotionClient()
+        mapping.page_in_source(client, page_id, cfg["data_source_id"])
+        page = client.update_page(page_id, payload)
     except NotionError as exc:
         raise _http(exc)
     return {"updated": True, "page": service.normalize_page(page), "raw_id": page.get("id")}
@@ -369,10 +365,8 @@ def change_commitment(page_id: str, req: CommitmentChange) -> dict[str, Any]:
     from .client import NotionClient
     try:
         client = NotionClient()
-        current = client.page(page_id)
-        parent = current.get("parent") or {}
-        if parent.get("data_source_id") != cfg.get("data_source_id"):
-            raise HTTPException(403, detail="Page is not in the connected Notion calendar.")
+        cfg = mapping.require_write("update")
+        current = mapping.page_in_source(client, page_id, cfg["data_source_id"])
         if req.expected_last_edited_time and current.get("last_edited_time") != req.expected_last_edited_time:
             raise HTTPException(409, detail="Calendar item changed in Notion; refresh before editing.")
         client.update_page(page_id, {"properties":{"Commitment":{"select":({"name":req.commitment} if req.commitment else None)}}})

@@ -5,17 +5,19 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+from datetime import date, datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ...agent import receipts
 from ...runtime.db import connect, now_iso, one, rows
 from . import state
 from .client import NotionClient, NotionError
-from .service import normalize_page, query_pages, schema_fingerprint
+from .service import normalize_page, property_value, query_pages, schema_fingerprint
 
 MAPPING_FIELDS = {"title": {"title"}, "date": {"date"}, "status": {"status", "select"}, "type": {"select", "multi_select", "status"},
                   "project_relation": {"relation"}, "class_relation": {"relation"}, "notes": {"rich_text"}}
-EXTERNAL_ID_TYPES = {"rich_text", "number", "title", "url"}
+EXTERNAL_ID_TYPES = {"rich_text", "number", "url"}
 
 
 def _schema() -> tuple[dict[str, Any], dict[str, Any]]:
@@ -64,8 +66,109 @@ def get_active_mapping(data_source_id: str | None = None) -> dict[str, Any] | No
     if not row:
         return None
     row["mapping"] = json.loads(row.pop("mapping_json") or "{}")
-    row["stale"] = bool(cfg and cfg.get("schema_fingerprint") and row.get("schema_fingerprint") and row["schema_fingerprint"] != cfg["schema_fingerprint"])
+    row["stale"] = bool(cfg and ds == cfg["data_source_id"] and row["schema_fingerprint"] != schema_fingerprint(cfg.get("schema") or {}))
     return row
+
+
+def require_write(permission: str) -> dict[str, Any]:
+    cfg, _ = _schema()
+    if cfg.get("status") not in {"CONNECTED", "DEGRADED"} or not cfg.get(f"{permission}_verified"):
+        raise NotionError("validation", f"{permission.capitalize()} permission has not been verified for the connected Notion data source. Run Verify Write Access.", code="write_unverified")
+    return cfg
+
+
+def live_mapping(cfg: dict[str, Any], client: NotionClient) -> tuple[dict[str, Any], dict[str, Any]]:
+    source_id = cfg["data_source_id"]
+    active = get_active_mapping(source_id)
+    if not active:
+        raise NotionError("validation", "Save a mapping in the Notion Schema Mapper first.", code="mapping_missing")
+    schema = client.data_source(source_id).get("properties") or {}
+    if schema != cfg.get("schema"):
+        conn = connect()
+        try:
+            bound = conn.execute("UPDATE notion_config SET schema_json=? WHERE id=1 AND data_source_id=?", (json.dumps(schema), source_id))
+            if bound.rowcount != 1:
+                raise NotionError("validation", "The connected Notion data source changed. Retry the operation.")
+            conn.commit()
+        finally:
+            conn.close()
+    if active["schema_fingerprint"] != schema_fingerprint(schema) or validate_mapping(active["mapping"], schema):
+        raise NotionError("validation", "The Notion schema changed. Review and re-save your mapping before writing.", code="mapping_stale")
+    return active, schema
+
+
+def page_in_source(client: NotionClient, page_id: str, source_id: str) -> dict[str, Any]:
+    page = client.page(page_id)
+    parent_id = (page.get("parent") or {}).get("data_source_id")
+    if not parent_id or parent_id.replace("-", "").lower() != source_id.replace("-", "").lower():
+        raise NotionError("restricted", "This page is outside the connected Notion data source.", code="wrong_data_source")
+    return page
+
+
+def _date_value(value: str, zone_name: str | None) -> date | datetime:
+    if not isinstance(value, str):
+        raise ValueError("Use an ISO 8601 date or timestamp.")
+    if "T" not in value:
+        return date.fromisoformat(value)
+    stamp = datetime.fromisoformat(value)
+    if not stamp.tzinfo and zone_name:
+        stamp = stamp.replace(tzinfo=ZoneInfo(zone_name))
+    if not stamp.tzinfo:
+        raise ValueError("A timed event requires a UTC offset or an IANA time zone.")
+    return stamp
+
+
+def _same_date(key: str, actual: dict[str, Any], expected: dict[str, Any]) -> bool:
+    found, wanted = actual.get(key), expected.get(key)
+    if not found or not wanted:
+        return found == wanted
+    try:
+        left = _date_value(found, actual.get("time_zone"))
+        right = _date_value(wanted, expected.get("time_zone"))
+        if isinstance(left, datetime) and isinstance(right, datetime):
+            return left.astimezone(timezone.utc) == right.astimezone(timezone.utc)
+        return left == right
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
+        return False
+
+
+def date_property(start: str, end: str | None = None, zone_name: str | None = None) -> dict[str, Any]:
+    try:
+        first = _date_value(start, zone_name)
+        last = _date_value(end, zone_name) if end else None
+        if last and (type(first) is not type(last) or last < first):
+            raise ValueError("End must be at or after start and use the same date format.")
+        value = {"start": start}
+        if end:
+            value["end"] = end
+        if isinstance(first, datetime) and zone_name:
+            zone = ZoneInfo(zone_name)
+            value["time_zone"] = zone_name
+            value["start"] = first.astimezone(zone).replace(tzinfo=None).isoformat()
+            if isinstance(last, datetime):
+                value["end"] = last.astimezone(zone).replace(tzinfo=None).isoformat()
+        return {"date": value}
+    except (TypeError, ValueError, ZoneInfoNotFoundError) as exc:
+        raise NotionError("validation", f"Invalid Notion event date: {exc}", code="invalid_event_date") from exc
+
+
+def event_matches(page: dict[str, Any], properties: dict[str, Any]) -> bool:
+    for name, prop in properties.items():
+        kind = next(iter(prop))
+        actual = page["properties"].get(name)
+        expected = property_value({"type": kind, **prop})
+        if kind == "date":
+            if not actual or not all(_same_date(key, actual, expected) for key in ("start", "end")):
+                return False
+        elif kind == "relation":
+            if {i.replace("-", "").lower() for i in (actual or [])} != {i.replace("-", "").lower() for i in expected}:
+                return False
+        elif kind == "multi_select":
+            if set(actual or []) != set(expected):
+                return False
+        elif actual != expected:
+            return False
+    return True
 
 
 def mapping_history() -> list[dict[str, Any]]:
@@ -78,7 +181,8 @@ def mapping_history() -> list[dict[str, Any]]:
 
 
 def save_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
-    cfg, schema = _schema()
+    cfg, _ = _schema()
+    schema = NotionClient().data_source(cfg["data_source_id"]).get("properties") or {}
     clean = {k: (mapping.get(k) or None) for k in MAPPING_FIELDS}
     clean["external_ids"] = {k: v for k, v in (mapping.get("external_ids") or {}).items() if v}
     clean["status_done_values"] = [str(v) for v in (mapping.get("status_done_values") or [])]
@@ -89,16 +193,20 @@ def save_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
         raise NotionError("validation", "Mapping rejected: " + " ".join(errors), code="mapping_invalid")
     conn = connect()
     try:
+        conn.execute("BEGIN IMMEDIATE")
+        bound = conn.execute("UPDATE notion_config SET schema_json=? WHERE id=1 AND data_source_id=?", (json.dumps(schema), cfg["data_source_id"]))
+        if bound.rowcount != 1:
+            raise NotionError("validation", "The connected data source changed. Reload the Schema Mapper.")
         prev = one(conn, "SELECT MAX(version) AS v FROM notion_mappings WHERE data_source_id=?", (cfg["data_source_id"],))
         version = int((prev or {}).get("v") or 0) + 1
         conn.execute("UPDATE notion_mappings SET active=0 WHERE data_source_id=?", (cfg["data_source_id"],))
         mid = str(uuid.uuid4())
         conn.execute("INSERT INTO notion_mappings (id, version, data_source_id, mapping_json, schema_fingerprint, created_at, active) VALUES (?,?,?,?,?,?,1)",
-                     (mid, version, cfg["data_source_id"], json.dumps(clean), cfg.get("schema_fingerprint") or schema_fingerprint(schema), now_iso()))
+                     (mid, version, cfg["data_source_id"], json.dumps(clean), schema_fingerprint(schema), now_iso()))
         conn.commit()
     finally:
         conn.close()
-    return {"saved": True, "id": mid, "version": version, "mapping": clean, "schema_fingerprint": cfg.get("schema_fingerprint")}
+    return {"saved": True, "id": mid, "version": version, "mapping": clean, "schema_fingerprint": schema_fingerprint(schema)}
 
 
 def interpret_page(page: dict[str, Any], mapping: dict[str, Any]) -> dict[str, Any]:
@@ -134,12 +242,8 @@ def _text(value: str) -> dict[str, Any]:
 
 def build_properties(mapping: dict[str, Any], schema: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
     props: dict[str, Any] = {mapping["title"]: {"title": [{"type": "text", "text": {"content": str(event["title"])[:2000]}}]}}
-    date_obj: dict[str, Any] = {"start": event["start"]}
-    if event.get("end"):
-        date_obj["end"] = event["end"]
-    if event.get("time_zone") and "T" in str(event["start"]):
-        date_obj["time_zone"] = event["time_zone"]
-    props[mapping["date"]] = {"date": date_obj}
+    if event.get("start"):
+        props[mapping["date"]] = date_property(event["start"], event.get("end"), event.get("time_zone"))
     status_value = event.get("status") or mapping.get("default_status")
     if mapping.get("status") and status_value:
         kind = (schema.get(mapping["status"]) or {}).get("type")
@@ -191,12 +295,9 @@ def find_duplicates(event: dict[str, Any], mapping: dict[str, Any], pages: list[
 
 
 def propose_event(event: dict[str, Any], session_id: str | None = None) -> dict[str, Any]:
-    cfg, schema = _schema()
-    active = get_active_mapping()
-    if not active:
-        raise NotionError("validation", "No active mapping. Save a mapping in the Notion Schema Mapper first.", code="mapping_missing")
-    if active["stale"]:
-        raise NotionError("validation", "The saved mapping predates a schema change. Re-save the mapping after reviewing the live schema.", code="mapping_stale")
+    cfg, _ = _schema()
+    client = NotionClient()
+    active, schema = live_mapping(cfg, client)
     if not event.get("title") or not event.get("start"):
         raise NotionError("validation", "title and start are required.")
     mapping = active["mapping"]
@@ -207,13 +308,13 @@ def propose_event(event: dict[str, Any], session_id: str | None = None) -> dict[
         prior = one(conn, "SELECT id, status FROM agent_proposals WHERE status='committed' AND plan_json LIKE ? ORDER BY created_at DESC LIMIT 1", (f'%"idempotency_key": "{key}"%',))
     finally:
         conn.close()
-    pages = query_pages(limit=300)
+    pages = query_pages(limit=300, client=client, data_source_id=cfg["data_source_id"])
     duplicates = find_duplicates(event, mapping, pages)
     if prior:
         duplicates.insert(0, {"proposal_id": prior["id"], "reasons": ["an identical event was already committed by PODA (idempotency key match)"]})
     proposal_id = str(uuid.uuid4())
     plan = {"kind": "notion_create_event", "event": event, "payload": payload, "duplicates": duplicates, "idempotency_key": key,
-            "mapping_version": active["version"], "data_source_id": cfg["data_source_id"], "data_source_name": cfg.get("data_source_name"), "database_title": cfg.get("database_title")}
+            "mapping_version": active["version"], "mapping_fingerprint": active["schema_fingerprint"], "data_source_id": cfg["data_source_id"], "data_source_name": cfg.get("data_source_name"), "database_title": cfg.get("database_title")}
     conn = connect()
     try:
         conn.execute("INSERT INTO agent_proposals (id, session_id, created_at, status, plan_json) VALUES (?,?,?,?,?)", (proposal_id, session_id, now_iso(), "proposed", json.dumps(plan)))
@@ -251,74 +352,100 @@ def commit_event(proposal_id: str, session_id: str | None = None) -> dict[str, A
     if proposal["status"] != "proposed":
         raise NotionError("validation", f"Proposal is already {proposal['status']}.", code="proposal_closed")
     plan = proposal["plan"]
-    cfg = state.get_config() or {}
-    if not cfg.get("insert_verified"):
-        raise NotionError("validation", "Insert permission has not been verified with the explicit write test.", code="write_unverified")
-    target = f"notion data source {plan.get('data_source_id')}"
+    cfg = require_write("insert")
+    if plan.get("kind") != "notion_create_event" or plan.get("data_source_id") != cfg["data_source_id"]:
+        raise NotionError("validation", "This proposal targets a different Notion data source. Prepare a new proposal.", code="proposal_target_changed")
+    client = NotionClient()
+    active, _ = live_mapping(cfg, client)
+    if (plan.get("mapping_version") != active["version"]
+            or plan.get("mapping_fingerprint", active["schema_fingerprint"]) != active["schema_fingerprint"]):
+        raise NotionError("validation", "The mapping changed after this proposal was prepared. Prepare a new proposal.", code="proposal_mapping_changed")
+    conn = connect()
+    try:
+        claim = conn.execute("UPDATE agent_proposals SET status='running' WHERE id=? AND status='proposed'", (proposal_id,))
+        conn.commit()
+        if claim.rowcount != 1:
+            raise NotionError("validation", "This proposal is already being processed or has closed.", code="proposal_closed")
+    finally:
+        conn.close()
+    target = f"notion data source {cfg['data_source_id']}"
     rid = receipts.open_receipt("notion.create_event", target, {"event": plan.get("event"), "proposal_id": proposal_id}, approved=True, session_id=session_id)
     try:
-        client = NotionClient()
         created = client.create_page(plan["payload"])
         page_id = created.get("id")
         if not page_id:
             raise NotionError("server", "Notion returned success without a page id.")
-        reread = normalize_page(client.page(page_id))
-        active = get_active_mapping(plan.get("data_source_id"))
-        interp = interpret_page(reread, active["mapping"]) if active else {}
-        want_title = str(plan["event"]["title"]).strip()
-        want_start = str(plan["event"]["start"])
-        matches = (str(interp.get("title") or "").strip() == want_title) and str(interp.get("date_start") or "").startswith(want_start[:10])
-        verification = "re-read-after-write" + ("" if matches else " (MISMATCH: re-read values differ from request)")
-        receipt = receipts.close_receipt(rid, "success" if matches else "unverified", verification, f"Created Notion page {page_id} in {plan.get('database_title')} / {plan.get('data_source_name')}")
-        _finish_proposal(proposal_id, "committed" if matches else "committed_unverified", [rid])
-        return {"created": True, "verified": matches, "page_id": page_id, "url": reread.get("url"), "page": reread, "interpreted": interp, "receipt": receipt,
-                "calendar_note": "API write confirmed by re-read. Visually confirm the entry appears in Notion Calendar on the mapped date property."}
     except NotionError as exc:
-        receipts.close_receipt(rid, "failed", None, "Notion API write failed", f"{exc.kind}: {exc.message}")
+        receipts.close_receipt(rid, "failed", None, "Notion API write could not be confirmed", f"{exc.kind}: {exc.message}")
         _finish_proposal(proposal_id, "failed", [rid])
+        if exc.kind in {"network", "server"}:
+            raise NotionError(exc.kind, f"{exc.message} Check Notion before submitting another proposal.", code=exc.code) from exc
         raise
+
+    names = active["mapping"]
+    expected = {name: plan["payload"]["properties"][name] for name in (names["title"], names["date"])}
+    reread = None
+    verification_error = None
+    try:
+        reread = normalize_page(page_in_source(client, page_id, cfg["data_source_id"]))
+        matches = event_matches(reread, expected)
+    except NotionError as exc:
+        matches = False
+        verification_error = exc.message
+    verification = "re-read-after-write" if matches else "Created, but the saved title or date could not be verified"
+    receipt = receipts.close_receipt(rid, "success" if matches else "unverified", verification, f"Created Notion page {page_id} in {plan.get('database_title')} / {plan.get('data_source_name')}", verification_error)
+    _finish_proposal(proposal_id, "committed" if matches else "committed_unverified", [rid])
+    return {"created": True, "verified": matches, "page_id": page_id, "url": (reread or created).get("url"),
+            "page": reread, "interpreted": interpret_page(reread, names) if reread else None, "receipt": receipt,
+            "calendar_note": "The mapped calendar title and date were verified." if matches else "Check the created page in Notion before trying again."}
 
 
 def update_event(page_id: str, changes: dict[str, Any], expected_last_edited_time: str | None, session_id: str | None = None) -> dict[str, Any]:
-    cfg, schema = _schema()
-    active = get_active_mapping()
-    if not active:
-        raise NotionError("validation", "No active mapping.", code="mapping_missing")
-    if not cfg.get("update_verified"):
-        raise NotionError("validation", "Update permission has not been verified with the explicit write test.", code="write_unverified")
+    cfg = require_write("update")
     client = NotionClient()
-    current = normalize_page(client.page(page_id))
+    active, schema = live_mapping(cfg, client)
+    current = normalize_page(page_in_source(client, page_id, cfg["data_source_id"]))
     if expected_last_edited_time and current.get("last_edited_time") != expected_last_edited_time:
         raise NotionError("validation", f"Conflict: the page changed in Notion at {current.get('last_edited_time')} (expected {expected_last_edited_time}). Reload before editing.", code="conflict")
     mapping = active["mapping"]
-    merged = {"title": changes.get("title") or current["title"], "start": changes.get("start") or (interpret_page(current, mapping).get("date_start")),
-              **{k: changes.get(k) for k in ("end", "time_zone", "status", "type", "project_ids", "class_ids", "notes", "external_ids")}}
-    props = build_properties(mapping, schema, merged)
-    props = {k: v for k, v in props.items() if k in {mapping.get(f) for f in changes if mapping.get(f)} or k == mapping["title"] and "title" in changes or k == mapping["date"] and ("start" in changes or "end" in changes)}
+    event = interpret_page(current, mapping)
+    merged = {"title": event["title"], "start": event["date_start"], "end": event["date_end"], "time_zone": event["time_zone"], **changes}
+    fields = {"project_ids": "project_relation", "class_ids": "class_relation"}
+    names = {mapping.get(fields.get(field, field)) for field in changes if field != "external_ids"}
+    names.update(mapping["external_ids"].get(key) for key in (changes.get("external_ids") or {}))
+    if changes.keys() & {"start", "end", "time_zone"}:
+        if not merged["start"]:
+            raise NotionError("validation", "A start date is required to change the event date.")
+        names.add(mapping["date"])
+    props = {name: value for name, value in build_properties(mapping, schema, merged).items() if name in names}
     if not props:
         raise NotionError("validation", "No mapped changes supplied.")
     rid = receipts.open_receipt("notion.update_event", f"notion page {page_id}", {"changes": changes}, approved=True, session_id=session_id)
     try:
-        updated = client.update_page(page_id, {"properties": props})
-        reread = normalize_page(client.page(page_id))
-        receipt = receipts.close_receipt(rid, "success", "re-read-after-write", f"Updated {list(props)} on page {page_id}")
-        return {"updated": True, "page": reread, "interpreted": interpret_page(reread, mapping), "receipt": receipt}
+        client.update_page(page_id, {"properties": props})
     except NotionError as exc:
         receipts.close_receipt(rid, "failed", None, "Notion API update failed", f"{exc.kind}: {exc.message}")
         raise
+    try:
+        reread = normalize_page(page_in_source(client, page_id, cfg["data_source_id"]))
+    except NotionError as exc:
+        receipt = receipts.close_receipt(rid, "unverified", None, f"Updated page {page_id} but could not re-read it", exc.message)
+        return {"updated": True, "verified": False, "page": None, "interpreted": None, "receipt": receipt}
+    verified = event_matches(reread, props)
+    receipt = receipts.close_receipt(rid, "success" if verified else "unverified", "re-read-after-write", f"Updated {list(props)} on page {page_id}")
+    return {"updated": True, "verified": verified, "page": reread, "interpreted": interpret_page(reread, mapping), "receipt": receipt}
 
 
 def archive_event(page_id: str, confirm: bool, session_id: str | None = None) -> dict[str, Any]:
     if not confirm:
         raise NotionError("validation", "Archiving requires explicit confirmation (confirm=true).", code="confirmation_required")
-    cfg = state.get_config() or {}
-    if not cfg.get("update_verified"):
-        raise NotionError("validation", "Update permission has not been verified with the explicit write test.", code="write_unverified")
+    cfg = require_write("update")
+    client = NotionClient()
+    page_in_source(client, page_id, cfg["data_source_id"])
     rid = receipts.open_receipt("notion.archive_event", f"notion page {page_id}", {"confirm": True}, approved=True, session_id=session_id)
     try:
-        client = NotionClient()
         client.update_page(page_id, {"in_trash": True})
-        reread = client.page(page_id)
+        reread = page_in_source(client, page_id, cfg["data_source_id"])
         archived = bool(reread.get("in_trash") or reread.get("archived"))
         receipt = receipts.close_receipt(rid, "success" if archived else "unverified", "re-read-after-write", f"Archived page {page_id}")
         return {"archived": archived, "page_id": page_id, "receipt": receipt}
@@ -405,13 +532,13 @@ def effective_mapping() -> dict[str, Any] | None:
     return infer_mapping(cfg.get("schema") or {})
 
 
-def _to_local(value: str | None, tz: _Zone) -> dict[str, Any]:
+def _to_local(value: str | None, tz: _Zone, time_zone: str | None = None) -> dict[str, Any]:
     if not value:
         return {"iso": None, "local": None, "date": None, "time": None, "all_day": None}
     if "T" not in value:
         return {"iso": value, "local": value, "date": value, "time": None, "all_day": True}
     try:
-        d = _dt.fromisoformat(value.replace("Z", "+00:00")).astimezone(tz)
+        d = _date_value(value, time_zone or tz.key).astimezone(tz)
     except ValueError:
         return {"iso": value, "local": value, "date": value[:10], "time": None, "all_day": False}
     return {"iso": value, "local": d.isoformat(), "date": d.date().isoformat(), "time": d.strftime("%-I:%M %p"), "all_day": False}
@@ -422,8 +549,8 @@ def interpret_item(page: dict[str, Any], mapping: dict[str, Any], tz_name: str =
     tz = _Zone(tz_name)
     base = interpret_page(page, mapping)
     props = page.get("properties") or {}
-    start = _to_local(base.get("date_start"), tz)
-    end = _to_local(base.get("date_end"), tz)
+    start = _to_local(base.get("date_start"), tz, base.get("time_zone"))
+    end = _to_local(base.get("date_end"), tz, base.get("time_zone"))
     ctx = {k: props.get(k) for k in (mapping.get("context_props") or []) if props.get(k) not in (None, "", [], {})}
     kind = str(ctx.get("Type") or base.get("type") or "")
     source = str(ctx.get("Import Source") or "")

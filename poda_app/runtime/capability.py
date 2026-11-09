@@ -56,8 +56,8 @@ def manifest() -> dict[str, Any]:
             "provider": "Notion database/data source" if notion["connected"] else None,
             "connected_account": notion.get("database_title"),
             "can_read_calendar": notion["can_read_content"],
-            "can_write_calendar": bool(notion["can_insert_content"] and notion["can_update_content"]),
-            "chat_can_execute_writes": bool(notion["can_insert_content"] and notion["can_update_content"] and notion["mapping_active"]),
+            "can_write_calendar": bool(notion["can_insert_content"] or notion["can_update_content"]),
+            "chat_can_execute_writes": bool((notion["can_insert_content"] or notion["can_update_content"]) and notion["mapping_active"]),
             "can_extract_event_candidates_from_text": True,
             "detail": (
                 (f"Notion status {notion['status']}: read={'verified' if notion['can_read_content'] else 'unverified'}, "
@@ -106,8 +106,8 @@ def ledger_context(cap: dict[str, Any]) -> str:
     fs = cap.get("filesystem", {})
     notion = cap.get("notion", {})
     roots = fs.get("granted_roots") or []
-    fs_line = ("Filesystem: granted folders → " + "; ".join(f"{r['path']} [{r['mode']}{', exec' if r.get('allow_execute') else ''}]" for r in roots) +
-               ". Anything outside these folders is NOT accessible.") if roots else "Filesystem: NO folder grants. CANNOT read/create/edit any user files or Desktop files."
+    fs_line = ("Filesystem: granted paths → " + "; ".join(f"{r['path']} [{r['mode']}{', exec' if r.get('allow_execute') else ''}]" for r in roots) +
+               ". Anything outside these paths is NOT accessible.") if roots else "Filesystem: user files require a grant. Chat downloads work without one."
     code_line = ("Code: CAN generate code; CAN run Python inside granted folders that allow execution." if cap.get("code", {}).get("can_execute_user_code")
                  else "Code: CAN generate code text in chat; CANNOT execute code or run shell commands.")
     notion_line = (f"Notion: {notion.get('status')} to '{notion.get('database_title') or notion.get('database_id')}' (workspace {notion.get('workspace_name') or 'unknown'}); "

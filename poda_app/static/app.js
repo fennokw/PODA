@@ -22,7 +22,7 @@
   const screens = [['ask', 'Ask', '1'], ['personalize', 'Personalize', '9'], ['projects', 'Project Manager', '3'], ['notion', 'Notion', '4'], ['mail', 'Mail', '5'], ['files', 'Files & Agent', '6'], ['privacy', 'Privacy', '7'], ['daily', 'Daily Automation', '0'], ['system', 'System', '8']];
   for (const [name, label, key] of screens) registerCommand({ label: `Go to ${label}`, kind: 'Screen', key, keywords: name === 'mail' ? 'email inbox gmail apple mail' : '', run: () => navigate(name) });
   registerCommand({ label: 'Open memory viewer', kind: 'Screen', key: '2', keywords: 'open3d 3d second brain', run: () => window.location.assign('/memory-viewer') });
-  registerCommand({ label: 'Check capabilities', kind: 'Action', keywords: 'ledger status', run: async () => { const c = await api('/capabilities'); toast(`Ollama ${c.ollama?.reachable ? 'reachable' : 'unreachable'} · Notion ${c.notion?.status || 'DISCONNECTED'} · ${c.filesystem?.granted_roots?.length || 0} folder grants`); navigate('system'); } });
+  registerCommand({ label: 'Check capabilities', kind: 'Action', keywords: 'ledger status', run: async () => { const c = await api('/capabilities'); toast(`Ollama ${c.ollama?.reachable ? 'reachable' : 'unreachable'} · Notion ${c.notion?.status || 'DISCONNECTED'} · ${c.filesystem?.granted_roots?.length || 0} path grants`); navigate('system'); } });
   registerCommand({ label: 'Create encrypted backup', kind: 'Action', keywords: 'privacy export', run: async () => { const r = await api('/privacy/backup', { method: 'POST' }); toast(`Backup written: ${r.path.split('/').pop()}`, 'ok'); } });
   registerCommand({ label: 'Toggle offline mode', kind: 'Action', keywords: 'network egress', run: async () => { const s = await api('/privacy/status'); const next = !s.egress?.offline_mode; await api('/privacy/offline', { method: 'POST', body: { enabled: next } }); toast(`Offline mode ${next ? 'enabled' : 'disabled'}`, 'ok'); } });
   registerCommand({ label: 'Refresh capability ledger', kind: 'Action', run: async () => { await api('/capabilities/ledger'); toast('Ledger refreshed from runtime', 'ok'); } });
@@ -136,6 +136,12 @@
       messages.scrollTop = messages.scrollHeight;
       return { wrap, bubble, metaRow };
     }
+    function addDownload(row, download, sessionId) {
+      if (!download?.message_id || !sessionId || row.querySelector('[data-chat-download]')) return;
+      const url = `/chat/session/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(download.message_id)}/download`;
+      row.append(el('a', { class: 'btn btn-sm', href: url, download: download.filename,
+        'data-chat-download': 'true' }, download.filename === 'poda-response.md' ? 'Download reply' : `Download ${download.filename}`));
+    }
     function workflowActivity(wrap) {
       const activity = el('ol', { class: 'small' });
       const title = el('summary', {}, 'Workflow activity');
@@ -183,7 +189,7 @@
         const history = await api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/messages?limit=120');
         savedWorkflows = history.workflows || [];
         askState.transcript = (history.messages || []).filter((m) => m.role === 'user' || m.role === 'assistant')
-          .map((m) => ({ role: m.role, content: m.content, at: m.created_at, activity: m.workflow_activity }));
+          .map((m) => ({ role: m.role, content: m.content, at: m.created_at, activity: m.workflow_activity, download: m.download }));
         if (askState.runId) {
           const run = await api('/chat/runs/' + encodeURIComponent(askState.runId)).catch(() => null);
           if (!run || (run.state !== 'running' && askState.transcript.at(-1)?.role === 'assistant')) {
@@ -192,7 +198,11 @@
         }
       } catch { /* Server might have restarted; active run status will report that accurately. */ }
     }
-    if (askState.transcript.length) for (const m of askState.transcript) restoreActivity(addMessage(m.role, m.content, m.at).wrap, m.activity);
+    if (askState.transcript.length) for (const m of askState.transcript) {
+      const { wrap, metaRow } = addMessage(m.role, m.content, m.at);
+      restoreActivity(wrap, m.activity);
+      addDownload(metaRow, m.download, askState.sessionId);
+    }
     else showEmpty();
     for (const workflow of savedWorkflows) {
       const parent = proposalMessages.get(workflow.id) || checkpointBox;
@@ -343,7 +353,8 @@
                 badges.prepend(pill(data.profile === 'gate' ? 'Action gate' : data.profile === 'ledger' ? 'Capability ledger' : `Model · ${data.profile || 'auto'}`, 'accent'));
                 sessionBox.innerHTML = ''; sessionBox.appendChild(kv([['Model', data.model || ''], ['Profile', data.profile || ''], ['Output tokens', data.eval_count ?? 'n/a'], ['Speed', tps ? `${tps} tok/s` : 'n/a'], ['Prompt tokens', data.prompt_eval_count ?? 'n/a'], ['Session', askState.sessionId ? askState.sessionId.slice(0, 8) : 'new']]));
                 setStatus(`Done · ${data.model || ''}`, false);
-                askState.transcript.push({ role: 'assistant', content: full, at: new Date().toISOString() });
+                addDownload(metaRow, data.download, askState.sessionId);
+                askState.transcript.push({ role: 'assistant', content: full, at: new Date().toISOString(), download: data.download });
                 break;
               }
               case 'error': full = full || ''; bubble.innerHTML = ''; bubble.appendChild(el('div', { class: 'notice notice-danger' }, data.message || 'PODA error')); setStatus('Error', false); finished = true; break;
@@ -893,24 +904,36 @@
   // =====================================================================
   route('files', async ({ view, inspector, setTitle, setInspectorTitle }) => {
     setTitle('Files & Agent'); setInspectorTitle('Grant model'); $('#viewCrumb').textContent = 'Scoped tools with receipts';
-    inspector.append(el('p', { class: 'small muted' }, 'PODA can only touch folders you grant. Read mode lists, reads, and searches. Edit mode also creates and edits files with hash-validated patches and backups. Temporary grants expire automatically. Execution is a separate flag.'),
+    inspector.append(el('p', { class: 'small muted' }, 'PODA can only access the files and folders you grant. A file grant covers that file alone. Edit mode also creates and edits files with hash-validated patches and backups. Temporary grants expire automatically. Execution is a separate flag.'),
       el('p', { class: 'small faint' }, 'Revoking a grant removes the capability from the ledger immediately. Every write produces a receipt; a failed write never produces a success receipt.'));
     const grantsBox = el('div'); const toolsBox = el('div'); const receiptsBox = el('div'); const proposalsBox = el('div');
+    const pathInput = el('input', { class: 'input', id: 'g-path', name: 'root_path', placeholder: '~/Desktop/PODA-sandbox', required: true });
+    const choose = (kind, title) => el('button', { class: 'btn btn-sm', type: 'button', onclick: async () => {
+      try {
+        const chosen = await window.podaDesktop.chooseGrantPath(kind);
+        if (chosen) {
+          pathInput.value = chosen;
+          if (kind === 'file') form.elements.allow_execute.checked = false;
+        }
+      } catch (err) { toast(errorDetail(err).message, 'danger'); }
+    } }, title);
     const form = el('form', { class: 'stack-sm' },
-      el('div', { class: 'field' }, el('label', { class: 'label', for: 'g-path' }, 'Folder path'), el('input', { class: 'input', id: 'g-path', name: 'root_path', placeholder: '~/Desktop/PODA-sandbox', required: true }), el('div', { class: 'help' }, 'Must be an existing folder. The whole home directory and system roots are refused.')),
+      el('div', { class: 'field' }, el('label', { class: 'label', for: 'g-path' }, 'File or folder path'), pathInput,
+        window.podaDesktop ? el('div', { class: 'row' }, choose('file', 'Choose file…'), choose('directory', 'Choose folder…')) : null,
+        el('div', { class: 'help' }, 'Choose an existing file or folder on the computer running PODA. A file grant does not include its parent folder.')),
       el('div', { class: 'grid-3 grant-grid' },
         el('div', { class: 'field' }, el('label', { class: 'label', for: 'g-mode' }, 'Mode'), el('select', { class: 'input', id: 'g-mode', name: 'mode' }, el('option', { value: 'read' }, 'Read only'), el('option', { value: 'edit' }, 'Persistent edit'), el('option', { value: 'temp' }, 'One-task temporary edit'))),
         el('div', { class: 'field' }, el('label', { class: 'label', for: 'g-label' }, 'Label'), el('input', { class: 'input', id: 'g-label', name: 'label', placeholder: 'optional' })),
         el('div', { class: 'field' }, el('label', { class: 'label', for: 'g-ttl' }, 'Temp TTL (minutes)'), el('input', { class: 'input', id: 'g-ttl', name: 'ttl_minutes', type: 'number', min: 5, value: 60 }))),
       el('label', { class: 'check' }, el('input', { type: 'checkbox', name: 'allow_execute' }), 'Allow running Python inside this folder (edit or temp mode only)'),
-      el('div', { class: 'row' }, el('button', { class: 'btn btn-primary', type: 'submit' }, 'Grant folder')));
+      el('div', { class: 'row' }, el('button', { class: 'btn btn-primary', type: 'submit' }, 'Grant access')));
     form.addEventListener('submit', async (e) => {
       e.preventDefault(); const fd = new FormData(form);
-      try { await api('/agent/grants', { method: 'POST', body: { root_path: fd.get('root_path'), mode: fd.get('mode'), label: fd.get('label') || null, allow_execute: fd.get('allow_execute') === 'on', ttl_minutes: +fd.get('ttl_minutes') || null } }); form.reset(); toast('Folder granted. Ledger updated.', 'ok'); refresh(); }
+      try { await api('/agent/grants', { method: 'POST', body: { root_path: fd.get('root_path'), mode: fd.get('mode'), label: fd.get('label') || null, allow_execute: fd.get('allow_execute') === 'on', ttl_minutes: +fd.get('ttl_minutes') || null } }); form.reset(); toast('Access granted. Ledger updated.', 'ok'); refresh(); }
       catch (err) { toast(errorDetail(err).message, 'danger'); }
     });
     view.appendChild(el('div', { class: 'screen stack' },
-      el('div', { class: 'grid-main-side' }, section('Folder grants', 'the only source of file permissions', grantsBox), section('Grant a folder', null, form)),
+      el('div', { class: 'grid-main-side' }, section('File and path grants', 'scoped access to your files', grantsBox), section('Grant access', null, form)),
       el('div', { class: 'grid-2' }, section('Tool registry', 'what the agent can call', toolsBox), section('Pending proposals', 'awaiting your approval', proposalsBox)),
       section('Action receipts', 'the only evidence of a completed side effect', receiptsBox),
       softwarePanel()));
@@ -919,9 +942,9 @@
       await Promise.all([
         load(grantsBox, async () => {
           const r = await api('/agent/grants'); const grants = r.grants || [];
-          if (!grants.length) return emptyState('No folder grants', 'PODA cannot read, create, or edit any user files until you grant a specific folder.');
+          if (!grants.length) return emptyState('No grants', 'Grant a specific file or folder to give PODA scoped access. Chat downloads are available without a grant.');
           return el('div', { class: 'stack-sm' }, ...grants.map((g) => el('div', { class: 'tl-item' }, el('span', { class: 'when' }, fmtTime(g.created_at)),
-            el('div', { class: 'what' }, el('div', { class: 'row' }, el('strong', {}, g.label || g.root_path.split('/').pop()), pill(g.mode, g.mode === 'read' ? 'accent' : 'warn'), g.allow_execute ? pill('exec', 'lav') : null, g.expires_at ? pill(`expires ${fmtTime(g.expires_at)}`, 'muted') : null), el('span', { class: 'mono' }, g.root_path)),
+            el('div', { class: 'what' }, el('div', { class: 'row' }, el('strong', {}, g.label || g.root_path.split('/').pop()), pill(g.target_kind === 'file' ? 'file' : 'folder', 'muted'), pill(g.mode, g.mode === 'read' ? 'accent' : 'warn'), g.allow_execute ? pill('exec', 'lav') : null, g.expires_at ? pill(`expires ${fmtTime(g.expires_at)}`, 'muted') : null), el('span', { class: 'mono' }, g.root_path)),
             el('button', { class: 'btn btn-sm btn-danger', onclick: async () => { if (!(await confirmDialog({ title: 'Revoke this grant?', body: `${g.root_path} becomes inaccessible to PODA immediately.`, confirmLabel: 'Revoke', danger: true }))) return; await api(`/agent/grants/${g.id}`, { method: 'DELETE' }); toast('Grant revoked', 'ok'); refresh(); } }, 'Revoke'))));
         }),
         load(toolsBox, async () => {
@@ -1173,7 +1196,7 @@
     }
     if (window.PODAModelManager?.mount) window.PODAModelManager.mount(managerBox);
     drawModels(); drawBench();
-    load(ledgerBox, async () => { const l = await api('/capabilities/ledger'); return el('div', { class: 'stack-sm' }, el('div', { class: 'row' }, pill(`Ollama ${l.current?.ollama?.reachable ? 'reachable' : 'unreachable'}`, l.current?.ollama?.reachable ? 'ok' : 'danger'), statusPill(l.current?.notion?.status), pill(`${(l.current?.filesystem?.granted_roots || []).length} folder grants`, 'accent'), pill(l.current?.memory?.encrypted_at_rest ? 'encrypted at rest' : 'not encrypted', l.current?.memory?.encrypted_at_rest ? 'ok' : 'danger')), jsonBox(l.current)); });
+    load(ledgerBox, async () => { const l = await api('/capabilities/ledger'); return el('div', { class: 'stack-sm' }, el('div', { class: 'row' }, pill(`Ollama ${l.current?.ollama?.reachable ? 'reachable' : 'unreachable'}`, l.current?.ollama?.reachable ? 'ok' : 'danger'), statusPill(l.current?.notion?.status), pill(`${(l.current?.filesystem?.granted_roots || []).length} path grants`, 'accent'), pill(l.current?.memory?.encrypted_at_rest ? 'encrypted at rest' : 'not encrypted', l.current?.memory?.encrypted_at_rest ? 'ok' : 'danger')), jsonBox(l.current)); });
   });
 
   // ---------- Boot ----------

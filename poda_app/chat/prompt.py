@@ -64,7 +64,7 @@ def access_block(capabilities: dict[str, Any]) -> str:
         lines.append("- Mail: no account connected; you cannot read or search mail.")
     fs = capabilities.get("filesystem", {})
     roots = fs.get("granted_roots") or []
-    lines.append(("- Files: granted folders → " + "; ".join(f"{r['path']} [{r['mode']}{', exec' if r.get('allow_execute') else ''}]" for r in roots) + " via fs_* tools (run_python/run_tests where exec is allowed).") if roots else "- Files: no folder grants; you cannot touch user files.")
+    lines.append(("- Files: granted paths → " + "; ".join(f"{r['path']} [{r['mode']}{', exec' if r.get('allow_execute') else ''}]" for r in roots) + " via fs_* tools (run_python/run_tests where exec is allowed).") if roots else "- Files: existing user files require a grant. Chat can provide downloadable replies.")
     lines.append("- Memory: memory_search / memory_dive are optional; do not rely on memories for live mail facts.")
     lines.append("- You are NOT a generic chatbot: when a question needs live data and a tool above covers it, the tool result (receipted) is your answer source. If a tool was not run this turn, say you will run it rather than claiming you cannot.")
     return "\n".join(lines)

@@ -182,3 +182,38 @@ def test_acceptance_create_poda_test_on_desktop_standin(tmp_path):
     finally:
         grants.revoke_grant(g["id"])
     assert receipts.get_receipt(done["receipt"]["id"])["outcome"] == "succeeded"
+
+
+def test_exact_file_grant_accepts_quoted_url_and_excludes_neighbors(client, tmp_folder):
+    target = tmp_folder / "Desktop notes.txt"
+    target.write_text("before")
+    neighbor = tmp_folder / "other.txt"
+    neighbor.write_text("private")
+    result = client.post("/agent/grants", json={"root_path": f' "{target.as_uri()}" ', "mode": "edit"})
+    assert result.status_code == 200
+    grant = result.json()["grant"]
+    try:
+        assert grant["target_kind"] == "file"
+        read = fs_tools.fs_read(str(target))
+        assert read["result"]["content"] == "before"
+        assert not fs_tools.fs_read(str(neighbor))["ok"]
+        assert not fs_tools.fs_list(str(tmp_folder))["ok"]
+        assert not fs_tools.fs_write(str(tmp_folder / "new.txt"), "new")["ok"]
+        edited = fs_tools.fs_edit(str(target), read["result"]["sha256"], "before", "after")
+        assert edited["ok"] and target.read_text() == "after"
+        assert Path(edited["result"]["backup"]).parent != tmp_folder
+        assert set(tmp_folder.iterdir()) == {target, neighbor}
+    finally:
+        grants.revoke_grant(grant["id"])
+
+
+def test_grant_reports_missing_path_separately_from_permission_denied(client, tmp_folder, monkeypatch):
+    missing = client.post("/agent/grants", json={"root_path": str(tmp_folder / "missing")})
+    assert missing.status_code == 400 and "Path not found" in missing.json()["detail"]
+    # Simulate the access check a protected Desktop folder can fail after stat succeeds.
+    def deny_scandir(path):
+        raise PermissionError("test denied")
+    with monkeypatch.context() as patch:
+        patch.setattr(grants.os, "scandir", deny_scandir)
+        with pytest.raises(ValueError, match="PODA cannot read"):
+            grants.add_grant(str(tmp_folder), "read")

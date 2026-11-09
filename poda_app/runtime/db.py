@@ -322,6 +322,7 @@ SCHEMA_STATEMENTS = [
 ]
 
 COLUMN_MIGRATIONS = [
+    ("fs_grants", "target_kind", "TEXT NOT NULL DEFAULT 'directory'"),
     ("memory_nodes", "z", "REAL"),
     ("memory_nodes", "semantic_x", "REAL"),
     ("memory_nodes", "semantic_y", "REAL"),
