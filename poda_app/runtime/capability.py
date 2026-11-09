@@ -66,7 +66,7 @@ def manifest() -> dict[str, Any]:
                 if notion["connected"] else integrations.get("calendar", {}).get("detail", "No calendar connection.")
             ),
         },
-        "filesystem": {**fs, "managed_internal_paths": [str(config.DATA_DIR), str(config.STATIC_DIR)]},
+        "filesystem": {**fs, "poda_sandbox": {"can_read": True, "can_create": True, "can_edit": True}, "managed_internal_paths": [str(config.DATA_DIR), str(config.STATIC_DIR)]},
         "memory": {
             "enabled": True,
             "storage": "local SQLite (SQLCipher encrypted)" if enc.get("database_encrypted_on_disk") else "local SQLite (NOT encrypted at rest)",
@@ -107,7 +107,7 @@ def ledger_context(cap: dict[str, Any]) -> str:
     notion = cap.get("notion", {})
     roots = fs.get("granted_roots") or []
     fs_line = ("Filesystem: granted paths → " + "; ".join(f"{r['path']} [{r['mode']}{', exec' if r.get('allow_execute') else ''}]" for r in roots) +
-               ". Anything outside these paths is NOT accessible.") if roots else "Filesystem: user files require a grant. Chat downloads work without one."
+               ". External file access is limited to these grants.") if roots else "Filesystem: external user files require a grant."
     code_line = ("Code: CAN generate code; CAN run Python inside granted folders that allow execution." if cap.get("code", {}).get("can_execute_user_code")
                  else "Code: CAN generate code text in chat; CANNOT execute code or run shell commands.")
     notion_line = (f"Notion: {notion.get('status')} to '{notion.get('database_title') or notion.get('database_id')}' (workspace {notion.get('workspace_name') or 'unknown'}); "
@@ -125,6 +125,7 @@ def ledger_context(cap: dict[str, Any]) -> str:
         f"Verified at: {cap.get('verified_at')} (build {cap.get('build_id')})",
         f"Ollama reachable: {bool(cap.get('ollama', {}).get('reachable'))}; installed models: {', '.join(models[:8]) or 'none'}",
         code_line, fs_line,
+        "PODA Sandbox: app-owned workspace with read, create and edit access. Users can download its files without a folder grant.",
         email_line,
         notion_line,
         f"Memory: local second brain, {cap.get('memory', {}).get('memory_nodes', 0)} memory nodes; encrypted at rest: {cap.get('memory', {}).get('encrypted_at_rest')}.",

@@ -13,6 +13,16 @@ if ! command -v npm >/dev/null || ! command -v python3 >/dev/null; then
   exit 1
 fi
 
+# Keep the running app bundle intact while another backend owns this profile.
+python3 - <<'PYTHON'
+from poda_app.runtime.instance import DataDirectoryInUse, claim_data_directory
+try:
+    with claim_data_directory(wait_seconds=2):
+        pass
+except DataDirectoryInUse as exc:
+    raise SystemExit(str(exc)) from None
+PYTHON
+
 (
   cd desktop
   npm ci --ignore-scripts

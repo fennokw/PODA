@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from poda_app.agent import grants
 
 
@@ -197,3 +199,107 @@ def test_chat_download_is_available_without_filesystem_grants(client, monkeypatc
     assert "attachment;" in file.headers["Content-Disposition"]
     assert client.get(f"{base}/{events['session']['user_message_id']}/download").status_code == 404
     assert client.get(f"/chat/session/unrelated/messages/{download['message_id']}/download").status_code == 404
+
+
+def test_sandbox_pdf_from_chat_persists_and_can_be_revised(client, monkeypatch):
+    import io
+    from poda_app.agent import sandbox_files, tools
+    from poda_app.chat import router as chat_router
+
+    pytest.importorskip("reportlab")
+    pypdf = pytest.importorskip("pypdf")
+
+    async def fake_stream(messages, *args, **kwargs):
+        assert "one fenced markdown code block" in messages[0]["content"]
+        yield {"message": {"content": "```markdown\n# PODA Sandbox\nVersion one.\n```"}, "done": True}
+
+    monkeypatch.setattr(chat_router.ollama, "chat_stream", fake_stream)
+    monkeypatch.setattr(chat_router.models, "resolve", lambda *a, **k: {
+        "model": "test", "profile": "fast", "num_ctx": 8192, "options": {}})
+    monkeypatch.setattr(chat_router.orchestrator, "tool_prerequisites_exist", lambda _: False)
+    assert not grants.list_grants()
+    response = client.post("/chat/stream", json={"message": "Create a PDF named workspace-regression.pdf", "use_memory": False})
+    events = dict(_events(response.text))
+    name = events["done"]["download"]["sandbox_file"]
+    assert name == "workspace-regression.pdf"
+    url = f"/agent/sandbox/download/{name}"
+    first = client.get(url)
+    assert "Version one." in pypdf.PdfReader(io.BytesIO(first.content)).pages[0].extract_text()
+    assert (sandbox_files.root() / name).read_bytes() == first.content
+    read = tools.execute("sandbox_read", {"path": name})["result"]["result"]
+    assert "Version one." in read["content"]
+    updated = tools.execute("sandbox_write", {"path": name, "content": "# PODA Sandbox\nVersion two.",
+                                              "expected_sha256": read["sha256"]}, approved=True)
+    assert updated["receipt"]["outcome"] == "succeeded"
+    assert "Version two." in pypdf.PdfReader(io.BytesIO(client.get(url).content)).pages[0].extract_text()
+    assert client.get(f"/chat/session/{events['session']['session_id']}/messages").json()["messages"][-1]["download"]["sandbox_file"] == name
+
+
+def test_sandbox_raw_upload_and_edit_stay_inside_workspace(client, tmp_path):
+    from poda_app.agent import tools
+    import base64
+
+    name = "sandbox-binary-regression.blob"
+    original = b"\0\xff\x10"
+    uploaded = client.post("/agent/sandbox/upload", files={"file": (name, original)})
+    assert uploaded.status_code == 200 and uploaded.json()["filename"] == name
+    url = f"/agent/sandbox/download/{name}"
+    assert client.get(url).content == original
+    assert client.get(url, headers={"Origin": "https://other.test"}).status_code == 403
+    old = tools.execute("sandbox_read", {"path": name})["result"]["result"]
+    assert old["encoding"] == "base64" and base64.b64decode(old["content"]) == original
+    new = b"\0\xff\x11"
+    args = {"path": name, "content": base64.b64encode(new).decode(), "encoding": "base64"}
+    assert not tools.execute("sandbox_write", args, approved=True)["result"]["ok"]
+    assert tools.execute("sandbox_write", {**args, "expected_sha256": old["sha256"]}, approved=True)["result"]["ok"]
+    assert client.get(url).content == new
+    assert not tools.execute("sandbox_write", {**args, "expected_sha256": old["sha256"]}, approved=True)["result"]["ok"]
+    outside = tmp_path / "outside"
+    for path in (str(outside), "../outside", "CON.txt"):
+        assert not tools.execute("sandbox_write", {**args, "path": path}, approved=True)["result"]["ok"]
+    assert not outside.exists()
+    assert client.post("/agent/sandbox/upload", files={"file": ("../escape", original)}).status_code == 400
+
+
+def test_sandbox_exports_native_word_and_excel(client):
+    import io
+    from poda_app.agent import sandbox_files
+
+    docx = pytest.importorskip("docx")
+    openpyxl = pytest.importorskip("openpyxl")
+    sandbox_files.save_content("poda-regression.docx", "# Notes\nRésumé")
+    saved = client.get("/agent/sandbox/download/poda-regression.docx")
+    assert [paragraph.text for paragraph in docx.Document(io.BytesIO(saved.content)).paragraphs] == ["Notes", "Résumé"]
+    sandbox_files.save_content("poda-regression.xlsx", "name,value\nalpha,=1+1\n")
+    saved = client.get("/agent/sandbox/download/poda-regression.xlsx")
+    book = openpyxl.load_workbook(io.BytesIO(saved.content))
+    assert book.active["B2"].data_type == "s" and book.active["B2"].value == "=1+1"
+
+
+def test_chat_routes_revision_of_last_workspace_file_without_folder_grant(client, monkeypatch):
+    from poda_app.agent import sandbox_files
+    from poda_app.chat import router as chat_router
+    from poda_app.memory import store
+
+    filename = "workspace-edit-regression.txt"
+    saved = sandbox_files.save_content(filename, "old text")
+    session_id = "sandbox-edit-regression"
+    store.save_message("assistant", "Here is the file.", session_id=session_id, metadata={"sandbox_file": filename})
+    calls = []
+
+    def plan(message, snapshot, context, *args, **kwargs):
+        calls.append(context)
+        assert "sandbox_write" in context and filename in context
+        return {"executed": [], "steps": [], "flagged": []}
+
+    async def fake_stream(messages, *args, **kwargs):
+        yield {"message": {"content": "Workspace revision route reached."}, "done": True}
+
+    monkeypatch.setattr(chat_router.orchestrator, "plan", plan)
+    monkeypatch.setattr(chat_router.ollama, "chat_stream", fake_stream)
+    monkeypatch.setattr(chat_router.models, "resolve", lambda *a, **k: {
+        "model": "test", "profile": "fast", "num_ctx": 8192, "options": {}})
+    assert not grants.list_grants()
+    res = client.post("/chat/stream", json={"message": "Change the file to say new text.", "use_memory": False, "session_id": session_id})
+    assert calls and dict(_events(res.text))["done"]["model"] == "test"
+    assert sandbox_files.sandbox_read(filename)["result"]["sha256"] == saved["sha256"]

@@ -20,3 +20,8 @@ pytest==9.1.1
 # The Windows vault and classic Outlook integration use native Win32/COM.
 pywin32==312; sys_platform == "win32"
 tzdata>=2025.2; sys_platform == "win32"
+
+# Local PODA Sandbox document generation.
+python-docx>=1.2,<2
+openpyxl>=3.1.5,<4
+reportlab>=4.4,<5

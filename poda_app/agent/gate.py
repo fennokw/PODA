@@ -114,9 +114,11 @@ def extract_filename_hint(text: str) -> str | None:
     return m.group(1).strip() if m else None
 
 
-def unsupported_action_response(message: str, cap: dict[str, Any]) -> str | None:
+def unsupported_action_response(message: str, cap: dict[str, Any], *, sandbox_target: bool = False) -> str | None:
     """Return a truthful blocker when a requested side effect has no real tool behind it. None means proceed."""
     intents = requested_action_intents(message)
+    if sandbox_target and not external_destination(message):
+        intents -= {"file_create", "file_edit", "file_read"}
     if not intents:
         return None
     fs = cap.get("filesystem", {})
@@ -150,7 +152,7 @@ def unsupported_action_response(message: str, cap: dict[str, Any]) -> str | None
     unique = list(dict.fromkeys(blockers))
     extra = ""
     if any(i.startswith("file_") or i == "code_execute" for i in intents):
-        extra = " Use Files & Agent to grant the specific path. For generated content, you can ask for a chat download instead."
+        extra = " Use Files & Agent to grant the specific path. You can create or edit a copy in PODA Sandbox without granting an external path."
     return ("I can't do that in the current verified state. The runtime ledger says I cannot " + "; ".join(unique) + "." + extra +
             " Nothing was created, changed, sent, or executed.")
 
@@ -165,7 +167,7 @@ def capability_answer(cap: dict[str, Any]) -> str:
         lines.append("- **Files:** granted paths — " + "; ".join(f"`{r['path']}` ({r['mode']}{', can run Python' if r.get('allow_execute') else ''})" for r in fs["granted_roots"]) + ". Nothing outside these is accessible. Every write produces a receipt.")
     else:
         lines.append("- **Files:** Grant a file or folder in Files & Agent to enable scoped tools.")
-    lines.append("- **Chat downloads:** I can attach generated text, code, CSV and JSON to chat replies without a folder grant.")
+    lines.append("- **Chat downloads:** I can create, edit, and download files in PODA Sandbox without an external grant, including PDF, Word, and Excel exports.")
     lines.append("- **Code:** I can write code in chat." + (" I can run Python inside granted folders that allow execution." if cap.get("code", {}).get("can_execute_user_code") else " I cannot execute code or shell commands right now."))
     em = cap.get("email", {})
     if em.get("can_read"):

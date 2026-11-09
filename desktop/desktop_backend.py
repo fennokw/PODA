@@ -5,7 +5,7 @@ import hmac
 import json
 import os
 import socket
-from threading import Thread
+from threading import Event, Thread
 
 
 def main() -> None:
@@ -13,6 +13,7 @@ def main() -> None:
     if not token:
         raise SystemExit("Open the PODA desktop app to start its backend.")
 
+    parent_pid = os.getppid()
     with socket.socket() as listener:
         if os.name == "nt":
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
@@ -25,7 +26,7 @@ def main() -> None:
         import uvicorn
         from fastapi.responses import JSONResponse
         from poda_app.main import app
-        from poda_app.runtime.instance import claim_data_directory
+        from poda_app.runtime.instance import DataDirectoryInUse, claim_data_directory
 
         expected = token.encode("utf-8")
 
@@ -41,19 +42,39 @@ def main() -> None:
             proxy_headers=False, server_header=False, timeout_graceful_shutdown=8,
         ))
 
-        def watch_parent() -> None:
+        pipe_closed = Event()
+        stopped = Event()
+
+        def watch_pipe() -> None:
             try:
                 while os.read(0, 1024):
                     pass
             except OSError:
                 pass
             finally:
-                server.should_exit = True
+                pipe_closed.set()
 
-        with claim_data_directory():
-            print("PODA_DESKTOP " + json.dumps({"port": port}), flush=True)
-            Thread(target=watch_parent, name="poda-desktop-parent", daemon=True).start()
-            server.run(sockets=[listener])
+        def watch_parent() -> None:
+            while not pipe_closed.wait(0.5):
+                if os.name != "nt" and os.getppid() != parent_pid:
+                    break
+            server.should_exit = True
+            # Release the OS lock if graceful shutdown hangs after Electron exits.
+            if not stopped.wait(12):
+                os._exit(1)
+
+        try:
+            with claim_data_directory(wait_seconds=15):
+                print("PODA_DESKTOP " + json.dumps({"port": port}), flush=True)
+                Thread(target=watch_pipe, name="poda-desktop-pipe", daemon=True).start()
+                Thread(target=watch_parent, name="poda-desktop-parent", daemon=True).start()
+                try:
+                    server.run(sockets=[listener])
+                finally:
+                    stopped.set()
+        except DataDirectoryInUse as exc:
+            print("PODA_DESKTOP_ERROR " + json.dumps({"message": str(exc)}), flush=True)
+            raise SystemExit(1) from None
         if not server.started:
             raise SystemExit(1)
 

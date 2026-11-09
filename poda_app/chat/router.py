@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import csv
 import json
 import uuid
 from typing import Any, AsyncIterator
@@ -16,7 +17,8 @@ from pydantic import BaseModel
 from ..runtime import config, ollama, models, capability
 from ..runtime.db import connect, one, rows
 from ..memory import store, retrieval, summaries
-from ..agent import gate, orchestrator
+from ..agent import gate, orchestrator, receipts, sandbox_files
+from ..agent.sandbox_router import download_file
 from ..connectors.notion import context as notion_context
 from .prompt import build_system_prompt, tools_block
 from . import artifacts, mail_fulfillment, working_context
@@ -88,6 +90,44 @@ class ThinkSplitter:
         return out
 
 
+def _recent_sandbox_file(session_id: str) -> str | None:
+    conn = connect()
+    try:
+        record = one(conn, """SELECT json_extract(metadata_json, '$.sandbox_file') AS filename FROM messages
+            WHERE session_id=? AND role='assistant' AND json_valid(metadata_json)
+            AND json_type(metadata_json, '$.sandbox_file')='text' ORDER BY rowid DESC LIMIT 1""", (session_id,))
+        return record["filename"] if record else None
+    finally:
+        conn.close()
+
+
+def _sandbox_files_for_chat(message: str, session_id: str) -> tuple[bool, str | None]:
+    if artifacts.external_destination(message):
+        return False, None
+    recent = _recent_sandbox_file(session_id)
+    try:
+        names = [item["filename"] for item in sandbox_files.files()]
+    except OSError:
+        names = []
+    if recent not in names:
+        recent = None
+    return artifacts.refers_to_workspace(message, recent, names), recent
+
+
+def _materialize_attachment(name: str, content: str, session_id: str) -> dict:
+    source = artifacts.generated_source(content, name)
+    if source is None:
+        return {"error": f"PODA could not create {name} from the response."}
+    rid = receipts.open_receipt("sandbox_write", name, {"path": name}, approved=True, session_id=session_id)
+    try:
+        saved = sandbox_files.save_content(name, source[0], encoding=source[1], unique=True)
+    except (OSError, ValueError, csv.Error, ImportError) as exc:
+        receipts.close_receipt(rid, "failed", error=str(exc))
+        return {"error": f"PODA could not save {name} in PODA Sandbox."}
+    receipts.close_receipt(rid, "succeeded", "Read back the exact saved bytes.", detail=json.dumps(saved))
+    return saved
+
+
 @router.post("/chat/stream")
 async def chat_stream(req: ChatRequest, request: Request):
     return await run_chat(req, request)
@@ -122,8 +162,11 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
         store.save_message, "user", req.message, None, session_id, "chat", None, True)
     snapshot = await asyncio.to_thread(capability.sync_ledger)
     profile = await asyncio.to_thread(models.resolve, task_message, req.mode, req.thinking_level)
-    blocked = gate.unsupported_action_response(task_message, snapshot)
-    attachment = artifacts.requested_name(task_message) if not ephemeral and not blocked else None
+    sandbox_target, recent_file = (False, None) if ephemeral else await asyncio.to_thread(_sandbox_files_for_chat, task_message, session_id)
+    blocked = gate.unsupported_action_response(task_message, snapshot, sandbox_target=sandbox_target)
+    attachment = artifacts.requested_name(task_message) if not ephemeral and not blocked and not previous_proposal else None
+    if sandbox_target and not artifacts.creates_attachment(task_message):
+        attachment = None
     capability_reply = gate.capability_answer(snapshot) if (gate.is_capability_query(req.message) and not blocked) else None
 
     activity: list[dict] = []
@@ -147,13 +190,26 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                 del activity[1]
         return sse(event, data)
 
-    async def save_response(content: str, model: str, completed: bool = True, *, attach: bool = False) -> dict[str, str]:
+    async def save_response(content: str, model: str, completed: bool = True, *, attach: bool = False) -> dict:
         if completed:
             activity.append({"event": "done", "model": model})
-        filename = attachment if attach and attachment and artifacts.file_body(content, attachment) is not None else "poda-response.md"
-        message_id = await asyncio.to_thread(store.save_message, "assistant", content, model, session_id, "chat",
-                                             {"workflow_activity": activity, "download_name": filename}, True)
-        return {"message_id": message_id, "filename": filename}
+        saved = await asyncio.to_thread(_materialize_attachment, attachment, content, session_id) if attach and attachment else {}
+        sandbox_file = saved.get("filename")
+        if previous_proposal and not sandbox_file:
+            for rid in reversed(previous_proposal.get("receipt_ids", [])):
+                receipt = await asyncio.to_thread(receipts.get_receipt, rid)
+                if receipt and receipt["tool"] == "sandbox_write" and receipt["outcome"] == "succeeded":
+                    sandbox_file = json.loads(receipt["detail"])["filename"]
+                    break
+        filename = sandbox_file or "poda-response.md"
+        metadata = {"workflow_activity": activity, "download_name": "poda-response.md"}
+        if sandbox_file:
+            metadata["sandbox_file"] = sandbox_file
+        if saved.get("error"):
+            metadata["attachment_error"] = saved["error"]
+        message_id = await asyncio.to_thread(store.save_message, "assistant", content, model, session_id, "chat", metadata, True)
+        return {"message_id": message_id, "filename": filename, "sandbox_file": sandbox_file, "error": saved.get("error")}
+
 
     async def generate() -> AsyncIterator[str]:
         yield frame("session", {"session_id": session_id, "user_message_id": user_message_id, "build_id": config.BUILD_ID})
@@ -177,7 +233,7 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
         yield frame("status", {"message": "routing", "model": model, "profile": profile["profile"], "num_ctx": profile["num_ctx"]})
         # Read-only mail requests are fulfilled by PODA itself, not deferred as
         # a promise in model prose. Success/failure comes from the tool receipt.
-        if not previous_proposal and snapshot.get("email", {}).get("can_read") and not (ephemeral and len(unattended_mail_accounts or [])>1) and mail_fulfillment.is_mail_request(req.message, session_id):
+        if not attachment and not previous_proposal and snapshot.get("email", {}).get("can_read") and not (ephemeral and len(unattended_mail_accounts or [])>1) and mail_fulfillment.is_mail_request(req.message, session_id):
             yield frame("status", {"message": "searching_mail", "model": "PODA mail tools"})
             params, executed, summary = await asyncio.to_thread(mail_fulfillment.fulfill, req.message, session_id, (unattended_mail_accounts or [None])[0] if ephemeral else None)
             receipt = executed.get("receipt") or {}
@@ -206,10 +262,11 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
         receipts_block = ""
         tool_results_block = ""
         proposal_note = ""
+        sandbox_write_proposed = False
         if previous_proposal:
             receipts_block = "\n" + await asyncio.to_thread(orchestrator.receipts_block, req.continuation_of, lineage or None) + "\n"
         if req.resume_workflow or (not previous_proposal and orchestrator.tool_prerequisites_exist(snapshot)
-                                   and orchestrator.looks_like_tool_task(task_message)):
+                                   and (sandbox_target or orchestrator.looks_like_tool_task(task_message))):
             yield frame("status", {"message": "planning_tools", "model": model})
             recalled_ctx = retrieval.context_block(recalled) if recalled else ""
             recent_dialogue = "" if ephemeral else await asyncio.to_thread(working_context.recent, session_id, user_message_id, 10)
@@ -249,6 +306,11 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
             # still must resolve concrete message IDs with verified tools.
             planner_ctx = ("RECENT ACTIVE CONVERSATION (not tool evidence):\n" + recent_dialogue +
                            "\n\n" + recalled_ctx + preflight_mail)
+            if sandbox_target:
+                planner_ctx = ("PODA Sandbox is available. Use sandbox_list, sandbox_read and sandbox_write for existing workspace files. "
+                               "Read before editing and pass the current SHA-256. If the read is truncated, fetch the remaining chunks before replacing the file. " +
+                               (f"The most recent sandbox file from this chat is {json.dumps(recent_file)}. " if recent_file else "") +
+                               "\n" + planner_ctx)
             if req.resume_workflow:
                 planner_ctx = ("CONTINUING THE ORIGINAL USER REQUEST. Use these receipts to verify completed work. "
                                "Continue outstanding independent steps. Never repeat completed or attempted writes. "
@@ -301,18 +363,19 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                     parts.append(f"- receipt {rc.get('id','')[:8]} {item['step']['summary']} → {rc.get('outcome')} ({rc.get('verification')})\n  {body}")
                 tool_results_block = "\n" + "\n".join(parts) + "\n"
             if planned.get("proposal_id"):
+                sandbox_write_proposed = any(step["tool"] == "sandbox_write" for step in planned["steps"])
                 yield frame("proposal", {"proposal_id": planned["proposal_id"], "steps": planned["steps"], "rationale": planned.get("rationale"), "model": planned.get("model")})
                 proposal_note += ("\nPENDING PROPOSAL: the following actions are queued and WAITING FOR THE USER'S APPROVAL; none has run: " +
                                  "; ".join(s["summary"] for s in planned["steps"]) + ". Briefly tell the user what will happen once approved. Do NOT claim any of it is done.\n")
         system = build_system_prompt(should_recall_memory(task_message, req.use_memory), task_message, snapshot, recalled, notion_block,
                                      receipts_block=receipts_block + tool_results_block + proposal_note, tools_block=tools_block(snapshot), session_id=None if ephemeral else session_id, exclude_message_id=user_message_id)
-        system += "\nChat replies can be downloaded by the user. Generating a chat file does not require filesystem access. Use filesystem tools only for explicit local path operations."
-        if attachment and artifacts.unsupported_format(task_message):
-            system += "\nPODA supports text-based chat downloads. State that the requested binary format is unavailable and give the complete contents in Markdown."
-        elif attachment:
-            system += (f"\nThe user requested a chat attachment named {attachment}. Put the complete requested file contents "
-                       "in one fenced code block with the matching language. PODA extracts the block and provides the download. "
-                       "Never invent a download link or claim to have written to the user's folders.")
+        system += ("\nPODA Sandbox has its own writable storage. Use fs_* only for the user's explicit external paths. "
+                   "Never invent a file, a download link, or a completed action.")
+        if attachment and not sandbox_write_proposed:
+            system += (f"\nThe user requested a chat attachment named {attachment}. Put the complete file source "
+                       f"in one fenced {artifacts.source_language(attachment)} code block. "
+                       "PODA saves the requested file in its own sandbox and shows a download link after generation. "
+                       "No user folder grant is needed.")
         messages = [{"role": "system", "content": system}, {"role": "user", "content": ("Continue the remaining steps of this request using the action receipts: " + task_message if req.resume_workflow else task_message)}]
         splitter = ThinkSplitter()
         think_flag = profile.get("think") if model.startswith("qwen3") else None
@@ -336,7 +399,7 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                         yield frame(kind, {"token": piece})
                 if done:
                     final = "".join(splitter.final).strip()
-                    download = await save_response(final, model, attach=True) if not ephemeral else None
+                    download = await save_response(final, model, attach=not sandbox_write_proposed) if not ephemeral else None
                     yield frame("done", {"model": model, "download": download, "profile": profile["profile"], "eval_count": chunk.get("eval_count"), "eval_duration_ms": round((chunk.get("eval_duration") or 0) / 1e6),
                                        "prompt_eval_count": chunk.get("prompt_eval_count")})
                     if not ephemeral:
@@ -371,7 +434,9 @@ def session_messages(session_id: str, limit: int = 100) -> dict[str, Any]:
         if isinstance(metadata, dict) and "workflow_activity" in metadata:
             record["workflow_activity"] = metadata["workflow_activity"]
         if record["role"] == "assistant" and record["content"]:
-            record["download"] = {"message_id": record["id"], "filename": artifacts.saved_filename(metadata)}
+            sandbox_file = metadata.get("sandbox_file") if isinstance(metadata, dict) else None
+            record["download"] = {"message_id": record["id"], "filename": sandbox_file or artifacts.saved_filename(metadata),
+                                  "sandbox_file": sandbox_file, "error": metadata.get("attachment_error") if isinstance(metadata, dict) else None}
     return {"messages": records, "workflows": workflows}
 
 
@@ -390,6 +455,8 @@ def download_response(session_id: str, message_id: str) -> Response:
     except ValueError:
         metadata = {}
     filename = artifacts.saved_filename(metadata)
+    if isinstance(metadata, dict) and isinstance(metadata.get("sandbox_file"), str):
+        return download_file(metadata["sandbox_file"])
     # The plain Markdown download preserves the entire reply, including any examples.
     content = record["content"] if filename == "poda-response.md" else artifacts.file_body(record["content"], filename)
     if content is None:
