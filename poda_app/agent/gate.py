@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ..chat.artifacts import external_destination, requested_name
+
 CAPABILITY_PHRASES = [
     "what can you access", "what do you have access", "do you have access", "are you connected", "what are you connected",
     "calendar access", "file access", "your capabilities", "capability ledger", "status report", "what can you do right now",
@@ -44,6 +46,8 @@ def is_capability_query(text: str) -> bool:
     if not lower:
         return False
     strong_task = _STRONG_TASK.search(lower)
+    if requested_name(text) and not lower.startswith(("what ", "how ", "can you create a file?", "can you make a file?", "can you write a file?")):
+        return False
     if any(p in lower for p in CAPABILITY_PHRASES) and not strong_task:
         return True
     if _TASK_CUES.search(lower):
@@ -63,11 +67,13 @@ def requested_action_intents(text: str) -> set[str]:
     mail_object = bool(re.search(r"\b(e-?mails?|inbox|mailbox|messages? from|senders?|subjects?)\b", lower))
     local_object = bool(re.search(r"\b(desktop|finder|filesystem|local files?|computer files?|disk|hard drive|source code|directory)\b|(?:~/|/users/)[^\s]+|\b[\w.-]+\.(?:py|txt|md|json|js|csv|pdf)\b", lower))
     route_to_mail = mail_object and not local_object
-    if not route_to_mail and _IMPERATIVE_FILE.search(lower):
+    chat_download = bool(requested_name(text))
+    if not route_to_mail and _IMPERATIVE_FILE.search(lower) and (external_destination(lower) or (not chat_download and re.search(r"\b(?:folder|directory)\b", lower))):
+        # Chat downloads are separate from writes to user-selected paths.
         intents.add("file_create")
     if not route_to_mail and _IMPERATIVE_EDIT.search(lower):
         intents.add("file_edit")
-    if not route_to_mail and _IMPERATIVE_READ.search(lower):
+    if not route_to_mail and (not chat_download or local_object) and _IMPERATIVE_READ.search(lower):
         intents.add("file_read")
     if not route_to_mail and _IMPERATIVE_DELETE.search(lower):
         intents.add("file_delete")
@@ -75,12 +81,13 @@ def requested_action_intents(text: str) -> set[str]:
         intents.add("code_execute")
     if any(t in lower for t in ["send an email", "send email", "email them", "reply to", "forward this email"]):
         intents.add("email_send")
-    if (mail_object and re.search(r"\b(move|mark|archive|label|file|flag|unflag|delete|trash|organize|sort)\b", lower)
+    if (mail_object and re.search(r"\b(move|mark|archive|label|flag|unflag|delete|trash|organize|sort)\b", lower)
             or any(t in lower for t in ["archive the email", "delete the email", "label the email", "mark as read", "move the email"])):
         intents.add("email_modify")
     if any(t in lower for t in ["read my email", "read my inbox", "check my inbox", "search my email", "search my inbox"]):
         intents.add("email_read")
-    if (re.search(r"\b(add|put|schedule|create|book)\b.{0,40}\b(calendar|notion|to[- ]?do list|event)\b", lower)
+    calendar_destination = re.search(r"\b(?:to|in|on|into)\s+(?:my |the )?(?:notion|calendar|to[- ]?do list)\b", lower)
+    if ((not chat_download or calendar_destination) and re.search(r"\b(add|put|schedule|create|book)\b.{0,40}\b(calendar|notion|to[- ]?do list|event)\b", lower)
             or any(t in lower for t in ["create a calendar event", "create a notion page", "add a task to notion", "mark it done in notion", "update the notion page"])):
         intents.add("calendar_write")
     if any(t in lower for t in ["read my calendar", "check my calendar", "what's on my calendar", "what is on my calendar", "what's in my notion", "what is in my notion"]):
@@ -143,7 +150,7 @@ def unsupported_action_response(message: str, cap: dict[str, Any]) -> str | None
     unique = list(dict.fromkeys(blockers))
     extra = ""
     if any(i.startswith("file_") or i == "code_execute" for i in intents):
-        extra = " You can grant a specific folder in Files & Agent; after that I can act there and show you a receipt. I can still draft the contents here."
+        extra = " Use Files & Agent to grant the specific path. For generated content, you can ask for a chat download instead."
     return ("I can't do that in the current verified state. The runtime ledger says I cannot " + "; ".join(unique) + "." + extra +
             " Nothing was created, changed, sent, or executed.")
 
@@ -155,9 +162,10 @@ def capability_answer(cap: dict[str, Any]) -> str:
     lines = ["Current verified PODA state (refreshed from the runtime, not inferred):", ""]
     lines.append(f"- **Ollama:** {'reachable' if cap['ollama'].get('reachable') else 'not reachable'}. Installed: {', '.join(models[:8]) or 'none detected'}.")
     if fs.get("granted_roots"):
-        lines.append("- **Files:** granted folders — " + "; ".join(f"`{r['path']}` ({r['mode']}{', can run Python' if r.get('allow_execute') else ''})" for r in fs["granted_roots"]) + ". Nothing outside these is accessible. Every write produces a receipt.")
+        lines.append("- **Files:** granted paths — " + "; ".join(f"`{r['path']}` ({r['mode']}{', can run Python' if r.get('allow_execute') else ''})" for r in fs["granted_roots"]) + ". Nothing outside these is accessible. Every write produces a receipt.")
     else:
-        lines.append("- **Files:** no folder grants are active, so I cannot read, create, or edit any user files or Desktop files. Grant a folder in Files & Agent to enable scoped tools.")
+        lines.append("- **Files:** Grant a file or folder in Files & Agent to enable scoped tools.")
+    lines.append("- **Chat downloads:** I can attach generated text, code, CSV and JSON to chat replies without a folder grant.")
     lines.append("- **Code:** I can write code in chat." + (" I can run Python inside granted folders that allow execution." if cap.get("code", {}).get("can_execute_user_code") else " I cannot execute code or shell commands right now."))
     em = cap.get("email", {})
     if em.get("can_read"):

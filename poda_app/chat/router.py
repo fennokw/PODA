@@ -6,19 +6,20 @@ import json
 import uuid
 from typing import Any, AsyncIterator
 from threading import Event
+from urllib.parse import quote
 import re
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from ..runtime import config, ollama, models, capability
-from ..runtime.db import connect, rows
+from ..runtime.db import connect, one, rows
 from ..memory import store, retrieval, summaries
 from ..agent import gate, orchestrator
 from ..connectors.notion import context as notion_context
 from .prompt import build_system_prompt, tools_block
-from . import mail_fulfillment, working_context
+from . import artifacts, mail_fulfillment, working_context
 
 router = APIRouter()
 
@@ -122,6 +123,7 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
     snapshot = await asyncio.to_thread(capability.sync_ledger)
     profile = await asyncio.to_thread(models.resolve, task_message, req.mode, req.thinking_level)
     blocked = gate.unsupported_action_response(task_message, snapshot)
+    attachment = artifacts.requested_name(task_message) if not ephemeral and not blocked else None
     capability_reply = gate.capability_answer(snapshot) if (gate.is_capability_query(req.message) and not blocked) else None
 
     activity: list[dict] = []
@@ -145,27 +147,27 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                 del activity[1]
         return sse(event, data)
 
-    async def save_response(content: str, model: str, completed: bool = True) -> None:
+    async def save_response(content: str, model: str, completed: bool = True, *, attach: bool = False) -> dict[str, str]:
         if completed:
             activity.append({"event": "done", "model": model})
-        await asyncio.to_thread(store.save_message, "assistant", content, model, session_id, "chat",
-                                {"workflow_activity": activity}, True)
+        filename = attachment if attach and attachment and artifacts.file_body(content, attachment) is not None else "poda-response.md"
+        message_id = await asyncio.to_thread(store.save_message, "assistant", content, model, session_id, "chat",
+                                             {"workflow_activity": activity, "download_name": filename}, True)
+        return {"message_id": message_id, "filename": filename}
 
     async def generate() -> AsyncIterator[str]:
         yield frame("session", {"session_id": session_id, "user_message_id": user_message_id, "build_id": config.BUILD_ID})
         if blocked:
             yield frame("status", {"message": "capability_action_gate", "model": "PODA capability ledger"})
             yield frame("token", {"token": blocked})
-            if not ephemeral:
-                await save_response(blocked, "capability-action-gate")
-            yield frame("done", {"model": "capability-action-gate", "profile": "gate"})
+            download = await save_response(blocked, "capability-action-gate") if not ephemeral else None
+            yield frame("done", {"model": "capability-action-gate", "profile": "gate", "download": download})
             return
         if capability_reply:
             yield frame("status", {"message": "verified_runtime_status", "model": "PODA capability ledger"})
             yield frame("token", {"token": capability_reply})
-            if not ephemeral:
-                await save_response(capability_reply, "capability-ledger")
-            yield frame("done", {"model": "capability-ledger", "profile": "ledger"})
+            download = await save_response(capability_reply, "capability-ledger") if not ephemeral else None
+            yield frame("done", {"model": "capability-ledger", "profile": "ledger", "download": download})
             return
         model = profile.get("model")
         if not model:
@@ -186,8 +188,10 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                                "verification": receipt.get("verification")})
             yield frame("token", {"token": summary})
             if not ephemeral:
-                await save_response(summary, "mail-report")
-            yield frame("done", {"model": "mail-report", "profile": "verified-tools"})
+                download = await save_response(summary, "mail-report", attach=True)
+            else:
+                download = None
+            yield frame("done", {"model": "mail-report", "profile": "verified-tools", "download": download})
             return
         recalled = None
         if should_recall_memory(task_message, req.use_memory):
@@ -302,6 +306,13 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                                  "; ".join(s["summary"] for s in planned["steps"]) + ". Briefly tell the user what will happen once approved. Do NOT claim any of it is done.\n")
         system = build_system_prompt(should_recall_memory(task_message, req.use_memory), task_message, snapshot, recalled, notion_block,
                                      receipts_block=receipts_block + tool_results_block + proposal_note, tools_block=tools_block(snapshot), session_id=None if ephemeral else session_id, exclude_message_id=user_message_id)
+        system += "\nChat replies can be downloaded by the user. Generating a chat file does not require filesystem access. Use filesystem tools only for explicit local path operations."
+        if attachment and artifacts.unsupported_format(task_message):
+            system += "\nPODA supports text-based chat downloads. State that the requested binary format is unavailable and give the complete contents in Markdown."
+        elif attachment:
+            system += (f"\nThe user requested a chat attachment named {attachment}. Put the complete requested file contents "
+                       "in one fenced code block with the matching language. PODA extracts the block and provides the download. "
+                       "Never invent a download link or claim to have written to the user's folders.")
         messages = [{"role": "system", "content": system}, {"role": "user", "content": ("Continue the remaining steps of this request using the action receipts: " + task_message if req.resume_workflow else task_message)}]
         splitter = ThinkSplitter()
         think_flag = profile.get("think") if model.startswith("qwen3") else None
@@ -325,9 +336,8 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                         yield frame(kind, {"token": piece})
                 if done:
                     final = "".join(splitter.final).strip()
-                    if not ephemeral:
-                        await save_response(final, model)
-                    yield frame("done", {"model": model, "profile": profile["profile"], "eval_count": chunk.get("eval_count"), "eval_duration_ms": round((chunk.get("eval_duration") or 0) / 1e6),
+                    download = await save_response(final, model, attach=True) if not ephemeral else None
+                    yield frame("done", {"model": model, "download": download, "profile": profile["profile"], "eval_count": chunk.get("eval_count"), "eval_duration_ms": round((chunk.get("eval_duration") or 0) / 1e6),
                                        "prompt_eval_count": chunk.get("prompt_eval_count")})
                     if not ephemeral:
                         asyncio.get_running_loop().run_in_executor(None, summaries.maybe_compact, session_id)
@@ -357,10 +367,37 @@ def session_messages(session_id: str, limit: int = 100) -> dict[str, Any]:
         try:
             metadata = json.loads(record.pop("metadata_json") or "{}")
         except ValueError:
-            continue
+            metadata = {}
         if isinstance(metadata, dict) and "workflow_activity" in metadata:
             record["workflow_activity"] = metadata["workflow_activity"]
+        if record["role"] == "assistant" and record["content"]:
+            record["download"] = {"message_id": record["id"], "filename": artifacts.saved_filename(metadata)}
     return {"messages": records, "workflows": workflows}
+
+
+@router.get("/chat/session/{session_id}/messages/{message_id}/download")
+def download_response(session_id: str, message_id: str) -> Response:
+    conn = connect()
+    try:
+        record = one(conn, "SELECT content, metadata_json FROM messages WHERE id=? AND session_id=? AND role='assistant'",
+                     (message_id, session_id))
+    finally:
+        conn.close()
+    if not record:
+        raise HTTPException(404, "Chat response not found.")
+    try:
+        metadata = json.loads(record["metadata_json"] or "{}")
+    except ValueError:
+        metadata = {}
+    filename = artifacts.saved_filename(metadata)
+    # The plain Markdown download preserves the entire reply, including any examples.
+    content = record["content"] if filename == "poda-response.md" else artifacts.file_body(record["content"], filename)
+    if content is None:
+        filename, content = "poda-response.md", record["content"]
+    return Response(content, media_type="application/octet-stream", headers={
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
+        "Cache-Control": "no-store",
+    })
 
 
 @router.get("/chat/sessions")

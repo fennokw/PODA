@@ -314,9 +314,9 @@ def verify_write() -> dict[str, Any]:
             "test_page_id": created_id, "test_page_archived": archived_ok, "test_page_title": title, "leftover_test_pages": leftovers, "error": error}
 
 
-def query_pages(limit: int = 100, filter_obj: dict[str, Any] | None = None, sorts: list[dict[str, Any]] | None = None, client: NotionClient | None = None) -> list[dict[str, Any]]:
-    cfg = state.get_config()
-    if not cfg or not cfg.get("data_source_id"):
+def query_pages(limit: int = 100, filter_obj: dict[str, Any] | None = None, sorts: list[dict[str, Any]] | None = None, client: NotionClient | None = None, *, data_source_id: str | None = None) -> list[dict[str, Any]]:
+    source = data_source_id or (state.get_config() or {}).get("data_source_id")
+    if not source:
         raise NotionError("validation", "No Notion data source is connected.")
     client = client or NotionClient()
     pages: list[dict[str, Any]] = []
@@ -330,7 +330,7 @@ def query_pages(limit: int = 100, filter_obj: dict[str, Any] | None = None, sort
             payload["sorts"] = sorts
         if cursor:
             payload["start_cursor"] = cursor
-        data = client.query(cfg["data_source_id"], payload)
+        data = client.query(source, payload)
         batch = data.get("results") or []
         pages.extend(normalize_page(p) for p in batch if isinstance(p, dict) and p.get("object") == "page")
         remaining -= len(batch)

@@ -55,7 +55,7 @@ class NotionClient:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}", "Notion-Version": config.NOTION_VERSION, "Content-Type": "application/json"}
 
-    def request(self, method: str, path: str, payload: dict[str, Any] | None = None, *, purpose: str | None = None, timeout: float = 25) -> dict[str, Any]:
+    def request(self, method: str, path: str, payload: dict[str, Any] | None = None, *, purpose: str | None = None, timeout: float = 25, retry_ambiguous: bool = True) -> dict[str, Any]:
         url = f"{config.NOTION_API_BASE}{path}"
         last: NotionError | None = None
         for attempt in range(1, MAX_ATTEMPTS + 1):
@@ -65,7 +65,7 @@ class NotionClient:
                 raise NotionError("offline", str(exc)) from exc
             except Exception as exc:  # requests.RequestException and friends
                 last = NotionError("network", f"Could not reach api.notion.com: {exc.__class__.__name__}")
-                if attempt < MAX_ATTEMPTS:
+                if retry_ambiguous and attempt < MAX_ATTEMPTS:
                     _sleep(min(2.0, 0.5 * attempt))
                     continue
                 raise last from exc
@@ -82,7 +82,7 @@ class NotionClient:
             except Exception:
                 retry_after = None
             err = _classify(status, data.get("code") if isinstance(data, dict) else None, (data.get("message") if isinstance(data, dict) else "") or "", retry_after)
-            if err.kind in {"rate_limited", "server"} and attempt < MAX_ATTEMPTS:
+            if (err.kind == "rate_limited" or (retry_ambiguous and err.kind == "server")) and attempt < MAX_ATTEMPTS:
                 _sleep(min(10.0, retry_after or (0.8 * attempt)))
                 last = err
                 continue
@@ -109,7 +109,7 @@ class NotionClient:
         return self.request("POST", "/search", payload, purpose="search")
 
     def create_page(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self.request("POST", "/pages", payload, purpose="create_page")
+        return self.request("POST", "/pages", payload, purpose="create_page", retry_ambiguous=False)
 
     def update_page(self, page_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self.request("PATCH", f"/pages/{page_id}", payload, purpose="update_page")

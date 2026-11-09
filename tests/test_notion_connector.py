@@ -104,6 +104,8 @@ class FakeNotion:
         title = payload["properties"]["Name"]["title"][0]["text"]["content"]
         date = (payload["properties"].get("Due Date / Event Date") or {}).get("date") or {}
         page = make_page(pid, title, date.get("start"), date.get("end"))
+        if date:
+            page["properties"]["Due Date / Event Date"]["date"]["time_zone"] = date.get("time_zone")
         self.pages[pid] = page
         self.created.append(pid)
         return FakeResponse(200, page)
@@ -358,7 +360,8 @@ def test_propose_detects_duplicates_and_commit_rereads(fake):
     assert dup["duplicates"] and {"same canvas_assignment_id", "same title and date"} <= set(dup["duplicates"][0]["reasons"])
     prop = mapping.propose_event({"title": "Dentist", "start": "2026-10-09T14:00:00-07:00", "end": "2026-10-09T15:00:00-07:00", "time_zone": "America/Los_Angeles", "status": "Not started"})
     assert prop["requires_confirmation"] and prop["duplicates"] == []
-    assert prop["payload_preview"]["properties"]["Due Date / Event Date"]["date"]["time_zone"] == "America/Los_Angeles"
+    assert prop["payload_preview"]["properties"]["Due Date / Event Date"]["date"] == {
+        "start": "2026-10-09T14:00:00", "end": "2026-10-09T15:00:00", "time_zone": "America/Los_Angeles"}
     out = mapping.commit_event(prop["proposal_id"])
     assert out["created"] and out["verified"] and out["receipt"]["outcome"] == "success" and out["receipt"]["verification"] == "re-read-after-write"
     again = mapping.propose_event({"title": "Dentist", "start": "2026-10-09T14:00:00-07:00", "end": "2026-10-09T15:00:00-07:00", "time_zone": "America/Los_Angeles", "status": "Not started"})
@@ -370,9 +373,11 @@ def test_propose_detects_duplicates_and_commit_rereads(fake):
 def test_commit_never_succeeds_on_api_failure(fake):
     connect_ok(fake); service.verify_write(); mapping.save_mapping(GOOD_MAPPING)
     prop = mapping.propose_event({"title": "Will fail", "start": "2026-11-01"})
+    attempts = len([1 for method, path, _ in fake.calls if (method, path) == ("POST", "/pages")])
     fake.routes[("POST", "/pages")] = FakeResponse(500, {"code": "internal_server_error", "message": "boom"})
     with pytest.raises(NotionError):
         mapping.commit_event(prop["proposal_id"])
+    assert len([1 for method, path, _ in fake.calls if (method, path) == ("POST", "/pages")]) == attempts + 1
     from poda_app.agent.receipts import list_receipts
     r = next(r for r in list_receipts(20) if r["tool"] == "notion.create_event" and "Will fail" in (r["args_json"] or ""))
     assert r["outcome"] == "failed" and "boom" in (r["error"] or "")
@@ -427,3 +432,96 @@ def test_router_errors_are_structured_and_tokenless(client, fake):
     assert r.status_code == 400 and r.json()["detail"]["code"] == "confirmation_required"
     r = client.post("/notion/disconnect")
     assert r.json()["status"] == "DISCONNECTED" and client.get("/capabilities").json()["notion"]["connected"] is False
+
+
+def test_write_rejects_schema_drift_and_remapping_invalidates_old_proposal(fake):
+    connect_ok(fake)
+    service.verify_write()
+    first = mapping.save_mapping(GOOD_MAPPING)
+    proposal = mapping.propose_event({"title": "Lunch", "start": "2026-10-09"})
+    schema = {**SCHEMA, "Details": {"id": "new", "type": "rich_text"}}
+    fake.routes[("GET", f"/data_sources/{DS}")]._body["properties"] = schema
+    with pytest.raises(NotionError) as exc:
+        mapping.commit_event(proposal["proposal_id"])
+    assert exc.value.code == "mapping_stale"
+    assert mapping.get_active_mapping()["stale"]
+    saved = mapping.save_mapping({**GOOD_MAPPING, "notes": "Details"})
+    assert saved["schema_fingerprint"] != first["schema_fingerprint"]
+    assert not mapping.get_active_mapping()["stale"]
+    with pytest.raises(NotionError) as exc:
+        mapping.commit_event(proposal["proposal_id"])
+    assert exc.value.code == "proposal_mapping_changed"
+    assert fake.created == ["created-1"]
+
+
+def test_notion_concurrent_commit_claims_once_and_verifies_full_date(fake):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    connect_ok(fake)
+    service.verify_write()
+    mapping.save_mapping(GOOD_MAPPING)
+    proposal_id = mapping.propose_event({"title": "Lunch", "start": "2026-10-09T12:00:00-04:00",
+                                         "end": "2026-10-09T13:00:00-04:00"})["proposal_id"]
+    entered, release = Event(), Event()
+
+    def create(payload):
+        entered.set()
+        assert release.wait(5)
+        result = fake.create_page(payload)
+        date = result._body["properties"]["Due Date / Event Date"]["date"]
+        date["start"] = "2026-10-09T16:00:00Z"
+        date["end"] = "2026-10-09T17:30:00Z"
+        return result
+
+    fake.routes[("POST", "/pages")] = create
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(mapping.commit_event, proposal_id)
+        try:
+            assert entered.wait(5)
+            with pytest.raises(NotionError, match="already"):
+                mapping.commit_event(proposal_id)
+        finally:
+            release.set()
+        result = first.result()
+    assert result["created"] and not result["verified"]
+    assert result["receipt"]["outcome"] == "unverified"
+    assert fake.created == ["created-1", result["page_id"]]
+    assert mapping.event_matches({"properties": {"When": {"start": "2026-10-09T16:00:00Z", "end": None}}},
+                                 {"When": {"date": {"start": "2026-10-09T12:00:00-04:00"}}})
+
+
+def test_notion_raw_and_mapped_updates_reject_another_source(client, fake):
+    connect_ok(fake)
+    service.verify_write()
+    mapping.save_mapping(GOOD_MAPPING)
+    fake.pages["page-0"]["parent"]["data_source_id"] = DS2
+    raw = client.patch("/notion/pages/page-0", json={"properties": {}, "in_trash": True})
+    assert raw.status_code == 403 and raw.json()["detail"]["code"] == "wrong_data_source"
+    with pytest.raises(NotionError, match="outside"):
+        mapping.update_event("page-0", {"title": "Wrong target"}, None)
+    with pytest.raises(NotionError, match="outside"):
+        mapping.archive_event("page-0", confirm=True)
+    assert not any(method == "PATCH" and path == "/pages/page-0" for method, path, _ in fake.calls)
+
+
+def test_chat_calendar_create_works_with_insert_only_and_checks_readback(fake):
+    from datetime import datetime, timedelta, timezone
+
+    from poda_app.agent import tools
+    from poda_app.connectors.notion import automation
+
+    connect_ok(fake)
+    fake.hook = lambda method, path, _: FakeResponse(403) if method == "PATCH" else None
+    with pytest.raises(NotionError):
+        service.verify_write()
+    fake.hook = None
+    mapping.save_mapping(GOOD_MAPPING)
+    notion = state.capability()
+    availability = tools.availability({"notion": notion})
+    assert availability["notion_calendar_create"]["available"]
+    assert not availability["notion_calendar_update"]["available"]
+    start = (datetime.now(timezone.utc) + timedelta(days=1)).replace(microsecond=0)
+    end = start + timedelta(hours=1)
+    result = automation.create_calendar_event("Office hours", start.isoformat(), end.isoformat())
+    assert result["ok"] and result["result"]["verified"]

@@ -15,7 +15,7 @@ async function build() {
     const backendDir = path.join(stage, 'backend');
     mkdirSync(appDir);
     mkdirSync(backendDir);
-    for (const file of ['main.cjs', 'package.json']) {
+    for (const file of ['main.cjs', 'preload.cjs', 'package.json']) {
       copyFileSync(path.join(__dirname, file), path.join(appDir, file));
     }
     execFileSync('python3', [path.join(__dirname, 'stage_backend.py'), backendDir], { stdio: 'inherit' });
@@ -24,6 +24,9 @@ async function build() {
       name: 'PODA', platform: 'darwin', arch: 'arm64', electronVersion: devDependencies.electron,
       appBundleId: 'com.fennokw.poda', appVersion: version, asar: true, prune: false,
       extendInfo: {
+        NSDesktopFolderUsageDescription: 'PODA can access Desktop files and folders you choose in Files & Agent.',
+        NSDocumentsFolderUsageDescription: 'PODA can access Documents files and folders you choose in Files & Agent.',
+        NSDownloadsFolderUsageDescription: 'PODA can access Downloads files and folders you choose in Files & Agent.',
         NSAppleEventsUsageDescription: 'PODA uses Apple Events to read or modify mail you authorize and show local notifications.',
       },
       extraResource: [backendDir],

@@ -171,3 +171,29 @@ def test_proposal_only_runs_once_when_two_approvals_overlap(client, monkeypatch)
     finally:
         with connect() as db:
             db.execute("DELETE FROM agent_proposals WHERE id=?", (proposal_id,))
+
+
+def test_chat_download_is_available_without_filesystem_grants(client, monkeypatch):
+    from poda_app.chat import router as chat_router
+
+    async def fake_stream(messages, *args, **kwargs):
+        assert "chat attachment named poda-output.csv" in messages[0]["content"]
+        yield {"message": {"content": "Here is the file.\n\n```csv\nname,count\nalpha,3\n```"}, "done": True}
+
+    monkeypatch.setattr(chat_router.ollama, "chat_stream", fake_stream)
+    monkeypatch.setattr(chat_router.models, "resolve", lambda *a, **k: {
+        "model": "test", "profile": "fast", "num_ctx": 8192, "options": {}})
+    monkeypatch.setattr(chat_router.orchestrator, "tool_prerequisites_exist", lambda _: False)
+    assert not grants.list_grants()
+    response = client.post("/chat/stream", json={"message": "Create a CSV with name and count", "use_memory": False})
+    events = dict(_events(response.text))
+    session_id = events["session"]["session_id"]
+    download = events["done"]["download"]
+    assert download["filename"] == "poda-output.csv"
+    base = f"/chat/session/{session_id}/messages"
+    assert client.get(base).json()["messages"][-1]["download"] == download
+    file = client.get(f"{base}/{download['message_id']}/download")
+    assert file.content == b"name,count\nalpha,3\n"
+    assert "attachment;" in file.headers["Content-Disposition"]
+    assert client.get(f"{base}/{events['session']['user_message_id']}/download").status_code == 404
+    assert client.get(f"/chat/session/unrelated/messages/{download['message_id']}/download").status_code == 404

@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, dialog, session, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, session, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const { randomBytes, createHash } = require('node:crypto');
 const { existsSync, readFileSync, mkdirSync, createWriteStream } = require('node:fs');
@@ -75,7 +75,7 @@ function openWindow() {
   window = new BrowserWindow({
     width: 1440, height: 930, minWidth: 840, minHeight: 620, title: 'PODA', backgroundColor: '#111018',
     webPreferences: { session: localSession, sandbox: true, contextIsolation: true,
-      nodeIntegration: false, webviewTag: false },
+      nodeIntegration: false, webviewTag: false, preload: path.join(__dirname, "preload.cjs") },
   });
   const isLocal = url => URL.canParse(url) && new URL(url).origin === origin;
   for (const eventName of ['will-navigate', 'will-redirect', 'will-frame-navigate']) {
@@ -94,6 +94,18 @@ function openWindow() {
   window.on('closed', () => { window = null; });
   return window.loadURL(origin);
 }
+
+ipcMain.handle('poda:choose-grant-path', async (event, kind) => {
+  if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame ||
+      !origin || !URL.canParse(event.senderFrame.url) || new URL(event.senderFrame.url).origin !== origin ||
+      !['file', 'directory'].includes(kind)) return null;
+  const result = await dialog.showOpenDialog(window, {
+    title: kind === 'file' ? 'Choose a file for PODA' : 'Choose a folder for PODA',
+    defaultPath: app.getPath('desktop'),
+    properties: [kind === 'file' ? 'openFile' : 'openDirectory'],
+  });
+  return result.canceled ? null : result.filePaths[0] ?? null;
+});
 
 async function start() {
   const python = runtimePath();

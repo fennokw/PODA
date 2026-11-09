@@ -155,15 +155,15 @@ def _load_extensions() -> None:
     from ..connectors.notion.automation import create_calendar_event, update_calendar_event, archive_calendar_event
     register_extension({"notion_calendar_create":{
         "description":"Create one future event in the connected Notion calendar. Requires approval in chat; unattended only for a schedule explicitly authorized to create calendar entries. Times must include UTC offset. Never invent an event.",
-        "mutating":True,"requires_confirmation":True,"needs":"notion_read",
+        "mutating":True,"requires_confirmation":True,"needs":"notion_insert",
         "handler":create_calendar_event,
         "schema":_schema({"title":_str("Event title"),"start":_str("ISO 8601 datetime with timezone offset"),
             "end":_str("Optional ISO 8601 end datetime with offset"),"notes":_str("Optional details")},["title","start"])}
     })
     register_extension({
-        "notion_calendar_update":{"description":"Update title and/or date of a Notion calendar event by page ID; confirmation is required outside explicitly authorized automation.","mutating":True,"requires_confirmation":True,"needs":"notion_read",
+        "notion_calendar_update":{"description":"Update title and/or date of a Notion calendar event by page ID; confirmation is required outside explicitly authorized automation.","mutating":True,"requires_confirmation":True,"needs":"notion_update",
            "handler":update_calendar_event,"schema":_schema({"page_id":_str("Existing Notion page ID"),"title":_str("Optional title"),"start":_str("Optional timezone-aware ISO date"),"end":_str("Optional timezone-aware end")},["page_id"])},
-        "notion_calendar_archive":{"description":"Archive a Notion calendar event by page ID; confirmation is required outside explicitly authorized automation.","mutating":True,"requires_confirmation":True,"needs":"notion_read",
+        "notion_calendar_archive":{"description":"Archive a Notion calendar event by page ID; confirmation is required outside explicitly authorized automation.","mutating":True,"requires_confirmation":True,"needs":"notion_archive",
            "handler":archive_calendar_event,"schema":_schema({"page_id":_str("Existing Notion page ID")},["page_id"])}
     })
     from ..daily_updates import tools as daily_tools
@@ -238,13 +238,17 @@ def availability(snapshot: dict[str, Any] | None = None) -> dict[str, dict[str, 
         if need is None:
             ok, reason = True, "always available"
         elif need == "fs_read":
-            ok, reason = fs["general_user_file_read"], "requires a granted folder"
+            ok, reason = fs["general_user_file_read"], "requires a file or folder grant"
         elif need == "fs_write":
-            ok, reason = fs["general_user_file_edit"], "requires a folder granted edit or temp access"
+            ok, reason = fs["general_user_file_edit"], "requires a file or folder granted edit or temp access"
         elif need == "execute":
             ok, reason = fs["code_execution"], "requires a grant with execution allowed"
         elif need == "notion_read":
             ok, reason = bool(notion.get("can_read_content")), "requires a connected Notion data source with verified read"
+        elif need in {"notion_insert", "notion_update", "notion_archive"}:
+            permission = "can_insert_content" if need == "notion_insert" else "can_update_content"
+            ok = bool(notion.get(permission) and (need == "notion_archive" or notion.get("mapping_active")))
+            reason = "requires verified Notion write access" + (" and a saved mapping" if need != "notion_archive" else "")
         elif need in EXTENSION_NEEDS:
             predicate, why = EXTENSION_NEEDS[need]
             try:

@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from ..runtime import config
 from . import grants
 
 MAX_WRITE_BYTES = 2 * 1024 * 1024
@@ -59,9 +60,15 @@ def _atomic_write(target: Path, data: bytes) -> None:
         raise
 
 
-def _backup(target: Path) -> str | None:
+def _backup(target: Path, *, private: bool = False) -> str | None:
     if not target.exists():
         return None
+    if private:
+        folder = config.DATA_DIR / "file-edit-backups"
+        folder.mkdir(mode=0o700, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=folder, prefix=f"{target.name[:80]}.", suffix=".bak", delete=False) as backup:
+            backup.write(target.read_bytes())
+            return backup.name
     bak = target.with_name(f"{target.name}.poda-bak-{time.strftime('%Y%m%d-%H%M%S')}")
     bak.write_bytes(target.read_bytes())
     return str(bak)
@@ -147,9 +154,9 @@ def fs_search(root: str, pattern: str, glob: str = "**/*", max_results: int = 20
     for p in base.glob(glob):
         if any(part in SKIP_DIRS for part in p.relative_to(base).parts):
             continue
-        if not p.is_file() or p.is_symlink():
-            continue
         try:
+            if not p.is_file() or p.is_symlink() or not p.resolve().is_relative_to(base):
+                continue
             if p.stat().st_size > 2 * 1024 * 1024:
                 continue
             data = p.read_bytes()
@@ -224,7 +231,7 @@ def fs_edit(path: str, expected_sha256: str, old_text: str, new_text: str, repla
     if abs(len(new_data) - len(data)) > MAX_EDIT_BYTES:
         return _fail("Patch exceeds the size limit")
     try:
-        backup = _backup(target)
+        backup = _backup(target, private=grant.get("target_kind") == "file")
         _atomic_write(target, new_data)
         readback = target.read_bytes()
     except OSError as exc:
