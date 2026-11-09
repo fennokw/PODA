@@ -1,5 +1,5 @@
-# Contributing
+# Contributing to PODA Desktop
 
-This repository owns the Electron launcher, its private backend adapter, runtime setup, and native packaging. Change shared UI, API, connectors, and browser hosting in [PODA Web](https://github.com/fennokw/PODA-Web).
+Application code lives in `poda_app/`, platform startup and packaging in `desktop/`, and regression tests in `tests/`. Use the installation command in the README to build and launch local changes.
 
-`desktop/backend-lock.json` pins the shared runtime. Stage it with `npm run stage:backend` in `desktop`. Set `PODA_WEB_CHECKOUT` to a local Git checkout containing the pinned commit to stage without fetching. The packager reads the exact commit tree, so local edits in that checkout do not affect the bundle.
+Run `python -m pytest -q tests` after setting up a Python environment with `requirements.txt`. Use synthetic accounts and temporary data directories in tests. Keep databases, backups, credentials, and logs outside the source checkout.

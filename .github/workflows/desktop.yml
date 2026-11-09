@@ -9,28 +9,28 @@ jobs:
   apple-silicon:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
           cache: npm
           cache-dependency-path: desktop/package-lock.json
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
       - name: Build, sign and launch the macOS app
         working-directory: desktop
         run: |
-          npm ci --ignore-scripts
-          npm run package:mac
+          python3 ../tools/release_guard.py --check
+          brew list libusb >/dev/null || brew install libusb
+          export PODA_DATA_DIR="$RUNNER_TEMP/poda-mac-smoke"
+          export PODA_DB_KEY_HEX="$(printf '%064d' 1)"
+          ../Install-PODA.command --no-launch
           bundle=../dist/desktop/PODA-darwin-arm64/PODA.app
           backend="$bundle/Contents/Resources/backend"
           test -x "$backend/SETUP_DESKTOP.command"
           codesign --verify --deep --strict "$bundle"
-          brew list libusb >/dev/null || brew install libusb
-          export PODA_DATA_DIR="$RUNNER_TEMP/poda-mac-smoke"
-          export PODA_DB_KEY_HEX="$(printf '%064d' 1)"
-          "$backend/SETUP_DESKTOP.command"
+          test "$HOME/Desktop/PODA.app" -ef "$bundle"
           runtime="$(find "$PODA_DATA_DIR/desktop-runtime" -name .ready -print -quit)"
           PODA_TEST_BACKEND="$backend" "${runtime%/.ready}/bin/python" -m pytest -q test_backend.py
           "$bundle/Contents/MacOS/PODA" >"$RUNNER_TEMP/poda-electron.log" 2>&1 &
@@ -47,7 +47,7 @@ jobs:
             exit 1
           }
           ditto -c -k --sequesterRsrc --keepParent "$bundle" ../dist/PODA-macOS-arm64.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: PODA-macOS-arm64
           path: dist/PODA-macOS-arm64.zip
