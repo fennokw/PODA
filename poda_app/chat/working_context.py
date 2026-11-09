@@ -7,6 +7,18 @@ visible second-brain memories through the existing ingestion/compaction pipeline
 from __future__ import annotations
 
 from ..runtime.db import connect, rows
+from .artifacts import is_attachment_retry
+
+
+def request_before_retry(session_id: str) -> str | None:
+    """Read the latest substantive user turn, without treating assistant prose as an instruction."""
+    db = connect()
+    try:
+        turns = rows(db, """SELECT content FROM messages WHERE session_id=? AND role='user'
+                            ORDER BY rowid DESC LIMIT 12""", (session_id,))
+    finally:
+        db.close()
+    return next((turn["content"] for turn in turns if turn["content"] and not is_attachment_retry(turn["content"])), None)
 
 
 def recent(session_id: str | None, exclude_message_id: str | None = None,

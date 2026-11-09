@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import csv
+import hashlib
 import json
 import uuid
 from typing import Any, AsyncIterator
@@ -24,6 +26,7 @@ from .prompt import build_system_prompt, tools_block
 from . import artifacts, mail_fulfillment, working_context
 
 router = APIRouter()
+_ARCHIVE_READY = "Your ZIP file is ready to download."
 
 def should_recall_memory(message: str, enabled: bool = True) -> bool:
     """Skip personal recall for standalone live-data requests, but honor explicit history references."""
@@ -114,8 +117,7 @@ def _sandbox_files_for_chat(message: str, session_id: str) -> tuple[bool, str | 
     return artifacts.refers_to_workspace(message, recent, names), recent
 
 
-def _materialize_attachment(name: str, content: str, session_id: str) -> dict:
-    source = artifacts.generated_source(content, name)
+def _materialize_attachment(name: str, source: tuple[str, str] | None, session_id: str) -> dict:
     if source is None:
         return {"error": f"PODA could not create {name} from the response."}
     rid = receipts.open_receipt("sandbox_write", name, {"path": name}, approved=True, session_id=session_id)
@@ -126,6 +128,34 @@ def _materialize_attachment(name: str, content: str, session_id: str) -> dict:
         return {"error": f"PODA could not save {name} in PODA Sandbox."}
     receipts.close_receipt(rid, "succeeded", "Read back the exact saved bytes.", detail=json.dumps(saved))
     return saved
+
+
+def _sandbox_receipt_data(receipt: dict) -> dict:
+    try:
+        data = json.loads(receipt.get("detail") or "{}")
+    except (ValueError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _archive_receipts(receipt_rows: list[dict]) -> tuple[str, str]:
+    if not 1 <= len(receipt_rows) <= 64:
+        raise ValueError("A ZIP needs 1 to 64 files.")
+    entries = []
+    total_bytes = 0
+    for receipt in receipt_rows:
+        data = _sandbox_receipt_data(receipt)
+        name = data.get("filename")
+        if receipt["outcome"] != "succeeded" or not isinstance(name, str):
+            raise ValueError("A member of the earlier ZIP request was not saved successfully.")
+        payload = sandbox_files.read_bytes(name)
+        total_bytes += len(payload)
+        if total_bytes > sandbox_files.MAX_BYTES:
+            raise ValueError("ZIP contents may be up to 16 MiB before compression.")
+        if hashlib.sha256(payload).hexdigest() != data.get("sha256"):
+            raise ValueError("A workspace file changed after approval. Request a new ZIP for its current contents.")
+        entries.append((name, payload))
+    return base64.b64encode(sandbox_files.pack_archive(entries)).decode("ascii"), "base64"
 
 
 @router.post("/chat/stream")
@@ -153,7 +183,20 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
     if req.resume_workflow and await asyncio.to_thread(orchestrator.has_followup, req.continuation_of):
         raise HTTPException(409, "This checkpoint already has a follow-up. Open it in this chat to continue.")
     session_id = req.session_id or (previous_proposal or {}).get("session_id") or str(uuid.uuid4())
+    proposal_receipts = []
+    steps = previous_proposal["plan"].get("steps") or [] if previous_proposal else []
+    sandbox_checkpoint = bool(steps and all(step["tool"] == "sandbox_write" for step in steps))
+    if previous_proposal:
+        for receipt_id in previous_proposal.get("receipt_ids", []):
+            receipt = await asyncio.to_thread(receipts.get_receipt, receipt_id)
+            if receipt:
+                proposal_receipts.append(receipt)
     task_message = (previous_proposal["plan"]["message"] if req.resume_workflow else req.message)
+    if not ephemeral and not previous_proposal and req.session_id and artifacts.is_attachment_retry(req.message):
+        prior = await asyncio.to_thread(working_context.request_before_retry, session_id)
+        if (prior and artifacts.requested_name(prior) and not gate.is_capability_query(prior)
+                and not gate.requested_action_intents(prior)):
+            task_message = prior
     lineage = await asyncio.to_thread(orchestrator.workflow_lineage, previous_proposal) if req.resume_workflow else []
     previous_steps = [step for checkpoint in lineage
                       for step in (checkpoint["plan"].get("previous_steps") or []) +
@@ -164,9 +207,15 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
     profile = await asyncio.to_thread(models.resolve, task_message, req.mode, req.thinking_level)
     sandbox_target, recent_file = (False, None) if ephemeral else await asyncio.to_thread(_sandbox_files_for_chat, task_message, session_id)
     blocked = gate.unsupported_action_response(task_message, snapshot, sandbox_target=sandbox_target)
-    attachment = artifacts.requested_name(task_message) if not ephemeral and not blocked and not previous_proposal else None
+    resume_archive = bool(req.resume_workflow and sandbox_checkpoint and previous_proposal["status"] == "executed"
+                          and len(proposal_receipts) == len(steps)
+                          and (artifacts.requested_name(task_message) or "").lower().endswith(".zip"))
+    attachment = artifacts.requested_name(task_message) if not ephemeral and not blocked and (not previous_proposal or resume_archive) else None
     if sandbox_target and not artifacts.creates_attachment(task_message):
         attachment = None
+    markdown_export = bool(attachment and attachment.lower().endswith((".md", ".mmd")))
+    mermaid_export = markdown_export and artifacts.is_mermaid_request(task_message)
+    archive_export = bool(attachment and attachment.lower().endswith(".zip"))
     capability_reply = gate.capability_answer(snapshot) if (gate.is_capability_query(req.message) and not blocked) else None
 
     activity: list[dict] = []
@@ -190,16 +239,22 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                 del activity[1]
         return sse(event, data)
 
-    async def save_response(content: str, model: str, completed: bool = True, *, attach: bool = False) -> dict:
+    async def save_response(content: str, model: str, completed: bool = True, *, attach: bool = False,
+                            source: tuple[str, str] | None = None) -> dict:
         if completed:
             activity.append({"event": "done", "model": model})
-        saved = await asyncio.to_thread(_materialize_attachment, attachment, content, session_id) if attach and attachment else {}
+        saved = {}
+        if attach and attachment:
+            source = source or artifacts.generated_source(content, attachment, mermaid=mermaid_export)
+            saved = await asyncio.to_thread(_materialize_attachment, attachment, source, session_id)
+            if archive_export:
+                content = saved.get("error") or _ARCHIVE_READY
         sandbox_file = saved.get("filename")
-        if previous_proposal and not sandbox_file:
-            for rid in reversed(previous_proposal.get("receipt_ids", [])):
-                receipt = await asyncio.to_thread(receipts.get_receipt, rid)
-                if receipt and receipt["tool"] == "sandbox_write" and receipt["outcome"] == "succeeded":
-                    sandbox_file = json.loads(receipt["detail"])["filename"]
+        if previous_proposal and not sandbox_file and not archive_export:
+            for receipt in reversed(proposal_receipts):
+                if receipt["tool"] == "sandbox_write" and receipt["outcome"] == "succeeded":
+                    sandbox_file = _sandbox_receipt_data(receipt).get("filename")
+                if sandbox_file:
                     break
         filename = sandbox_file or "poda-response.md"
         metadata = {"workflow_activity": activity, "download_name": "poda-response.md"}
@@ -224,6 +279,30 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
             yield frame("token", {"token": capability_reply})
             download = await save_response(capability_reply, "capability-ledger") if not ephemeral else None
             yield frame("done", {"model": "capability-ledger", "profile": "ledger", "download": download})
+            return
+        if resume_archive and archive_export:
+            try:
+                source = await asyncio.to_thread(_archive_receipts, proposal_receipts)
+            except (OSError, ValueError) as exc:
+                yield frame("error", {"message": str(exc)})
+                return
+            download = await save_response("", "sandbox-archive", attach=True, source=source)
+            yield frame("token", {"token": download["error"] or _ARCHIVE_READY})
+            yield frame("done", {"model": "sandbox-archive", "profile": "verified-tools", "download": download})
+            return
+        if sandbox_checkpoint and proposal_receipts and not req.resume_workflow:
+            lines = ["PODA Sandbox results:"]
+            for receipt in proposal_receipts:
+                name = _sandbox_receipt_data(receipt).get("filename") or receipt.get("target") or "File"
+                result = "Saved and verified." if receipt["outcome"] == "succeeded" else (receipt.get("error") or receipt["outcome"])
+                lines.append(f"- {name} — {result}")
+            requested = artifacts.requested_name(previous_proposal["plan"]["message"])
+            if requested and requested.lower().endswith(".zip") and previous_proposal["status"] == "executed":
+                lines.append("\nChoose **Continue original workflow** to package these verified files into the requested ZIP.")
+            summary = "\n".join(lines)
+            yield frame("token", {"token": summary})
+            download = await save_response(summary, "sandbox-receipts")
+            yield frame("done", {"model": "sandbox-receipts", "profile": "verified-tools", "download": download})
             return
         model = profile.get("model")
         if not model:
@@ -328,7 +407,8 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                         orchestrator.plan, task_message, snapshot, planner_ctx, session_id, model,
                         ephemeral, unattended_target, unattended_revision, unattended_mail_accounts,
                         emit=emit, stop=stop, previous_steps=previous_steps,
-                        continuation_of=req.continuation_of if req.resume_workflow else None)
+                        continuation_of=req.continuation_of if req.resume_workflow else None,
+                        reply_archive=archive_export)
                 finally:
                     progress.put_nowait(None)
 
@@ -372,19 +452,31 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
         system += ("\nPODA Sandbox has its own writable storage. Use fs_* only for the user's explicit external paths. "
                    "Never invent a file, a download link, or a completed action.")
         if attachment and not sandbox_write_proposed:
+            language = "mermaid" if mermaid_export else artifacts.source_language(attachment)
             system += (f"\nThe user requested a chat attachment named {attachment}. Put the complete file source "
-                       f"in one fenced {artifacts.source_language(attachment)} code block. "
+                       f"in one fenced {language} code block. "
                        "PODA saves the requested file in its own sandbox and shows a download link after generation. "
-                       "No user folder grant is needed.")
+                       "No user folder grant is needed. Generate the requested content now. Earlier replies about missing "
+                       "folder permissions do not apply to this attachment. Do not ask for a grant or confirmation.")
+            if mermaid_export and attachment.lower().endswith(".md"):
+                system += " PODA will wrap the diagram in a Mermaid fence inside the Markdown file."
+            if archive_export:
+                system += (' Return a JSON array, for example [{"filename":"main.py","content":"print(123)\\n"}]. '
+                           "Each object must contain the filename and complete file content as strings. Include only files "
+                           "needed for the request. PODA builds one real ZIP from the array.")
         messages = [{"role": "system", "content": system}, {"role": "user", "content": ("Continue the remaining steps of this request using the action receipts: " + task_message if req.resume_workflow else task_message)}]
         splitter = ThinkSplitter()
+        # Show the actual Markdown document rather than a model's preamble about
+        # filesystem permissions. Preserve streaming for workflows with actions.
+        show_document = markdown_export and not sandbox_write_proposed and not proposal_note
+        show_archive = archive_export and not sandbox_write_proposed
         think_flag = profile.get("think") if model.startswith("qwen3") else None
         try:
             async for chunk in ollama.chat_stream(messages, model, options=profile["options"], think=think_flag):
                 if await request.is_disconnected():
                     yield frame("status", {"message": "cancelled", "model": model})
                     partial = "".join(splitter.final).strip()
-                    if partial:
+                    if partial and not (show_document or show_archive):
                         if not ephemeral:
                             await save_response(partial + "\n\n[response cancelled by user]", model, completed=False)
                     return
@@ -396,10 +488,21 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                 done = bool(chunk.get("done"))
                 if token or done:
                     for kind, piece in splitter.feed(token, done):
-                        yield frame(kind, {"token": piece})
+                        if not (show_document or show_archive) or kind != "token":
+                            yield frame(kind, {"token": piece})
                 if done:
                     final = "".join(splitter.final).strip()
-                    download = await save_response(final, model, attach=not sandbox_write_proposed) if not ephemeral else None
+                    source = None
+                    if show_document:
+                        source = artifacts.generated_source(final, attachment, mermaid=mermaid_export)
+                        if not source:
+                            yield frame("error", {"message": f"The model did not return valid content for {attachment}. Try the export again."})
+                            return
+                        final = (f"```mermaid\n{source[0]}```" if attachment.lower().endswith(".mmd") else source[0])
+                        yield frame("token", {"token": final})
+                    download = await save_response(final, model, attach=not sandbox_write_proposed, source=source) if not ephemeral else None
+                    if show_archive:
+                        yield frame("token", {"token": download["error"] or _ARCHIVE_READY})
                     yield frame("done", {"model": model, "download": download, "profile": profile["profile"], "eval_count": chunk.get("eval_count"), "eval_duration_ms": round((chunk.get("eval_duration") or 0) / 1e6),
                                        "prompt_eval_count": chunk.get("prompt_eval_count")})
                     if not ephemeral:

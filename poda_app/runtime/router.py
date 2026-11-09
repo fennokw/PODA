@@ -1,6 +1,10 @@
 """System, build identity, hardware, model registry and capability endpoints."""
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+import sys
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -16,6 +20,33 @@ router = APIRouter()
 def system_build() -> dict[str, Any]:
     return {"app": config.APP_NAME, "version": config.VERSION, "build_id": config.BUILD_ID, "memory_viewer": "/memory-viewer",
             "static_dir": str(config.STATIC_DIR), "db_path": str(config.DB_PATH), "legacy_memory_modal": False, "port": config.PORT}
+
+
+@router.get("/system/storage")
+def system_storage() -> dict[str, str]:
+    return {
+        "data_directory": str(config.DATA_DIR),
+        "database": str(config.DB_PATH),
+        "sandbox": str(config.DATA_DIR / "PODA Sandbox"),
+        "backups": str(config.BACKUP_DIR),
+    }
+
+
+@router.post("/system/storage/open")
+def open_data_directory() -> dict[str, str]:
+    """Open the active profile directory in the host's file manager."""
+    path = str(config.DATA_DIR)
+    try:
+        if config.WINDOWS:
+            os.startfile(path)
+        else:
+            opener = "/usr/bin/open" if sys.platform == "darwin" else shutil.which("xdg-open")
+            if not opener:
+                raise OSError("No desktop file manager is available.")
+            subprocess.run([opener, path], check=True, timeout=8, capture_output=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise HTTPException(503, "The file manager could not open the folder. Open the displayed path manually.") from exc
+    return {"data_directory": path}
 
 
 @router.get("/health")

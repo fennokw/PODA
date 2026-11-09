@@ -947,6 +947,7 @@
       catch (err) { toast(errorDetail(err).message, 'danger'); }
     });
     const sandboxBox = el('div');
+    const dataBox = el('div');
     const upload = el('input', { type: 'file', class: 'input', 'aria-label': 'Import file into PODA Sandbox' });
     const uploadButton = el('button', { class: 'btn btn-sm', type: 'button' }, 'Import a copy');
     uploadButton.onclick = async () => {
@@ -974,6 +975,7 @@
       });
     }
     view.appendChild(el('div', { class: 'screen stack' },
+      section('PODA Data', 'local memory and app files', dataBox),
       section('PODA Sandbox', 'writable workspace · no grant required',
         el('p', { class: 'small muted' }, 'Files created in chat are saved here. Import a copy of a file and ask PODA to revise it by name. Download a copy to your computer when you’re ready.'),
         el('div', { class: 'row' }, upload, uploadButton), sandboxBox),
@@ -984,6 +986,17 @@
 
     async function refresh() {
       await Promise.all([
+        load(dataBox, async () => {
+          const data = await api('/system/storage');
+          const openFolder = el('button', { class: 'btn btn-sm', type: 'button', onclick: async () => {
+            try { await api('/system/storage/open', { method: 'POST' }); }
+            catch (err) { toast(errorDetail(err).message, 'danger'); }
+          } }, 'Open PODA Data Folder');
+          return el('div', { class: 'stack-sm' },
+            el('p', { class: 'small muted' }, 'PODA keeps chat history, memory, and settings in this local database. Updates reuse the same folder on this computer.'),
+            kv([['Data folder', data.data_directory], ['Memory database', data.database], ['Backups', data.backups]]),
+            el('div', { class: 'row' }, openFolder));
+        }),
         refreshSandbox(),
         load(grantsBox, async () => {
           const r = await api('/agent/grants'); const grants = r.grants || [];

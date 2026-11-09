@@ -125,7 +125,7 @@ def unsupported_action_response(message: str, cap: dict[str, Any], *, sandbox_ta
     blockers: list[str] = []
     for intent in sorted(intents):
         if intent == "file_create" and not fs.get("general_user_file_create"):
-            blockers.append("create or save files (no folder has been granted edit access)")
+            blockers.append("save files outside PODA Sandbox (the destination needs a folder grant with edit access)")
         elif intent == "file_edit" and not fs.get("general_user_file_edit"):
             blockers.append("edit or move user files (no folder has been granted edit access)")
         elif intent == "file_read" and not fs.get("general_user_file_read"):
