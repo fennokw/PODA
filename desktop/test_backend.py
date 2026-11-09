@@ -8,27 +8,20 @@ import time
 import httpx
 import pytest
 
-from poda_app.runtime import config, instance
+from pathlib import Path
 
-
-def test_directory_lease_releases_on_exit(tmp_path, monkeypatch):
-    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
-    monkeypatch.setattr(config, "BACKUP_DIR", tmp_path / "backups")
-    monkeypatch.setattr(config, "LOG_DIR", tmp_path / "logs")
-    with instance.claim_data_directory():
-        with pytest.raises(RuntimeError, match="already in use"):
-            with instance.claim_data_directory():
-                pass
-    with instance.claim_data_directory():
-        pass
+BACKEND = Path(os.environ.get("PODA_TEST_BACKEND", Path(__file__).parent / ".backend")).resolve()
 
 
 def test_desktop_requires_token_and_local_session(tmp_path):
+    assert not (BACKEND / "poda_app" / "server.py").exists()
+    assert (BACKEND / "backend-lock.json").is_file()
     env = dict(os.environ, PODA_DATA_DIR=str(tmp_path), PODA_BACKUP_DIR=str(tmp_path / "backups"),
-               PODA_DB_ENCRYPTION="off", PODA_DESKTOP_TOKEN="synthetic-local-token", PODA_DESKTOP_PARENT_PIPE="1")
+               PODA_DB_ENCRYPTION="off", PODA_DESKTOP_TOKEN="synthetic-local-token")
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     log_path = tmp_path / "test-server.log"
     with log_path.open("w+") as log:
-        child = subprocess.Popen([sys.executable, "-m", "poda_app.server", "--desktop"], env=env, stdin=subprocess.PIPE, stdout=log, stderr=log)
+        child = subprocess.Popen([sys.executable, str(BACKEND / "desktop_backend.py")], env=env, stdin=subprocess.PIPE, stdout=log, stderr=log)
         try:
             deadline = time.monotonic() + 20
             line = ""

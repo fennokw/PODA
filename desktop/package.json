@@ -5,8 +5,9 @@
   "private": true,
   "main": "main.cjs",
   "scripts": {
-    "start": "electron .",
-    "package:mac": "node package-mac.cjs"
+    "start": "npm run stage:backend && electron .",
+    "package:mac": "node package-mac.cjs",
+    "stage:backend": "python3 stage_backend.py .backend"
   },
   "devDependencies": {
     "@electron/packager": "20.3.0",
@@ -17,5 +18,9 @@
       "glob": "14.0.2",
       "minimatch": "11.0.1"
     }
-  }
+  },
+  "podaSetupFiles": [
+    "SETUP_DESKTOP.command",
+    "setup-runtime.command"
+  ]
 }
