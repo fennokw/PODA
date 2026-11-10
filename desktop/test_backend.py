@@ -1,6 +1,7 @@
 """Test the desktop handshake using a real isolated backend process."""
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -68,20 +69,32 @@ def test_desktop_requires_token_and_local_session(tmp_path):
                 child.wait(timeout=3)
 
 
-def test_relaunch_waits_for_profile_and_keeps_grant(tmp_path):
+@pytest.mark.parametrize("force_quit", [False, pytest.param(True, marks=pytest.mark.skipif(
+    os.name == "nt", reason="Uses POSIX signals to suspend the backend and force quit its owner."
+))])
+def test_relaunch_waits_for_profile_and_keeps_grant(tmp_path, force_quit):
     from contextlib import ExitStack
 
-    env = dict(os.environ, PODA_DATA_DIR=str(tmp_path / "profile"), PODA_DB_ENCRYPTION="off",
+    env = dict(os.environ, PODA_DATA_DIR=str(tmp_path / "profile"), PODA_DB_ENCRYPTION="required",
+               PODA_DB_KEY_HEX="1" * 64,
                PODA_DESKTOP_TOKEN="synthetic-local-token")
     folder = tmp_path / "example-grant"
     folder.mkdir()
 
     with ExitStack() as cleanup:
-        def start(label):
+        def start(label, simulate_electron=False):
             logfile = tmp_path / f"{label}.log"
+            args = [sys.executable, str(BACKEND / "desktop_backend.py")]
+            if simulate_electron:
+                # The launcher owns the input pipe, like Electron. Kill only it.
+                args = [sys.executable, "-c", """
+import os, subprocess, sys
+env = dict(os.environ, PODA_DESKTOP_PARENT_PID=str(os.getpid()))
+with subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE, env=env) as child:
+    sys.exit(child.wait())
+""", *args]
             with logfile.open("w", encoding="utf-8") as log:
-                child = subprocess.Popen([sys.executable, str(BACKEND / "desktop_backend.py")], env=env,
-                                         stdin=subprocess.PIPE, stdout=log, stderr=log)
+                child = subprocess.Popen(args, env=env, stdin=subprocess.PIPE, stdout=log, stderr=log)
 
             def stop():
                 if child.poll() is None:
@@ -96,29 +109,37 @@ def test_relaunch_waits_for_profile_and_keeps_grant(tmp_path):
                 handshake = next((line for line in logfile.read_text(encoding="utf-8", errors="replace").splitlines()
                                   if line.startswith("PODA_DESKTOP ")), None)
                 if handshake:
-                    port = json.loads(handshake.removeprefix("PODA_DESKTOP "))["port"]
+                    ready = json.loads(handshake.removeprefix("PODA_DESKTOP "))
+                    port = ready["port"]
                     http = httpx.Client(base_url=f"http://127.0.0.1:{port}", trust_env=False, timeout=1,
                                         headers={"X-PODA-Desktop": env["PODA_DESKTOP_TOKEN"]})
                     cleanup.callback(http.close)
                     try:
                         if http.get("/").status_code == 200:
-                            return http
+                            return http, ready["pid"]
                     except httpx.RequestError:
                         pass
                     http.close()
                 time.sleep(0.05)
             pytest.fail(logfile.read_text(encoding="utf-8", errors="replace"))
 
-        first, first_log = start("first")
-        http = connect(first, first_log)
+        first, first_log = start("first", simulate_electron=force_quit)
+        http, backend_pid = connect(first, first_log)
         assert http.post("/agent/grants", json={"root_path": str(folder), "mode": "read"}).status_code == 200
         second, second_log = start("second")
         time.sleep(2)
         assert second.poll() is None
         assert "PODA_DESKTOP " not in second_log.read_text(encoding="utf-8", errors="replace")
-        first.stdin.close()
-        assert first.wait(timeout=15) == 0
-        http = connect(second, second_log)
+        if force_quit:
+            os.kill(backend_pid, signal.SIGSTOP)
+            first.kill()
+            first.wait(timeout=5)
+        else:
+            first.stdin.close()
+            assert first.wait(timeout=15) == 0
+        http, _ = connect(second, second_log)
+        if force_quit:
+            assert "stopped an unresponsive local backend" in first_log.read_text(encoding="utf-8", errors="replace")
         assert any(item["root_path"] == str(folder.resolve()) for item in http.get("/agent/grants").json()["grants"])
         second.stdin.close()
         assert second.wait(timeout=15) == 0

@@ -189,3 +189,31 @@ def test_scene_exposes_surfaces_and_members(client):
 def test_full_rebuild_requires_confirm(client):
     r = client.post("/memory/surfaces/rebuild", json={"mode": "full"})
     assert r.status_code == 400 and r.json()["detail"]["code"] == "confirm_required"
+
+
+def test_startup_rebuild_leaves_database_writable_during_embedding(client, monkeypatch):
+    from poda_app.memory import store, surface
+    from poda_app.runtime.db import connect, set_setting
+
+    for index in range(25):
+        store.save_message("user", f"Remember that my startup recovery test sample is {index}.")
+
+    batches = []
+
+    def embed(texts):
+        foreground = connect()
+        try:
+            foreground.execute("PRAGMA busy_timeout=0")
+            set_setting("startup_test", str(len(batches)), foreground)
+            foreground.commit()
+        finally:
+            foreground.close()
+        batches.append(len(texts))
+        return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(inference, "embed", embed)
+    monkeypatch.setattr(inference, "chat", lambda *a, **kw: pytest.fail("Startup used the chat model"))
+    surface._background_rebuild()
+    assert len(batches) >= 2
+    assert surface.status()["error"] is None
+    assert surface.status()["last_result"]["created"] >= 1

@@ -17,7 +17,7 @@ from typing import Any
 
 import numpy as np
 
-from ..runtime import inference, models
+from ..runtime import config, inference, models
 from ..runtime.db import connect, now_iso, rows, one
 from . import store
 
@@ -120,7 +120,8 @@ def assign_or_create(conn, node_id: str, vectors: dict[str, list[float]] | None 
         return None
     if node.get("surface_id") and one(conn, "SELECT id FROM memory_nodes WHERE id=?", (node["surface_id"],)):
         return node["surface_id"]
-    vectors = vectors or store.ensure_embeddings(conn)
+    if vectors is None:
+        vectors = store.ensure_embeddings(conn)
     vec = vectors.get(node_id)
     if vec is None:
         return None
@@ -233,7 +234,8 @@ def distill_surface(conn, surface_id: str, force: bool = False, model: str | Non
 def update_confidence(conn, surface_id: str, vectors: dict[str, list[float]] | None = None) -> float:
     """Confidence = mean cosine between the surface embedding and its members."""
     try:
-        vectors = vectors or store.ensure_embeddings(conn)
+        if vectors is None:
+            vectors = store.ensure_embeddings(conn)
     except Exception:
         return float((one(conn, "SELECT confidence FROM memory_nodes WHERE id=?", (surface_id,)) or {}).get("confidence") or 0.0)
     svec = vectors.get(surface_id)
@@ -272,10 +274,10 @@ def status(conn=None) -> dict[str, Any]:
     return {"surfaces": surfaces, "in_depth": in_depth, "unassigned": unassigned, "stale": stale, "join_threshold": threshold, **_STATUS}
 
 
-def rebuild(conn, mode: str = "incremental", distill_limit: int = 50) -> dict[str, Any]:
+def rebuild(conn, mode: str = "incremental", distill_limit: int = 50, *, cached_only: bool = False) -> dict[str, Any]:
     """incremental: assign unassigned nodes, distill stale surfaces. full: re-cluster everything except user-edited surfaces."""
     started = time.perf_counter()
-    vectors = store.ensure_embeddings(conn)
+    vectors = store.ensure_embeddings(conn, allow_network=not cached_only)
     created = joined = 0
     if mode == "full":
         protected = {s["id"] for s in _surface_rows(conn) if s.get("user_edited")}
@@ -321,14 +323,17 @@ def rebuild(conn, mode: str = "incremental", distill_limit: int = 50) -> dict[st
                 after = conn.execute("SELECT COUNT(*) FROM memory_nodes WHERE node_type=?", (SURFACE_TYPE,)).fetchone()[0]
                 if after > before:
                     created += 1
-                    vectors = store.ensure_embeddings(conn)  # new surface needs a vector for later comparisons
+                    if not cached_only:
+                        vectors = store.ensure_embeddings(conn)  # new surface needs a vector for later comparisons
                 else:
                     joined += 1
-    distilled = distill_stale(conn, limit=distill_limit)
-    vectors = store.ensure_embeddings(conn)
+    distilled = distill_stale(conn, limit=distill_limit) if distill_limit > 0 and not cached_only else []
+    if not cached_only:
+        vectors = store.ensure_embeddings(conn)
     for s in _surface_rows(conn):
         refresh_counts(conn, s["id"])
-        conn.execute("UPDATE memory_nodes SET stale=0 WHERE id=? AND member_count<2", (s["id"],))
+        if not cached_only:
+            conn.execute("UPDATE memory_nodes SET stale=0 WHERE id=? AND member_count<2", (s["id"],))
         update_confidence(conn, s["id"], vectors)
     conn.execute("DELETE FROM memory_nodes WHERE node_type=? AND member_count=0 AND user_edited=0", (SURFACE_TYPE,))
     return {"mode": mode, "created": created, "joined": joined, "distilled": len(distilled), "seconds": round(time.perf_counter() - started, 2), **status(conn)}
@@ -337,28 +342,34 @@ def rebuild(conn, mode: str = "incremental", distill_limit: int = 50) -> dict[st
 def _background_rebuild() -> None:
     with _LOCK:
         _STATUS.update({"running": True, "error": None})
-    conn = connect()
     try:
-        result = rebuild(conn, "incremental")
-        conn.commit()
+        conn = connect()
+        try:
+            store.ensure_embeddings(conn)
+            conn.commit()
+            # Group memories using the cached vectors. Leave model distillation
+            # for an explicit rebuild so opening the app doesn't queue chat work.
+            result = rebuild(conn, distill_limit=0, cached_only=True)
+            conn.commit()
+        finally:
+            conn.close()
         with _LOCK:
             _STATUS.update({"last_result": result})
     except Exception as exc:
-        conn.rollback()
         with _LOCK:
             _STATUS.update({"error": str(exc)})
     finally:
-        conn.close()
         with _LOCK:
             _STATUS.update({"running": False, "last_run": now_iso()})
 
 
 def schedule_startup_rebuild() -> bool:
-    """Start an incremental rebuild in the background when llama.cpp is reachable. Disabled by PODA_BACKGROUND_SURFACES=0."""
+    """Refresh embeddings and group memories without loading the chat model at startup."""
     if os.getenv("PODA_BACKGROUND_SURFACES", "1") == "0" or _STATUS["running"]:
         return False
     try:
-        if not inference.status().get("reachable"):
+        engine = inference.status()
+        if not engine["reachable"] or config.EMBED_MODEL not in engine["models"]:
             return False
     except Exception:
         return False

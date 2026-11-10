@@ -15,8 +15,12 @@
   async function mount(target) {
     target.replaceChildren(note('Checking local models and hardware…'));
     let data;
-    try { data = await api(path + '/catalog'); }
-    catch (error) { target.replaceChildren(note(errorDetail(error).message)); return; }
+    try { data = await api(path + '/catalog', { signal: AbortSignal.timeout(12000) }); }
+    catch (error) {
+      target.replaceChildren(note(error.name === 'TimeoutError' ? 'PODA took too long to read the local model inventory.' : errorDetail(error).message),
+        button('Retry model setup', () => mount(target)));
+      return;
+    }
     const progress = el('p', { class: 'small', role: 'status' });
     const section = el('div', { class: 'stack' }, progress);
     const hardware = data.hardware || {};
@@ -46,6 +50,12 @@
       catch (error) { progress.textContent = errorDetail(error).message; }
     }
     if (!data.engine.reachable) engine.append(button('Install local engine', () => install('/runtime', { backend: 'auto' })));
+    const starter = data.catalog.find((item) => item.id === 'qwen3-4b-q4_k_m');
+    if (data.engine.reachable && !data.roles.fast?.model && starter) {
+      engine.append(el('div', { class: 'notice stack-sm' }, el('strong', {}, 'Set up Chat'),
+        note(`Download Qwen3 4B to start chatting · ${fmtBytes(starter.bytes)} · ${starter.fit}`),
+        button('Download starter chat model', () => install('/download', { model: starter.id }))));
+    }
     if (data.windows && !data.vulkan_available) engine.append(button('Install Windows Vulkan acceleration',
       () => install('/runtime', { backend: 'vulkan' })));
 

@@ -10,7 +10,7 @@ from typing import Any
 from . import config, inference
 from . import hardware
 from . import model_catalog
-from .db import connect, now_iso, rows, get_setting, set_setting
+from .db import connect, now_iso, rows, set_setting
 
 PROFILE_NAMES = ("fast", "balanced", "deep", "vision", "fast_coding", "deep_coding")
 
@@ -25,7 +25,17 @@ def context_budget(unified_memory_gb: float) -> dict[str, int]:
 
 
 def selected_profiles() -> dict[str, str]:
-    return {profile: get_setting("model_profile_" + profile) for profile in PROFILE_NAMES}
+    conn = connect()
+    try:
+        prefix = "model_profile_"
+        keys = tuple(prefix + profile for profile in PROFILE_NAMES)
+        placeholders = ",".join("?" for _ in keys)
+        assignments = {row["key"]: row["value"] for row in rows(
+            conn, f"SELECT key, value FROM settings WHERE key IN ({placeholders})", keys
+        )}
+        return {profile: assignments.get(prefix + profile, "") for profile in PROFILE_NAMES}
+    finally:
+        conn.close()
 
 
 def set_profile(profile: str, model: str, installed: list[str]) -> None:

@@ -332,8 +332,8 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
         profile = await asyncio.to_thread(models.resolve, task_message, mode, req.thinking_level)
         model = profile.get("model")
         if not model:
-            msg = "Open System and download or import a chat GGUF to continue."
-            yield frame("error", {"message": msg})
+            yield frame("error", {"code": "model_setup_required", "message":
+                "Install a local chat model in System to start chatting. You can download one or import a GGUF you already have."})
             return
         yield frame("status", {"message": "routing", "model": model, "profile": profile["profile"], "num_ctx": profile["num_ctx"]})
         prepared = None
