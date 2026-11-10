@@ -323,14 +323,14 @@ def commit_transaction(req: MemoryCommitRequest) -> dict[str, Any]:
         for sid in touched_surfaces:
             if one(conn, "SELECT id FROM memory_nodes WHERE id=?", (sid,)):
                 surface.refresh_counts(conn, sid)
-        # Position-only changes and deletes need no Ollama. Text changes are queued transactionally
-        # and embedded AFTER commit; losing Ollama must not roll back a valid memory edit.
+        # Position-only changes and deletes need no llama.cpp. Text changes are queued transactionally
+        # and embedded AFTER commit; losing llama.cpp must not roll back a valid memory edit.
         enqueue_embedding_jobs(conn, changed_text)
         layout.refresh_committed_spatial_links(conn)
         conn.execute("INSERT INTO memory_transactions (id, created_at, summary, node_count, deleted_count, text_changes, position_changes) VALUES (?,?,?,?,?,?,?)",
                      (tx_id, now, (req.note or "memory viewer commit")[:400], len(req.nodes), len(allowed_delete), text_changes, position_changes))
         conn.commit()
-        # Do not hold a write transaction while waiting on the Ollama embedding server.
+        # Do not hold a write transaction while waiting on the llama.cpp embedding server.
         # A follow-up retry endpoint and normal retrieval can reconcile outstanding jobs.
         embed_result = refresh_pending_embeddings(limit=24) if changed_text else {"refreshed": 0, "pending": pending_count()}
         return {"status": "committed", "transaction_id": tx_id, "nodes": len(req.nodes), "deleted": len(allowed_delete),

@@ -140,8 +140,8 @@ def test_hallucinated_tool_in_plan_is_dropped(monkeypatch, granted):
             {"function": {"name": "fs_write", "arguments": {"path": str(folder / "out.txt"), "content": "x"}}}]}},
         {"message": {"role": "assistant", "content": "done planning"}},
     ])
-    monkeypatch.setattr(orchestrator.ollama, "chat", lambda *a, **k: next(responses))
-    monkeypatch.setattr(orchestrator.ollama, "status", lambda: {"reachable": True, "models": ["llama3.2:3b"]})
+    monkeypatch.setattr(orchestrator.inference, "chat", lambda *a, **k: next(responses))
+    monkeypatch.setattr(orchestrator.inference, "status", lambda: {"reachable": True, "models": ["llama3.2:3b"]})
     snapshot = {"filesystem": grants.filesystem_capability(), "notion": {}}
     plan = orchestrator.plan("read readme then write out.txt", snapshot, "", "s1", "llama3.2:3b")
     assert plan["needs_tools"] and plan["flagged"][0]["name"] == "delete_everything"

@@ -1,11 +1,11 @@
-"""Crash-safe pending embeddings. Never hold a SQLite write lock during Ollama IO."""
+"""Crash-safe pending embeddings. Never hold a SQLite write lock during llama.cpp IO."""
 from __future__ import annotations
 
 import hashlib
 import json
 from typing import Iterable, Any
 
-from ..runtime import config, ollama
+from ..runtime import config, inference
 from ..runtime.db import connect, now_iso, rows
 from . import store, layout
 
@@ -49,8 +49,8 @@ def refresh_pending(limit: int = 24) -> dict[str, Any]:
                 enqueue(conn, [job["node_id"]]); conn.commit()
                 continue
             try:
-                # No open write transaction while Ollama is called.
-                vectors = ollama.embed([content])
+                # No open write transaction while llama.cpp is called.
+                vectors = inference.embed([content])
                 vector = store.normalize(vectors[0])
                 if not vector: raise ValueError("Empty embedding")
             except Exception as exc:
@@ -72,7 +72,7 @@ def refresh_pending(limit: int = 24) -> dict[str, Any]:
             conn.execute("DELETE FROM memory_embedding_jobs WHERE node_id=?", (job["node_id"],))
             conn.commit(); refreshed += 1
         if refreshed:
-            # Cached vectors only; geometric and semantic links remain usable even when Ollama drops out.
+            # Cached vectors only; geometric and semantic links remain usable even when llama.cpp drops out.
             vectors = store.ensure_embeddings(conn, allow_network=False)
             layout.refresh_semantic_links(conn, vectors)
             conn.commit()

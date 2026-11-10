@@ -161,7 +161,7 @@ def test_extraction_normalizes(monkeypatch):
             return {"message": {"content": json.dumps({"commitments": [
                 {"kind": "confirmed", "title": "Lab report due", "evidence_span": "due Friday Oct 3 at 5pm", "date_start": "2026-10-03T17:00", "date_end": None, "all_day": False, "confidence": 0.9},
                 {"kind": "confirmed", "title": "Email password", "evidence_span": "not in body", "date_start": None, "date_end": None, "all_day": True, "confidence": 0.9}]})}}
-    monkeypatch.setattr(extraction.requests, "post", lambda *a, **k: R())
+    monkeypatch.setattr(extraction.inference, "chat", lambda *a, **k: R().json())
     monkeypatch.setattr(extraction.models, "registry", lambda: {"profiles": {"fast": {"model": "llama3.2:3b"}, "balanced": {"model": None}}})
     out = extraction.extract({"id": "m1", "subject": "Lab", "body_text": READ["body"], "date": "2026-10-01T10:00:00Z", "from_name": "Prof", "from_address_masked": "p***@example.test"})
     assert out["note"].startswith("unconfirmed") and len(out["commitments"]) == 2

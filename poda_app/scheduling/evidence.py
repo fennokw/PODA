@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from ..runtime import ollama
+from ..runtime import inference
 from .temporal import resolve_event_time, stated_dates
 
 _QUOTE = re.compile(
@@ -100,15 +100,15 @@ def preview_email_schedule(messages: list[dict[str, Any]], model: str, now: date
     for offset in range(0, min(len(eligible), 60), 6):
         batch = eligible[offset:min(offset + 6, 60)]
         try:
-            response = ollama.chat(
+            response = inference.chat(
                 [{"role": "system", "content": instructions},
                  {"role": "user", "content": json.dumps([{"source": index, **row} for index, row in enumerate(batch)])}],
                 model, format=_Extraction.model_json_schema(), timeout=50,
                 options={"temperature": 0, "num_ctx": 8192, "num_predict": 2000},
-                think=False if model.startswith("qwen3") else None,
+                think=False,
             )
             events = _Extraction.model_validate_json(response["message"]["content"]).events
-        except (ValueError, TypeError, KeyError, ollama.OllamaError, OSError) as exc:
+        except (ValueError, TypeError, KeyError, inference.InferenceError, OSError) as exc:
             result["errors"].append(f"Could not interpret {len(batch)} emails ({type(exc).__name__}).")
             continue
         result["examined"] += len(batch)

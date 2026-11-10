@@ -13,19 +13,18 @@ from poda_app.memory import hindsight_bridge
 def test_shared_gpu_does_not_double_count_ram():
     hw={"unified_memory_gb":24,"ram_total_gb":24,"memory_architecture":"unified",
         "gpu_memory_dedicated_gb":20,"disk_free_gb":150}
-    result=model_catalog.assess(hw,[])
-    assert result["hardware"]["gpu_shared_with_ram"]
-    assert result["hardware"]["bottleneck"]=="shared unified RAM/GPU"
-    assert result["hardware"]["available_model_budget_gb"] < 24
-    big=next(x for x in result["families"] if x["family"]=="Qwen3-Coder-Next")
-    assert big["recommended_tag"] is None
+    result = model_catalog.catalog(hw)
+    big = next(item for item in result if item["id"] == "qwen3-14b-q8_0")
+    assert big["fit"] == "Fits estimated unified memory budget"
+    hw["unified_memory_gb"] = hw["ram_total_gb"] = 12
+    big = next(item for item in model_catalog.catalog(hw) if item["id"] == "qwen3-14b-q8_0")
+    assert big["fit"] == "Tight or unknown memory fit"
 
 
 def test_model_catalog_contains_three_local_roles():
-    result=model_catalog.assess({"unified_memory_gb":64,"memory_architecture":"unified",
-                                "disk_free_gb":150},[])
-    assert {"coding","general","vision"} <= {x["role"] for x in result["families"]}
-    assert not any("http" in v["tag"] for x in result["families"] for v in x["variants"])
+    result = model_catalog.catalog()
+    assert {"coding", "general", "vision", "embedding"} <= {item["role"] for item in result}
+    assert all("http" not in item["id"] for item in result)
 
 
 def test_multi_account_automation_selection(client,monkeypatch):

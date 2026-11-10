@@ -1,4 +1,4 @@
-"""Local Ollama-guided task decomposition, with deterministic fallback.
+"""Local llama.cpp-guided task decomposition, with deterministic fallback.
 
 The LLM proposes substeps, not new deadlines or authoritative effort estimates.
 All durations are normalized to the personally calibrated total from service.
@@ -9,7 +9,7 @@ import json
 import re
 from typing import Any
 
-from ..runtime import config, ollama
+from ..runtime import inference, models
 from . import service
 
 
@@ -27,12 +27,11 @@ def analyze(item_id: str) -> dict[str, Any]:
     item = service.get_item(item_id)
     if not item:
         raise KeyError("work item not found")
-    status = ollama.status()
+    status = inference.status()
     available = status.get("models") or []
-    model = next((name for pref in (config.ADVANCED_MODEL, config.FAST_MODEL)
-                  for name in available if name == pref or name.startswith(pref + ":")), None)
+    model = models.registry(available)["profiles"]["balanced"]["model"]
     if not status.get("reachable") or not model:
-        return _fallback(item, "Local Ollama chat model is not reachable; using a transparent fallback.")
+        return _fallback(item, "Local llama.cpp chat model is not reachable; using a transparent fallback.")
     total = item["estimate"]["remaining_minutes"]
     prompt = ("TASK TITLE: " + item["title"][:200] + "\nCATEGORY: " + item["category"]
               + "\nDIFFICULTY (USER): " + str(item["difficulty"])
@@ -50,8 +49,8 @@ def analyze(item_id: str) -> dict[str, Any]:
         {"role": "user", "content": prompt},
     ]
     try:
-        answer = ollama.chat(messages, model, options={"temperature": 0.1, "num_ctx": 8192, "num_predict": 1100},
-                             timeout=120, think=False if model.startswith("qwen3") else None)
+        answer = inference.chat(messages, model, options={"temperature": 0.1, "num_ctx": 8192, "num_predict": 1100},
+                             timeout=120, think=False)
         text = str((answer.get("message") or {}).get("content") or "")
         match = re.search(r"\{[\s\S]*\}", text)
         if not match:

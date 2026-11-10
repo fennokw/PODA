@@ -28,7 +28,8 @@ def test_no_remote_assets_or_cdns():
     pattern = re.compile(r"https?://(?!127\.0\.0\.1|localhost)[^\s'\"()]+")
     for path in TEXT_FILES:
         text = path.read_text(encoding="utf-8")
-        hits = [m for m in pattern.findall(text) if "notion.so" not in m and "notion.com" not in m]
+        hits = [m for m in pattern.findall(text)
+                if "notion.so" not in m and "notion.com" not in m and m != "http://www.w3.org/2000/svg"]
         assert not hits, f"{path.name} references remote resources: {hits}"
         assert "fonts.googleapis" not in text and "cdn." not in text and "unpkg" not in text and "jsdelivr" not in text
 

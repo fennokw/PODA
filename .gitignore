@@ -49,3 +49,5 @@ logs/
 *.zip
 
 /desktop/.backend/
+
+/poda_app/static/chat-vendor/

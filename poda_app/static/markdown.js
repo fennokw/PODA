@@ -50,7 +50,10 @@
     const btn = e.target.closest('[data-copy]');
     if (!btn) return;
     const code = btn.parentElement.querySelector('pre')?.textContent || '';
-    navigator.clipboard?.writeText(code).then(() => { btn.textContent = 'Copied'; setTimeout(() => { btn.textContent = 'Copy'; }, 1400); });
+    Promise.resolve().then(() => navigator.clipboard.writeText(code)).then(
+      () => { btn.textContent = 'Copied'; },
+      () => { btn.textContent = 'Select code to copy'; },
+    ).finally(() => { setTimeout(() => { btn.textContent = 'Copy'; }, 1600); });
   });
 
   window.PODAMarkdown = { render, inline, esc };

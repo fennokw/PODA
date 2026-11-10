@@ -28,32 +28,34 @@ def test_explicit_local_file_request_is_still_blocked():
     assert "file_edit" in gate.requested_action_intents(text)
 
 
-def test_arbitrary_installed_chat_model_assignment(monkeypatch,client):
-    monkeypatch.setattr(model_management.ollama,"installed_models",lambda:["custom/chat:Q4_K_M","nomic-embed-text:latest"])
-    save=client.put("/system/model-manager/profile",json={"profile":"balanced","model":"custom/chat:Q4_K_M"})
-    assert save.status_code==200,save.text
-    registry=models.registry(["custom/chat:Q4_K_M","nomic-embed-text:latest"],32)
-    assert registry["profiles"]["balanced"]["model"]=="custom/chat:Q4_K_M"
-    reject=client.put("/system/model-manager/profile",json={"profile":"deep","model":"uninstalled:1b"})
-    assert reject.status_code==422
-    assert any(c["tag"]=="qwen3.6:27b-q4_K_M" for c in registry["qwen36"])
+def test_role_assignment_uses_installed_gguf(monkeypatch, client, tmp_path):
+    catalog = model_management.model_catalog
+    monkeypatch.setattr(catalog, "root", lambda: tmp_path / "models")
+    model_path = tmp_path / "Fixture-Q4_K_M.gguf"
+    model_path.write_bytes(b"GGUF" + b"fixture")
+    item = catalog.import_model(str(model_path), thinking=True, tools=True)
+    visual = catalog.import_model(str(model_path), str(model_path))
+    roles = {"balanced": item["id"], "fast_coding": item["id"], "deep_coding": item["id"], "vision": visual["id"]}
+    try:
+        for role, name in roles.items():
+            response = client.put("/system/model-manager/profile", json={"profile": role, "model": name})
+            assert response.status_code == 200, response.text
+        result = models.registry()
+        assert set(result["profiles"]) == set(models.PROFILE_NAMES)
+        assert all(result["profiles"][role]["model"] == name for role, name in roles.items())
+        assert client.put("/system/model-manager/profile", json={"profile": "vision", "model": item["id"]}).status_code == 422
+        assert client.put("/system/model-manager/profile", json={"profile": "deep", "model": "not-installed"}).status_code == 422
+    finally:
+        for role in roles:
+            models.set_profile(role, "", [])
 
 
-def test_secure_install_terminal_argument_and_no_automatic_pull(monkeypatch,client,tmp_path):
-    monkeypatch.setattr(model_management.platform,"system",lambda:"Darwin")
-    monkeypatch.setattr(model_management.config,"DATA_DIR",tmp_path)
-    seen=[]
-    class FakeProcess:
-        pass
-    monkeypatch.setattr(model_management.subprocess,"Popen",lambda args,**kwargs:seen.append(args) or FakeProcess())
-    out=client.post("/system/model-manager/install-terminal",json={"tag":"qwen3.6:27b-q4_K_M"})
-    assert out.status_code==200,out.text
-    assert seen and seen[0][:3]==["open","-a","Terminal"]
-    script=(tmp_path/"model_install_scripts").glob("*.command")
-    content=next(script).read_text()
-    assert "ollama pull qwen3.6:27b-q4_K_M" in content
-    bad=client.post("/system/model-manager/install-terminal",json={"tag":"something; rm -rf ~"})
-    assert bad.status_code==422
+def test_catalog_blocks_unverified_download_and_invalid_cache_setting(client):
+    assert client.post("/system/model-manager/download", json={"model": "../outside.gguf"}).status_code == 422
+    settings = model_management.inference.settings()
+    response = client.put("/system/model-manager/settings", json={**settings, "cache_v": "q4_0", "flash_attention": "off"})
+    assert response.status_code == 422
+    assert model_management.inference.settings() == settings
 
 
 def test_daily_schedules_and_once_only_claim(client):

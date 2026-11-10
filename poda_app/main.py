@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from .runtime import config
+from .runtime import config, inference
 from .runtime.db import init_database, connect
 from .runtime import capability
 from .memory import store
@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI):
         conn.close()
     try:
         capability.sync_ledger()
-    except Exception as exc:  # Ollama may be down; the ledger records that truthfully
+    except Exception as exc:  # llama.cpp may be down; the ledger records that truthfully
         print(f"[PODA capability ledger] startup refresh failed: {exc}")
     print(f"[PODA] v{config.VERSION} build {config.BUILD_ID} data={config.DATA_DIR} encryption={STARTUP_REPORT.get('encryption_status', {}).get('database_encrypted_on_disk')}")
     runner = asyncio.create_task(daily_service.scheduler(), name='poda-daily-scheduler')
@@ -64,6 +64,7 @@ async def lifespan(app: FastAPI):
         for running in (runner,memory_runner):
             try: await running
             except asyncio.CancelledError: pass
+        await asyncio.to_thread(inference.shutdown)
 
 
 app = FastAPI(title=config.APP_NAME, version=config.VERSION, lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)

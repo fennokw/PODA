@@ -4,12 +4,26 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 APP_FILES = ("requirements.txt", "PODA_VERSION.txt", "LICENSE")
 APP_SUFFIXES = {".py", ".html", ".js", ".css", ".svg"}
+
+
+def materialize_engine_aliases(runtime: Path) -> None:
+    """Keep dylib aliases inside the signed bundle after Electron copies it."""
+    for link in runtime.rglob("*"):
+        if not link.is_symlink():
+            continue
+        source = link.resolve(strict=True)
+        if not source.is_relative_to(runtime) or not source.is_file():
+            raise ValueError(f"Invalid packaged llama.cpp alias: {link.name}")
+        link.unlink()
+        shutil.copy2(source, link)
+
 
 
 def stage(target: Path) -> None:
@@ -22,6 +36,8 @@ def stage(target: Path) -> None:
     if not (source / "main.py").is_file():
         raise ValueError("The local PODA application source is missing.")
     for path in source.rglob("*"):
+        if "chat-vendor" in path.relative_to(source).parts:
+            continue
         if path.is_symlink():
             raise ValueError(f"Refusing a link in the app source: {path.relative_to(ROOT)}")
         if not path.is_file() or path.suffix not in APP_SUFFIXES or path == source / "server.py":
@@ -29,6 +45,12 @@ def stage(target: Path) -> None:
         destination = target / path.relative_to(ROOT)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, destination)
+    subprocess.run([sys.executable, "-m", "poda_app.runtime.chat_renderers",
+                    str(target / "poda_app/static/chat-vendor")], cwd=ROOT, check=True)
+    runtime = target / "llama-runtime"
+    subprocess.run([sys.executable, "-m", "poda_app.runtime.llama_install", str(runtime)], cwd=ROOT, check=True)
+    if sys.platform == "darwin":
+        materialize_engine_aliases(runtime)
     for name in APP_FILES:
         shutil.copy2(ROOT / name, target / name)
     if (ROOT / "LICENSE-PODA").is_file():

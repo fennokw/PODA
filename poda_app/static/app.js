@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const { $, $$, el, api, ApiError, errorDetail, errorNode, toast, confirmDialog, promptDialog, skeleton, emptyState, pill, statusPill, route, renderRoute, navigate, registerCommand, openPalette, loadBuild, fmtTime, fmtBytes } = window.PODA;
-  const md = window.PODAMarkdown;
+  const rich = window.PODAChatRendering;
 
   // ---------- Navigation ----------
   $('#memoryBtn').addEventListener('click', () => { window.location.assign('/memory-viewer'); });
@@ -56,12 +56,71 @@
   const screens = [['ask', 'Chat', '1'], ['personalize', 'Personalize', '9'], ['projects', 'Projects', '3'], ['notion', 'Calendar', '4'], ['mail', 'Mail', '5'], ['files', 'Files & access', '6'], ['addons', 'Add-ons', ''], ['privacy', 'Privacy', '7'], ['daily', 'Daily Automation', '0'], ['system', 'System', '8']];
   for (const [name, label, key] of screens) registerCommand({ label: `Go to ${label}`, kind: 'Screen', key, keywords: name === 'mail' ? 'email inbox gmail apple mail' : '', run: () => navigate(name) });
   registerCommand({ label: 'Open memory viewer', kind: 'Screen', key: '2', keywords: 'open3d 3d second brain', run: () => window.location.assign('/memory-viewer') });
-  registerCommand({ label: 'Check capabilities', kind: 'Action', keywords: 'ledger status', run: async () => { const c = await api('/capabilities'); toast(`Ollama ${c.ollama?.reachable ? 'reachable' : 'unreachable'} · Notion ${c.notion?.status || 'DISCONNECTED'} · ${c.filesystem?.granted_roots?.length || 0} path grants`); navigate('system'); } });
+  registerCommand({ label: 'Check capabilities', kind: 'Action', keywords: 'ledger status', run: async () => { const c = await api('/capabilities'); toast(`llama.cpp ${c.inference?.reachable ? 'reachable' : 'unreachable'} · Notion ${c.notion?.status || 'DISCONNECTED'} · ${c.filesystem?.granted_roots?.length || 0} path grants`); navigate('system'); } });
   registerCommand({ label: 'Create encrypted backup', kind: 'Action', keywords: 'privacy export', run: async () => { const r = await api('/privacy/backup', { method: 'POST' }); toast(`Backup written: ${r.path.split('/').pop()}`, 'ok'); } });
   registerCommand({ label: 'Toggle offline mode', kind: 'Action', keywords: 'network egress', run: async () => { const s = await api('/privacy/status'); const next = !s.egress?.offline_mode; await api('/privacy/offline', { method: 'POST', body: { enabled: next } }); toast(`Offline mode ${next ? 'enabled' : 'disabled'}`, 'ok'); } });
   registerCommand({ label: 'Refresh capability ledger', kind: 'Action', run: async () => { await api('/capabilities/ledger'); toast('Ledger refreshed from runtime', 'ok'); } });
 
   // ---------- Shared helpers ----------
+  async function* chatEvents(runId, signal) {
+    let cursor = 0;
+    const path = '/chat/runs/' + encodeURIComponent(runId) + '/stream?after=';
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let reader;
+      try {
+        const res = await api(path + cursor, { signal, raw: true });
+        if (!res.ok || !res.body) {
+          const detail = await res.json().catch(() => null);
+          throw new ApiError(res.status, detail?.detail || `HTTP ${res.status}`);
+        }
+        reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const frames = buffer.split('\n\n');
+          buffer = frames.pop() || '';
+          for (const frame of frames) {
+            let event = 'message', dataText = '', id = 0;
+            for (const line of frame.split('\n')) {
+              if (line.startsWith('event:')) event = line.slice(6).trim();
+              else if (line.startsWith('data:')) dataText += line.slice(5).trim();
+              else if (line.startsWith('id:')) id = Number(line.slice(3).trim());
+            }
+            if (!dataText || (id && id <= cursor)) continue;
+            let data;
+            try { data = JSON.parse(dataText); } catch { continue; }
+            if (id) cursor = id;
+            yield [event, data];
+            if (event === 'done' || event === 'error' || (event === 'status' && data.message === 'cancelled')) return;
+          }
+        }
+      } catch (err) {
+        if (signal.aborted || err.name === 'AbortError' || (err instanceof ApiError && err.status < 500)) throw err;
+      } finally {
+        await reader?.cancel().catch(() => {});
+      }
+      if (attempt < 2) {
+        yield ['reconnecting', {}];
+        await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+      }
+    }
+    throw new Error('The chat connection dropped. Reopen this chat to reconnect to the running task.');
+  }
+
+  const chatPhase = {
+    reading_attachments: 'Reading attached files',
+    reading_images: 'Reading images',
+    generating_reply: 'Generating reply',
+    writing_archive: 'Writing files for your ZIP',
+    saving_archive: 'Verifying and saving your ZIP',
+    planning_tools: 'Planning tool steps',
+    planner_ready: 'Planning tool steps',
+    planner_fallback: 'Retrying tool planning with another model',
+  };
+
   function sandboxDownloadLink(filename) {
     return el('a', { class: 'btn btn-sm', href: '/agent/sandbox/download/' + encodeURIComponent(filename),
       download: filename, 'data-chat-download': 'true' }, `Download ${filename}`);
@@ -115,7 +174,42 @@
     const textarea = el('textarea', { placeholder: 'Ask PODA. Shift+Enter for a new line.', rows: 1, 'aria-label': 'Message' });
     const sendBtn = el('button', { class: 'btn btn-primary', type: 'submit' }, 'Send');
     const stopBtn = el('button', { class: 'btn btn-danger', type: 'button', hidden: true }, 'Stop');
-    const statusLine = el('div', { class: 'status-line' });
+    const statusLine = el('div', { class: 'status-line', role: 'status' });
+    const fileInput = el('input', { type: 'file', multiple: true, hidden: true, 'aria-label': 'Choose chat attachments' });
+    const attachBtn = el('button', { class: 'btn btn-ghost btn-sm', type: 'button', title: 'Attach files or drop them into this chat' }, 'Attach files');
+    const draftAttachments = el('div', { class: 'chat-files', 'aria-label': 'Files for this message', hidden: true });
+    const draftFiles = [];
+    function drawDraftFiles() {
+      draftAttachments.replaceChildren(...draftFiles.map((file, index) => {
+        const remove = el('button', { class: 'btn btn-sm btn-ghost', type: 'button', 'aria-label': 'Remove ' + file.name }, '×');
+        remove.onclick = () => { draftFiles.splice(index, 1); drawDraftFiles(); };
+        return el('span', { class: 'chat-file' }, el('span', {}, file.name), remove);
+      }));
+      draftAttachments.hidden = !draftFiles.length;
+    }
+    function addFiles(files) {
+      if (askState.controller) { toast('Wait for the current reply before adding files.', 'warn'); return; }
+      let skipped = false;
+      for (const file of files) {
+        if (!file.size || file.size > 16 * 1024 * 1024 || draftFiles.length >= 4
+            || file.size + draftFiles.reduce((size, item) => size + item.size, 0) > 32 * 1024 * 1024) {
+          skipped = true;
+          continue;
+        }
+        if (!draftFiles.some((item) => item.name === file.name && item.size === file.size && item.lastModified === file.lastModified)) {
+          draftFiles.push(file);
+        }
+      }
+      drawDraftFiles();
+      if (skipped) toast('Attach up to four files, 16 MiB each and 32 MiB total. Empty files are skipped.', 'warn');
+      textarea.focus();
+    }
+    attachBtn.onclick = () => fileInput.click();
+    fileInput.onchange = () => { addFiles([...fileInput.files]); fileInput.value = ''; };
+    textarea.addEventListener('paste', (event) => {
+      const files = [...(event.clipboardData?.files || [])];
+      if (files.length) { event.preventDefault(); addFiles(files); }
+    });
     const seg = (name, options, value, onChange) => {
       const wrap = el('div', { class: 'seg', role: 'group', 'aria-label': name });
       for (const [val, label] of options) {
@@ -126,12 +220,28 @@
       return wrap;
     };
     const memoryToggle = el('label', { class: 'check' }, el('input', { type: 'checkbox', checked: askState.useMemory, onchange: (e) => { askState.useMemory = e.target.checked; } }), 'Use memory');
-    const composer = el('form', { class: 'composer' }, textarea,
-      el('div', { class: 'composer-bar' },
+    const composer = el('form', { class: 'composer' }, fileInput, draftAttachments, textarea,
+      el('div', { class: 'composer-bar' }, attachBtn,
         seg('Model', [['auto', 'Auto'], ['fast', 'Fast'], ['advanced', 'Advanced'], ['deep', 'Deep']], askState.mode, (v) => { askState.mode = v; }),
         (() => { const w = seg('Thinking', [['fast', 'Quick'], ['balanced', 'Balanced'], ['deep', 'Deep think']], askState.thinking, (v) => { askState.thinking = v; }); const deep = $$('button', w)[2]; if (deep) deep.title = 'Also reads in-depth memory (the full question and answer pairs behind each surface memory)'; return w; })(),
         memoryToggle, el('span', { class: 'spacer' }), el('button', { class: 'btn btn-ghost', type: 'button', title: 'Start a fresh conversation. Nothing is deleted: this chat stays in your memory web and can be recalled later.', onclick: () => newChat() }, 'New chat'), stopBtn, sendBtn));
-    view.appendChild(el('div', { class: 'screen ask' }, messages, el('div', { class: 'stack-sm' }, statusLine, composer)));
+    const chatScreen = el('div', { class: 'screen ask' }, messages, el('div', { class: 'stack-sm' }, statusLine, composer));
+    view.appendChild(chatScreen);
+    chatScreen.addEventListener('dragover', (event) => {
+      if (!event.dataTransfer?.types.includes('Files')) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+      composer.classList.add('file-drop');
+    });
+    chatScreen.addEventListener('dragleave', (event) => {
+      if (!chatScreen.contains(event.relatedTarget)) composer.classList.remove('file-drop');
+    });
+    chatScreen.addEventListener('drop', (event) => {
+      composer.classList.remove('file-drop');
+      if (!event.dataTransfer?.files.length) return;
+      event.preventDefault();
+      addFiles([...event.dataTransfer.files]);
+    });
 
     // Inspector
     const recallBox = el('div', { class: 'stack-sm' }, el('p', { class: 'faint small' }, 'Send a message to see which memories were recalled and why.'));
@@ -171,20 +281,46 @@
     textarea.addEventListener('input', () => { textarea.style.height = 'auto'; textarea.style.height = Math.min(textarea.scrollHeight, 180) + 'px'; });
     textarea.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); composer.requestSubmit(); } });
 
-    function addMessage(role, content, meta) {
+    let stickToLatest = true;
+    let lastAutoScroll = 0;
+    function scrollToLatest() {
+      if (!stickToLatest) return;
+      messages.scrollTop = messages.scrollHeight;
+      lastAutoScroll = messages.scrollTop;
+    }
+    messages.addEventListener('scroll', () => {
+      if (Math.abs(messages.scrollTop - lastAutoScroll) < 1) return;
+      stickToLatest = messages.scrollHeight - messages.clientHeight - messages.scrollTop < 56;
+    });
+    messages.addEventListener('poda:preview-ready', scrollToLatest);
+
+    function addMessage(role, content, meta, attachments = []) {
       const wrap = el('div', { class: `msg msg-${role}` });
       const bubble = el('div', { class: 'bubble' });
-      if (role === 'user') bubble.textContent = content; else bubble.innerHTML = md.render(content);
       const metaRow = el('div', { class: 'msg-meta' }, el('span', {}, role === 'user' ? 'You' : 'PODA'), meta ? el('span', {}, fmtTime(meta)) : null);
+      if (attachments.length) {
+        wrap.append(el('div', { class: 'chat-files', 'aria-label': 'Attached files' },
+          ...attachments.map((name) => el('span', { class: 'chat-file' }, name))));
+      }
       wrap.append(bubble, metaRow);
       messages.appendChild(wrap);
-      messages.scrollTop = messages.scrollHeight;
+      if (role === 'user') bubble.textContent = content;
+      else rich.renderInto(bubble, content || '');
+      scrollToLatest();
       return { wrap, bubble, metaRow };
     }
     function addDownload(row, download, sessionId) {
       if (!download?.message_id || !sessionId || row.querySelector('[data-chat-download]')) return;
       if (download.error) row.append(el('span', { class: 'small', role: 'status' }, download.error));
-      if (download.sandbox_file) { row.append(sandboxDownloadLink(download.sandbox_file)); return; }
+      if (download.sandbox_file) {
+        const filename = download.sandbox_file;
+        row.append(sandboxDownloadLink(filename));
+        const alreadyShown = [...row.parentElement.querySelectorAll('.chat-visual-inline')]
+          .some((node) => node.dataset.filename === filename);
+        const preview = alreadyShown ? null : rich.attachmentPreview(filename);
+        if (preview) row.before(preview);
+        return;
+      }
       const url = `/chat/session/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(download.message_id)}/download`;
       row.append(el('a', { class: 'btn btn-sm', href: url, download: download.filename,
         'data-chat-download': 'true' }, download.filename === 'poda-response.md' ? 'Download reply' : `Download ${download.filename}`));
@@ -236,7 +372,7 @@
         const history = await api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/messages?limit=120');
         savedWorkflows = history.workflows || [];
         askState.transcript = (history.messages || []).filter((m) => m.role === 'user' || m.role === 'assistant')
-          .map((m) => ({ role: m.role, content: m.content, at: m.created_at, activity: m.workflow_activity, download: m.download }));
+          .map((m) => ({ role: m.role, content: m.content, at: m.created_at, activity: m.workflow_activity, download: m.download, attachments: m.attachments }));
         if (askState.runId) {
           const run = await api('/chat/runs/' + encodeURIComponent(askState.runId)).catch(() => null);
           if (!run || (run.state !== 'running' && askState.transcript.at(-1)?.role === 'assistant')) {
@@ -246,7 +382,7 @@
       } catch { /* Server might have restarted; active run status will report that accurately. */ }
     }
     if (askState.transcript.length) for (const m of askState.transcript) {
-      const { wrap, metaRow } = addMessage(m.role, m.content, m.at);
+      const { wrap, metaRow } = addMessage(m.role, m.content, m.at, m.attachments);
       restoreActivity(wrap, m.activity);
       addDownload(metaRow, m.download, askState.sessionId);
     }
@@ -256,13 +392,14 @@
       if (parent === checkpointBox) checkpointBox.hidden = false;
       renderProposal(parent, { ...workflow, proposal_id: workflow.id });
     }
-    messages.scrollTop = messages.scrollHeight;
+    scrollToLatest();
     function newChat() {
       if (askState.runId) api('/chat/runs/' + encodeURIComponent(askState.runId) + '/cancel', { method: 'POST' }).catch(() => {});
       askState.controller?.abort();
       // Finalize rolling short-term turns into visible second-brain memories.
       if (askState.sessionId) api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/flush', { method: 'POST' }).catch(() => {});
       askState.sessionId = null; askState.runId = null; askState.transcript = [];
+      draftFiles.length = 0; drawDraftFiles();
       proposalCards.clear(); proposalMessages.clear();
       checkpointBox.replaceChildren(el('h3', {}, 'Workflow checkpoints')); checkpointBox.hidden = true;
       persistSession();
@@ -330,9 +467,16 @@
       }
     }
 
-    async function send(text, continuationOf, resumeId = null, resumeWorkflow = false) {
+    async function send(text, continuationOf, resumeId = null, resumeWorkflow = false, files = []) {
       if (askState.controller) return;
-      if (!continuationOf && !resumeId) { const at = new Date().toISOString(); addMessage('user', text, at); askState.transcript.push({ role: 'user', content: text, at }); }
+      stickToLatest = true;
+      let userWrap;
+      if (!continuationOf && !resumeId) {
+        const at = new Date().toISOString();
+        const attachments = files.map((file) => file.name);
+        userWrap = addMessage('user', text, at, attachments).wrap;
+        askState.transcript.push({ role: 'user', content: text, at, attachments });
+      }
       const empty = $('.hero-empty', messages); if (empty) empty.remove();
       const { wrap, bubble, metaRow } = addMessage('assistant', '', null);
       bubble.classList.add('streaming');
@@ -340,43 +484,58 @@
       const badges = el('div', { class: 'msg-badges' });
       wrap.insertBefore(thoughts, bubble); wrap.append(badges);
       const addActivity = workflowActivity(wrap);
-      let full = '', thoughtText = '', raf = 0, finished = false;
-      const paint = () => { raf = 0; bubble.innerHTML = md.render(full); messages.scrollTop = messages.scrollHeight; };
+      let full = '', thoughtText = '', raf = 0, finished = false, responseError = '';
+      let phase = '';
+      const paint = () => { raf = 0; rich.renderInto(bubble, full, { streaming: true }); scrollToLatest(); };
       const schedule = () => { if (!raf) raf = requestAnimationFrame(paint); };
-      const setStatus = (t, live) => { statusLine.innerHTML = ''; if (live) statusLine.appendChild(el('span', { class: 'live' })); statusLine.appendChild(el('span', {}, t)); };
+      const setStatus = (text, live, elapsed = 0) => {
+        if (!elapsed) phase = text;
+        const time = elapsed ? ` · ${Math.floor(elapsed / 60)}m ${elapsed % 60}s elapsed` : '';
+        statusLine.replaceChildren(...(live ? [el('span', { class: 'live' })] : []), el('span', {}, text + time));
+      };
       const subscription = new AbortController();
       askState.controller = subscription;
-      sendBtn.disabled = true; stopBtn.hidden = false; setStatus('Contacting PODA…', true);
+      sendBtn.disabled = attachBtn.disabled = true; stopBtn.hidden = false;
+      setStatus(files.length ? 'Uploading files locally…' : 'Contacting PODA…', true);
       const body = { message: text, mode: askState.mode, thinking_level: askState.thinking, use_memory: askState.useMemory, session_id: askState.sessionId };
       if (continuationOf) body.continuation_of = continuationOf;
       if (resumeWorkflow) body.resume_workflow = true;
       try {
         if (!resumeId) {
-          const started = await api('/chat/runs', { method: 'POST', body });
+          const form = files.length ? new FormData() : null;
+          if (form) {
+            form.set('prompt', JSON.stringify(body));
+            for (const file of files) form.append('files', file, file.name);
+          }
+          const started = await api(form ? '/chat/runs/with-files' : '/chat/runs',
+            { method: 'POST', body: form || body, signal: subscription.signal });
+          if (files.length) { draftFiles.length = 0; drawDraftFiles(); }
           askState.runId = started.run_id;
           askState.sessionId = started.session_id || askState.sessionId;
           persistSession();
         } else {
           askState.runId = resumeId;
         }
-        // Subscriber can be aborted by route change; server-owned generation continues.
-        const res = await api('/chat/runs/' + encodeURIComponent(askState.runId) + '/stream?after=0',
-          { method: 'GET', signal: subscription.signal, raw: true });
-        if (!res.ok || !res.body) { let d = null; try { d = await res.json(); } catch { /* ignore */ } throw new window.PODA.ApiError(res.status, d?.detail || `HTTP ${res.status}`); }
-        const reader = res.body.getReader(); const decoder = new TextDecoder(); let buffer = '';
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const frames = buffer.split('\n\n'); buffer = frames.pop() || '';
-          for (const frame of frames) {
-            let event = 'message', dataText = '';
-            for (const line of frame.split('\n')) { if (line.startsWith('event:')) event = line.slice(6).trim(); else if (line.startsWith('data:')) dataText += line.slice(5).trim(); }
-            if (!dataText) continue;
-            let data; try { data = JSON.parse(dataText); } catch { continue; }
+        // This subscriber can reconnect while generation remains owned by the server.
+        for await (const [event, data] of chatEvents(askState.runId, subscription.signal)) {
             switch (event) {
               case 'session': if (data.session_id) { askState.sessionId = data.session_id; persistSession(); } break;
-              case 'status': addActivity([String(data.message || '').replaceAll('_', ' '), data.model, data.detail].filter(Boolean).join(' · ')); if (data.message === 'cancelled') finished = true; setStatus(data.message === 'routing' ? `Routing to ${data.model} (${data.profile || ''}, ${data.num_ctx ? data.num_ctx / 1024 + 'K ctx' : ''})` : data.message === 'recalling' ? 'Recalling memories…' : data.message === 'cancelled' ? 'Cancelled' : `${data.message} · ${data.model || ''}`, data.message !== 'cancelled'); break;
+              case 'status': {
+                const label = chatPhase[data.message] || String(data.message || '').replaceAll('_', ' ');
+                addActivity([String(data.message || '').replaceAll('_', ' '), data.model, data.detail].filter(Boolean).join(' · '));
+                if (data.message === 'cancelled') finished = true;
+                const text = data.message === 'routing' ? `Preparing ${data.model}…` :
+                  data.message === 'recalling' ? 'Recalling memories…' :
+                  data.message === 'cancelled' ? 'Cancelled' : `${label}${data.model ? ' · ' + data.model : ''}`;
+                setStatus(text, !finished);
+                break;
+              }
+              case 'heartbeat': setStatus(phase || 'PODA is working', true, data.elapsed_seconds || 0); break;
+              case 'reconnecting': setStatus('Reconnecting to your running task…', true); break;
+              case 'archive_progress': setStatus(`Writing files for your ZIP · ${data.characters.toLocaleString()} characters generated`, true); break;
+              case 'attachment_warning':
+                wrap.insertBefore(el('p', { class: 'notice small chat-input-warning', role: 'status' }, data.message), bubble);
+                break;
               case 'recall': addActivity(recallActivity(data.knowledge_facts?.length || 0, data.results?.length || 0, data.graph_ms)); renderRecall(data); badges.appendChild(pill(`${(data.surfaces || (data.results || []).filter((r) => r.tier === 'surface')).length ? `${(data.surfaces || (data.results || []).filter((r) => r.tier === 'surface')).length} surface · ` : ''}${(data.results || []).filter((r) => r.tier !== 'surface').length} memories recalled`, 'lav')); if (data.depth_used === 'deep') badges.appendChild(pill('deep dive', 'lav')); break;
               case 'thought': thoughtText += data.token || ''; thoughts.hidden = false; $('pre', thoughts).textContent = thoughtText.slice(-6000); break;
               case 'token': full += data.token || ''; schedule(); break;
@@ -393,30 +552,46 @@
                 if (resumeWorkflow) proposalCards.get(continuationOf)?.querySelector('[data-resume-workflow]')?.remove();
                 break;
               case 'done': {
+                if (raf) { cancelAnimationFrame(raf); raf = 0; }
                 addActivity('Response finished · ' + (data.model || 'PODA'));
                 finished = true;
                 const tps = data.eval_count && data.eval_duration_ms ? (data.eval_count / (data.eval_duration_ms / 1000)).toFixed(1) : null;
                 metaRow.append(el('span', {}, fmtTime(new Date().toISOString())), pill(data.model || 'PODA', data.profile === 'gate' || data.profile === 'ledger' ? 'accent' : 'muted'), tps ? el('span', { class: 'mono' }, `${tps} tok/s`) : null);
                 badges.prepend(pill(data.profile === 'gate' ? 'Action gate' : data.profile === 'ledger' ? 'Capability ledger' : `Model · ${data.profile || 'auto'}`, 'accent'));
-                sessionBox.innerHTML = ''; sessionBox.appendChild(kv([['Model', data.model || ''], ['Profile', data.profile || ''], ['Output tokens', data.eval_count ?? 'n/a'], ['Speed', tps ? `${tps} tok/s` : 'n/a'], ['Prompt tokens', data.prompt_eval_count ?? 'n/a'], ['Session', askState.sessionId ? askState.sessionId.slice(0, 8) : 'new']]));
+                sessionBox.innerHTML = ''; sessionBox.appendChild(kv([['Model', data.model || ''], ['Profile', data.profile || ''], ['Output tokens', data.eval_count ?? 'n/a'], ['Speed', tps ? `${tps} tok/s` : 'n/a'], ['Prompt tokens', data.prompt_eval_count ?? 'n/a'], ['Speculation', data.speculation || 'off'], ['Session', askState.sessionId ? askState.sessionId.slice(0, 8) : 'new']]));
                 setStatus(`Done · ${data.model || ''}`, false);
+                rich.renderInto(bubble, full);
                 addDownload(metaRow, data.download, askState.sessionId);
                 askState.transcript.push({ role: 'assistant', content: full, at: new Date().toISOString(), download: data.download });
                 break;
               }
-              case 'error': full = full || ''; bubble.innerHTML = ''; bubble.appendChild(el('div', { class: 'notice notice-danger' }, data.message || 'PODA error')); setStatus('Error', false); finished = true; break;
+              case 'error': responseError = data.message || 'PODA error'; setStatus('Error', false); finished = true; break;
               default: break;
             }
-          }
         }
         if (raf) cancelAnimationFrame(raf);
-        bubble.innerHTML = md.render(full) || bubble.innerHTML;
+        if (full) rich.renderInto(bubble, full);
+        if (responseError) bubble.appendChild(el('div', { class: 'notice notice-danger chat-input-warning' }, responseError));
         if (!finished) setStatus('Stream ended', false);
       } catch (err) {
-        if (err.name === 'AbortError') { bubble.innerHTML = md.render(full) + (full ? '' : '<p class="faint">Cancelled.</p>'); setStatus('Cancelled', false); }
-        else { bubble.innerHTML = ''; bubble.appendChild(errorNode(err)); setStatus('Failed', false); }
+        if (err.name === 'AbortError') {
+          if (full) rich.renderInto(bubble, full);
+          else bubble.replaceChildren(el('p', { class: 'faint' }, 'Cancelled.'));
+          setStatus('Cancelled', false);
+        }
+        else {
+          if (err instanceof ApiError && err.status === 404) finished = true;
+          if (full) rich.renderInto(bubble, full);
+          if (files.length && !askState.runId && userWrap) {
+            userWrap.remove();
+            askState.transcript.pop();
+            if (!textarea.value) textarea.value = text;
+          }
+          bubble.appendChild(errorNode(err)); setStatus('Failed', false);
+        }
       } finally {
-        bubble.classList.remove('streaming'); if (askState.controller === subscription) askState.controller = null; sendBtn.disabled = false; stopBtn.hidden = true; messages.scrollTop = messages.scrollHeight;
+        if (raf) cancelAnimationFrame(raf);
+        bubble.classList.remove('streaming'); if (askState.controller === subscription) askState.controller = null; sendBtn.disabled = attachBtn.disabled = false; stopBtn.hidden = true; scrollToLatest();
         if (finished) { askState.runId = null; persistSession(); }
         if (!thoughtText) thoughts.remove(); else $('.live', thoughts)?.remove();
       }
@@ -434,7 +609,10 @@
           el('span', { class: 'receipt-chip', title: receipt.verification || '' },
             pill(receipt.outcome, receipt.outcome === 'succeeded' ? 'ok' : 'warn'), receipt.tool,
             el('span', { class: 'mono' }, '#' + receipt.id.slice(0, 8)))),
-        ...(data.receipts || []).map(sandboxReceiptLink));
+        ...(data.receipts || []).flatMap((receipt) => {
+          const link = sandboxReceiptLink(receipt);
+          return link ? [rich.attachmentPreview(link.download), link] : [];
+        }));
       const proposalUrl = '/agent/proposals/' + encodeURIComponent(data.proposal_id);
       if (status === 'pending') {
         const approve = el('button', { class: 'btn btn-primary btn-sm' }, 'Approve and run');
@@ -482,15 +660,23 @@
       return sessionId === askState.sessionId && view.contains(messages);
     }
 
-    composer.addEventListener('submit', (e) => { e.preventDefault(); const text = textarea.value.trim(); if (!text) return; textarea.value = ''; textarea.style.height = 'auto'; send(text); });
+    composer.addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (askState.controller) return;
+      const text = textarea.value.trim() || (draftFiles.length ? 'Review the attached files.' : '');
+      if (!text) return;
+      textarea.value = '';
+      textarea.style.height = 'auto';
+      send(text, null, null, false, [...draftFiles]);
+    });
     stopBtn.addEventListener('click', async () => {
-      if (!askState.runId) return;
+      if (!askState.runId) { askState.controller?.abort(); return; }
       try { await api('/chat/runs/' + encodeURIComponent(askState.runId) + '/cancel', { method: 'POST' }); }
       catch (err) { toast(errorDetail(err).message, 'danger'); }
     });
     if (askState.runId) send('', null, askState.runId);
     textarea.focus();
-    return { teardown: () => { const subscriber = askState.controller; askState.controller = null; subscriber?.abort(); } }; // Detaches the viewer, not Ollama.
+    return { teardown: () => { const subscriber = askState.controller; askState.controller = null; subscriber?.abort(); } }; // Detaches the viewer, not llama.cpp.
   });
 
   // =====================================================================
@@ -1372,12 +1558,12 @@
   route('system', async ({ view, inspector, setTitle, setInspectorTitle }) => {
     setTitle('System'); setInspectorTitle('System details'); $('#viewCrumb').textContent = 'Models and this computer';
     const hwBox = el('div'); const modelsBox = el('div'); const benchBox = el('div'); const ledgerBox = el('div'); const managerBox = el('div');
-    view.appendChild(el('div', { class: 'screen stack' }, section('This computer', null, hwBox), section('Model installer and profile selection', 'local Ollama', managerBox), section('Model profiles', 'selected only from installed models', modelsBox), section('Benchmarks', 'measured on this hardware', benchBox), section('Capability ledger', 'live and persisted', ledgerBox)));
+    view.appendChild(el('div', { class: 'screen stack' }, section('This computer', null, hwBox), section('Model installer and profile selection', 'local llama.cpp', managerBox), section('Model profiles', 'selected only from installed models', modelsBox), section('Benchmarks', 'measured on this hardware', benchBox), section('Capability ledger', 'live and persisted', ledgerBox)));
     try { const b = await api('/system/build'); const st = await api('/system/startup').catch(() => null); inspector.append(kv([['Version', b.version], ['Build ID', el('span', { class: 'mono' }, b.build_id)], ['Memory viewer', b.memory_viewer], ['Database', el('span', { class: 'mono small' }, b.db_path)], ['Port', b.port]]), st ? el('details', { class: 'thought-panel dev-only' }, el('summary', {}, 'Startup report'), el('pre', {}, JSON.stringify(st, null, 2))) : null); } catch (err) { inspector.appendChild(errorNode(err)); }
     load(hwBox, async () => {
       const h = await api('/system/hardware');
-      return el('div', { class: 'stack-sm' }, el('div', { class: 'stats' }, ...[[h.chip || 'unknown', 'chip'], [`${h.unified_memory_gb ?? h.ram_total_gb} GB`, h.unified_memory_gb == null ? 'physical RAM' : 'unified memory'], [h.gpu_memory_dedicated_gb==null ? 'shared / unavailable' : h.gpu_memory_dedicated_gb+' GB','dedicated VRAM'], [`${h.disk_free_gb} GB`, 'disk free'], [h.gpu || h.metal || 'unavailable', 'graphics'], [h.ollama?.version || (h.ollama?.reachable ? 'reachable' : 'unreachable'), 'ollama']].map(([v, k]) => el('div', { class: 'stat' }, el('span', { class: 'v' }, v), el('span', { class: 'k' }, k)))),
-        (h.ollama_resident || []).length ? el('div', { class: 'row' }, el('span', { class: 'faint small' }, 'Resident now:'), ...h.ollama_resident.map((m) => el('span', { class: 'chip' }, `${m.name} `, el('b', {}, `${fmtBytes(m.size_vram || m.size)} · ctx ${m.context_length || '?'}`)))) : el('p', { class: 'faint small' }, 'No model is resident in memory right now.'));
+      return el('div', { class: 'stack-sm' }, el('div', { class: 'stats' }, ...[[h.chip || 'unknown', 'chip'], [`${h.unified_memory_gb ?? h.ram_total_gb} GB`, h.unified_memory_gb == null ? 'physical RAM' : 'unified memory'], [h.gpu_memory_dedicated_gb==null ? 'shared / unavailable' : h.gpu_memory_dedicated_gb+' GB','dedicated VRAM'], [`${h.disk_free_gb} GB`, 'disk free'], [h.gpu || h.metal || 'unavailable', 'graphics'], [h.inference?.version || (h.inference?.reachable ? 'reachable' : 'unreachable'), 'llama.cpp']].map(([v, k]) => el('div', { class: 'stat' }, el('span', { class: 'v' }, v), el('span', { class: 'k' }, k)))),
+        (h.inference_resident || []).length ? el('div', { class: 'row' }, el('span', { class: 'faint small' }, 'Resident now:'), ...h.inference_resident.map((m) => el('span', { class: 'chip' }, `${m.name} `, el('b', {}, `ctx ${m.context_length || '?'} · ${m.speculation || 'none'}`)))) : el('p', { class: 'faint small' }, 'No model is resident in memory right now.'));
     });
     async function drawModels() {
       await load(modelsBox, async () => {
@@ -1388,13 +1574,13 @@
         return el('div', { class: 'stack' }, el('div', { class: 'row' },
           el('span', { class: 'chip' }, 'installed ', el('b', {}, (m.installed || []).join(', ') || 'none')),
           el('span', { class: 'chip' }, 'embedding ', el('b', {}, m.embedding+' '+(m.embedding_installed?'':'(missing)'))),
-          el('span', { class: 'small muted' }, 'Compare all local model families and their quantizations above.')), el('div', { class: 'table-scroll', tabindex: 0 }, profiles));
+          el('span', { class: 'small muted' }, 'Choose model roles and GGUF quantizations above.')), el('div', { class: 'table-scroll', tabindex: 0 }, profiles));
       });
     }
     async function drawBench() {
       await load(benchBox, async () => {
         const m = await api('/system/models'); const rows = m.benchmarks || [];
-        if (!rows.length) return emptyState('No benchmarks recorded', 'Run one from the model profiles above. Each run measures load, first token, tokens per second, and resident memory.');
+        if (!rows.length) return emptyState('No benchmarks recorded', 'Run one from the model profiles above. Each run measures model readiness, first token, and tokens per second.');
         const table = el('table', { class: 'table' }, el('thead', {}, el('tr', {}, ...['Model', 'Context', 'Load', 'First token', 'Gen tok/s', 'Prompt tok/s', 'Memory', 'When'].map((h) => el('th', {}, h)))));
         table.appendChild(el('tbody', {}, ...rows.slice(0, 30).map((b) => el('tr', {}, el('td', { class: 'mono' }, b.model), el('td', { class: 'num' }, `${(b.num_ctx / 1024).toFixed(0)}K`), el('td', { class: 'num' }, `${b.load_s}s`), el('td', { class: 'num' }, `${b.first_token_s}s`), el('td', { class: 'num' }, b.gen_tok_s ?? ''), el('td', { class: 'num' }, b.prompt_tok_s ?? ''), el('td', { class: 'num' }, fmtBytes(b.memory_bytes)), el('td', { class: 'small faint' }, fmtTime(b.created_at))))));
         return table;
@@ -1402,12 +1588,14 @@
     }
     async function bench(model, num_ctx) {
       const t = toast(`Benchmarking ${model} at ${num_ctx / 1024}K context…`, '', 60000);
-      try { const r = await api('/system/benchmark', { method: 'POST', body: { model, num_ctx } }); t.remove(); toast(`${model}: ${r.gen_tok_s} tok/s, first token ${r.first_token_s}s, ${fmtBytes(r.memory_bytes)}`, 'ok', 8000); drawBench(); }
+      try { const r = await api('/system/benchmark', { method: 'POST', body: { model, num_ctx } }); t.remove(); const accepted = r.speculative_tokens?.accepted_tokens;
+        const draft = accepted == null ? '' : ` · ${accepted} draft tokens accepted`;
+        toast(`${model} · ${r.gen_tok_s ?? 'unknown'} tok/s · first token ${r.first_token_s ?? 'unknown'}s · ${r.speculation || 'none'}${draft}`, 'ok', 8000); drawBench(); }
       catch (err) { t.remove(); toast(errorDetail(err).message, 'danger'); }
     }
     if (window.PODAModelManager?.mount) window.PODAModelManager.mount(managerBox);
     drawModels(); drawBench();
-    load(ledgerBox, async () => { const l = await api('/capabilities/ledger'); return el('div', { class: 'stack-sm' }, el('div', { class: 'row' }, pill(`Ollama ${l.current?.ollama?.reachable ? 'reachable' : 'unreachable'}`, l.current?.ollama?.reachable ? 'ok' : 'danger'), statusPill(l.current?.notion?.status), pill(`${(l.current?.filesystem?.granted_roots || []).length} path grants`, 'accent'), pill(l.current?.memory?.encrypted_at_rest ? 'encrypted at rest' : 'not encrypted', l.current?.memory?.encrypted_at_rest ? 'ok' : 'danger')), jsonBox(l.current)); });
+    load(ledgerBox, async () => { const l = await api('/capabilities/ledger'); return el('div', { class: 'stack-sm' }, el('div', { class: 'row' }, pill(`llama.cpp ${l.current?.inference?.reachable ? 'reachable' : 'unreachable'}`, l.current?.inference?.reachable ? 'ok' : 'danger'), statusPill(l.current?.notion?.status), pill(`${(l.current?.filesystem?.granted_roots || []).length} path grants`, 'accent'), pill(l.current?.memory?.encrypted_at_rest ? 'encrypted at rest' : 'not encrypted', l.current?.memory?.encrypted_at_rest ? 'ok' : 'danger')), jsonBox(l.current)); });
   });
 
   // ---------- Boot ----------

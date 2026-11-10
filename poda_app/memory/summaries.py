@@ -5,7 +5,7 @@ import json
 import uuid
 from typing import Any
 
-from ..runtime import config, ollama, models
+from ..runtime import config, inference, models
 from ..runtime.db import connect, now_iso, rows, one
 from . import store
 
@@ -36,7 +36,7 @@ def maybe_compact(session_id: str | None = None) -> dict[str, Any] | None:
     prompt = ("Summarize the following PODA conversation excerpt into dated, factual bullet points. Mark user-stated facts as FACT, "
               "assistant claims as ASSISTANT-CLAIM, and anything uncertain as UNCERTAIN. Do not invent. Keep under 180 words.\n\n" + transcript)
     try:
-        result = ollama.chat([{"role": "user", "content": prompt}], model, options={"temperature": 0.05, "num_ctx": 8192, "num_predict": 400}, think=False if model.startswith("qwen3") else None)
+        result = inference.chat([{"role": "user", "content": prompt}], model, options={"temperature": 0.05, "num_ctx": 8192, "num_predict": 400}, think=False)
         text = (result.get("message", {}).get("content") or "").strip()
     except Exception:
         return None

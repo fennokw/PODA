@@ -107,8 +107,8 @@ def test_scheduled_prompt_keeps_mail_and_event_windows_separate(monkeypatch, cli
         assert "MAIL REVIEW" in messages[0]["content"]
         yield {"message": {"content": "Daily review"}, "done": True}
 
-    monkeypatch.setattr(chat.ollama, "chat", model)
-    monkeypatch.setattr(chat.ollama, "chat_stream", stream)
+    monkeypatch.setattr(chat.inference, "chat", model)
+    monkeypatch.setattr(chat.inference, "chat_stream", stream)
     monkeypatch.setattr(tools, "execute", execute)
 
     class Request:

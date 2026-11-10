@@ -120,7 +120,7 @@ async function start() {
     const result = await dialog.showMessageBox({
       type: 'info', buttons: ['Set Up Python Runtime', 'Quit'], cancelId: 1, defaultId: 0,
       title: 'Set up PODA Desktop', message: 'PODA needs its local Python runtime.',
-      detail: 'This opens the setup script in Terminal. When setup finishes, reopen PODA. Your data and Ollama models stay in their existing locations.',
+      detail: 'This opens the setup script in Terminal. When setup finishes, reopen PODA. Your data and downloaded GGUF models stay in their existing locations.',
     });
     if (result.response === 0) {
       const script = path.join(source, 'SETUP_DESKTOP.command');

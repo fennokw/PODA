@@ -53,7 +53,7 @@ def test_alias_traversal_and_feedback(client, monkeypatch):
         assert [f["memory_id"] for f in facts] == ids
         assert [f["hop"] for f in facts] == [1, 2, 3]
         assert facts[-1]["qualifier"] == "In March"
-        monkeypatch.setattr(retrieval.ollama, "embed", lambda *a, **k: (_ for _ in ()).throw(OSError("offline")))
+        monkeypatch.setattr(retrieval.inference, "embed", lambda *a, **k: (_ for _ in ()).throw(OSError("offline")))
         db = connect()
         try:
             recalled = retrieval.recall("Refund Policy", conn=db)
@@ -90,7 +90,7 @@ def test_draft_is_review_only_and_source_revision_is_checked(client, monkeypatch
     path = "/memory/knowledge/source/" + node_id
     try:
         monkeypatch.setattr(knowledge_router.models, "resolve", lambda *args: {"model": "local-test"})
-        monkeypatch.setattr(knowledge_router.ollama, "chat", lambda *args, **kwargs: {
+        monkeypatch.setattr(knowledge_router.inference, "chat", lambda *args, **kwargs: {
             "message": {"content": json.dumps({"facts": [supported, invented]})}})
         draft = client.post(path + "/draft").json()
         assert draft["facts"] == [supported]

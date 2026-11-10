@@ -94,7 +94,7 @@ def test_native_hindsight_sidecar(tmp_path, monkeypatch):
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         pytest.skip("Embedded PostgreSQL requires an unprivileged user.")
 
-    class FakeOllama(BaseHTTPRequestHandler):
+    class FakeInference(BaseHTTPRequestHandler):
         def do_POST(self):
             assert self.path == "/v1/embeddings"
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -108,10 +108,10 @@ def test_native_hindsight_sidecar(tmp_path, monkeypatch):
             self.end_headers()
             self.wfile.write(output)
 
-    with ThreadingHTTPServer(("127.0.0.1", 0), FakeOllama) as ollama:
-        worker = Thread(target=ollama.serve_forever, daemon=True)
+    with ThreadingHTTPServer(("127.0.0.1", 0), FakeInference) as inference:
+        worker = Thread(target=inference.serve_forever, daemon=True)
         worker.start()
-        local = f"http://127.0.0.1:{ollama.server_port}"
+        local = f"http://127.0.0.1:{inference.server_port}"
         monkeypatch.setattr(hindsight_runtime, "_ROOT", tmp_path / "hindsight")
         monkeypatch.setattr(hindsight_runtime, "_RUNTIME", tmp_path / "hindsight" / "runtime")
         monkeypatch.setattr(hindsight_runtime, "_LOG", tmp_path / "hindsight.log")
@@ -138,5 +138,5 @@ def test_native_hindsight_sidecar(tmp_path, monkeypatch):
             pytest.fail(f"{exc}\n{hindsight_runtime.diagnostics()}")
         finally:
             hindsight_runtime.stop()
-            ollama.shutdown()
+            inference.shutdown()
             worker.join(timeout=5)

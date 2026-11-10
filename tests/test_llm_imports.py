@@ -35,7 +35,7 @@ def _chatgpt_zip() -> bytes:
 
 
 def test_chatgpt_export_import_creates_visible_memories_and_clouds(client, monkeypatch):
-    # Keep the test deterministic/offline; the importer must still succeed without Ollama.
+    # Keep the test deterministic/offline; the importer must still succeed without llama.cpp.
     from poda_app.imports import service
     monkeypatch.setattr(service, "derive_profile", lambda convs: {
         "summary": "User prefers concise patches and organized workflows.",

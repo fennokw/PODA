@@ -3,7 +3,7 @@
 PODA memory_nodes is the source of truth. Hindsight's per-node documents are
 a MATERIALIZED INDEX, not a second PODA chat history or independent memory tree.
 Deletion and edits reconcile by stable document_id (poda-node-<uuid>).
-PODA starts and authenticates a managed local service with Ollama.
+PODA starts and authenticates a managed local service with llama.cpp.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from ..runtime.db import connect, get_setting, set_setting, rows, one, now_iso
 from . import hindsight_runtime
 
 router=APIRouter(prefix="/memory/hindsight",tags=["memory"])
-BANK="poda-local-graph"
+BANK="poda-local-graph-gguf-v1"
 MAX_SYNC_PER_CALL=35
 _SYNC_LOCK = Lock()
 
@@ -34,7 +34,7 @@ def _path(suffix:str)->str:
 
 def _request(method:str,path:str,payload:dict|None=None)->dict:
     # Fixed loopback host, no user-controllable address and no environment proxy.
-    # Local Ollama fact extraction can exceed ordinary HTTP read budgets;
+    # Local llama.cpp fact extraction can exceed ordinary HTTP read budgets;
     # recall is bounded tightly so chat remains responsive on outage.
     operation_timeout = 120 if method=="POST" and path.endswith("/memories") else 8
     url, headers = hindsight_runtime.endpoint()
@@ -103,7 +103,7 @@ def _reconcile(limit: int) -> dict:
         for n in all_nodes:
             if attempts >= limit or not enabled(): break
             text="\n".join(x for x in (n["title"],n["summary"],n["content"]) if x)[:8000]
-            checksum=hashlib.sha256((text+"|"+str(n["parent_id"])+"|"+str(n["surface_id"])).encode()).hexdigest()
+            checksum=hashlib.sha256((BANK+"|"+text+"|"+str(n["parent_id"])+"|"+str(n["surface_id"])).encode()).hexdigest()
             old=existing.get(n["id"])
             if old and old["content_sha"]==checksum and old["status"]=="synced":continue
             attempts += 1

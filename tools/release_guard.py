@@ -19,7 +19,7 @@ ALLOWED_DIRS = {"poda_app", "tests", "tools", "desktop", ".github"}
 ALLOWED_EXT = {".py", ".js", ".cjs", ".css", ".html", ".svg", ".md", ".yml", ".yaml", ".txt", ".json", ".cmd", ".ps1", ".command", ".dockerfile"}
 BLOCKED_PARTS = {
     ".git", ".venv", ".backend", "__pycache__", ".pytest_cache", ".backups", ".patch_backups",
-    "data", "logs", "screenshots", "dist", "sandbox", "node_modules", ".mypy_cache", ".ruff_cache",
+    "data", "logs", "screenshots", "dist", "sandbox", "node_modules", "chat-vendor", ".mypy_cache", ".ruff_cache",
 }
 BLOCKED_SUFFIX = {".db", ".sqlite", ".sqlite3", ".sqlcipher", ".podabkp", ".log", ".zip", ".pem", ".key", ".p12", ".png", ".jpg", ".jpeg", ".webp"}
 # Generic high-confidence checks only; NEVER embed a private user's name, ID or account domain

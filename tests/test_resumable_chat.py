@@ -52,3 +52,28 @@ def test_cancel_stops_server_run(monkeypatch):
         assert result["state"] == "cancelled"
         assert runs._lookup(created["run_id"]).state == "cancelled"
     asyncio.run(check())
+
+
+def test_finished_run_replays_terminal_event_after_a_yield():
+    class Request:
+        headers = {}
+
+        async def is_disconnected(self):
+            return False
+
+    async def check():
+        run = runs.ChatRun(run_id="terminal-replay-test", started=0)
+        runs._runs[run.run_id] = run
+        try:
+            await run.append(sse("token", {"token": "last output"}))
+            response = await runs.subscribe(run.run_id, Request())
+            stream = response.body_iterator
+            assert "last output" in await anext(stream)
+            await run.append(sse("done", {"model": "test"}))
+            run.state = "completed"
+            assert "event: done" in await anext(stream)
+            await stream.aclose()
+        finally:
+            runs._runs.pop(run.run_id, None)
+
+    asyncio.run(check())

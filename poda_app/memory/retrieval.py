@@ -11,7 +11,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from ..runtime import config, ollama
+from ..runtime import config, inference
 from ..runtime.db import connect, rows, one
 from .store import ensure_embeddings, normalize, cosine
 from .layout import geometry_scale, geometry_cosine
@@ -156,7 +156,7 @@ def recall(query: str, limit: int = 18, conn=None, depth: str = "auto", thinking
             vectors = ensure_embeddings(conn)
             if own:
                 conn.commit()
-            qvec = normalize(ollama.embed([query[:7000]])[0])
+            qvec = normalize(inference.embed([query[:7000]], purpose="search_query")[0])
             direct = {nid: (cosine(qvec, vec) + 1.0) / 2.0 for nid, vec in vectors.items() if nid in node_rows}
         except Exception as exc:
             mode = f"lexical_only ({exc.__class__.__name__})"
