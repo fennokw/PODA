@@ -179,9 +179,14 @@ def finalize_archive(source: str, original: dict[str, bytes] | None, editable: s
         if existing is not None and existing not in editable:
             raise ValueError(f"Only fully read ZIP members can be edited. Attach {existing} separately or supply a smaller ZIP.")
         members[existing or name] = content
-    if single_click and "index.html" in members:
+    entry = None
+    if single_click:
+        pages = [name for name in members if "/" not in name and Path(name).suffix.lower() in {".html", ".htm"}]
+        entry = next((name for name in pages if name.lower() == "index.html"), pages[0] if len(pages) == 1 else None)
+    # Only interpolate filenames that are safe inside both launcher scripts.
+    if entry and re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_. -]*", entry):
         if not any(name.lower().endswith(".command") for name in members):
-            members["Run on Mac.command"] = b'#!/bin/bash\ncd "$(dirname "$0")" || exit 1\nopen "./index.html"\n'
+            members["Run on Mac.command"] = f'#!/bin/bash\ncd "$(dirname "$0")" || exit 1\nopen "./{entry}"\n'.encode()
         if not any(name.lower().endswith((".cmd", ".bat")) for name in members):
-            members["Run on Windows.cmd"] = b'@echo off\r\nstart "" "%~dp0index.html"\r\n'
+            members["Run on Windows.cmd"] = f'@echo off\r\nstart "" "%~dp0{entry}"\r\n'.encode()
     return sandbox_files.pack_archive(list(members.items()))

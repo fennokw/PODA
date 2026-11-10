@@ -47,7 +47,7 @@ def test_long_zip_skips_planner_streams_progress_and_adds_launchers(client, monk
         assert model == "deep_coding"
         assert options["num_predict"] >= 4000
         assert think and options["reasoning_budget"] == 768 and format["type"] == "array"
-        body = json.dumps([{"filename": "index.html", "content": "<!doctype html><h1>Fluid graphic</h1>"}])
+        body = json.dumps([{"filename": "fluid-effect.html", "content": "<!doctype html><h1>Fluid graphic</h1>"}])
         yield {"message": {"content": body[:20]}, "done": False}
         yield {"message": {"content": body[20:]}, "done": True}
 
@@ -67,10 +67,10 @@ def test_long_zip_skips_planner_streams_progress_and_adds_launchers(client, monk
     (sandbox_files.root() / filename).unlink()
     with ZipFile(io.BytesIO(data)) as archive:
         assert archive.testzip() is None
-        assert "Fluid graphic" in archive.read("index.html").decode()
-        assert b'open "./index.html"' in archive.read("Run on Mac.command")
+        assert "Fluid graphic" in archive.read("fluid-effect.html").decode()
+        assert b'open "./fluid-effect.html"' in archive.read("Run on Mac.command")
         assert archive.getinfo("Run on Mac.command").external_attr >> 16 & stat.S_IXUSR
-        assert b'start "" "%~dp0index.html"' in archive.read("Run on Windows.cmd")
+        assert b'start "" "%~dp0fluid-effect.html"' in archive.read("Run on Windows.cmd")
 
 
 def test_zip_upload_changes_selected_source_and_preserves_other_members(client, monkeypatch):
