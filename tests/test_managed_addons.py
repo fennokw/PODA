@@ -116,6 +116,7 @@ def test_native_hindsight_sidecar(tmp_path, monkeypatch):
         monkeypatch.setattr(hindsight_runtime, "_RUNTIME", tmp_path / "hindsight" / "runtime")
         monkeypatch.setattr(hindsight_runtime, "_LOG", tmp_path / "hindsight.log")
         monkeypatch.setattr(hindsight_runtime, "_models", lambda: (local, "sample-chat", "sample-embed"))
+        monkeypatch.setattr(hindsight_runtime.model_catalog, "installed", lambda name: {"id": name})
         monkeypatch.setattr(hindsight_runtime.egress, "offline_mode", lambda: False)
         monkeypatch.setattr(hindsight_runtime.egress, "_log", lambda *args: None)
         settings = {}
@@ -140,3 +141,46 @@ def test_native_hindsight_sidecar(tmp_path, monkeypatch):
             hindsight_runtime.stop()
             inference.shutdown()
             worker.join(timeout=5)
+
+
+def test_hindsight_setup_installs_only_missing_embedding(monkeypatch):
+    installed = set()
+    downloads = []
+    monkeypatch.setattr(hindsight_runtime.model_catalog, 'installed', lambda name: name in installed)
+    monkeypatch.setattr(hindsight_runtime.model_catalog, 'install_model', lambda name: (downloads.append(name), installed.add(name)))
+    monkeypatch.setattr(hindsight_runtime.inference, 'status', lambda: {'reachable': True})
+    monkeypatch.setattr(hindsight_runtime.models, 'registry', lambda: {'profiles': {'balanced': {'model': 'chat'}}})
+    monkeypatch.setattr(hindsight_runtime.egress, 'offline_mode', lambda: False)
+    monkeypatch.setattr(hindsight_runtime.egress, '_log', lambda *args: None)
+    monkeypatch.setattr(hindsight_runtime, '_models', lambda: ('http://localhost', 'chat', 'embed'))
+    monkeypatch.setattr(hindsight_runtime, 'installed', lambda: True)
+    monkeypatch.setattr(hindsight_runtime, 'start', lambda config: None)
+    hindsight_runtime.install_and_start()
+    hindsight_runtime.install_and_start()
+    assert downloads == [hindsight_runtime.config.EMBED_MODEL]
+
+
+def test_hindsight_setup_respects_offline_mode(monkeypatch):
+    import pytest
+    monkeypatch.setattr(hindsight_runtime.model_catalog, 'installed', lambda name: None)
+    monkeypatch.setattr(hindsight_runtime.inference, 'status', lambda: {'reachable': True})
+    monkeypatch.setattr(hindsight_runtime.models, 'registry', lambda: {'profiles': {'balanced': {'model': 'chat'}}})
+    monkeypatch.setattr(hindsight_runtime.egress, 'offline_mode', lambda: True)
+    monkeypatch.setattr(hindsight_runtime.model_catalog, 'install_model', lambda name: pytest.fail('unexpected download'))
+    with pytest.raises(RuntimeError, match='Offline Mode'):
+        hindsight_runtime.install_and_start()
+
+
+def test_hindsight_reports_actual_missing_requirement(monkeypatch):
+    import pytest
+    state = {'reachable': False, 'embed': False, 'chat': None}
+    monkeypatch.setattr(hindsight_runtime.inference, 'status', lambda: {'reachable': state['reachable']})
+    monkeypatch.setattr(hindsight_runtime.models, 'registry', lambda: {'profiles': {'balanced': {'model': state['chat']}}, 'embedding_installed': state['embed']})
+    with pytest.raises(RuntimeError, match='llama.cpp runtime'):
+        hindsight_runtime._models()
+    state['reachable'] = True
+    with pytest.raises(RuntimeError, match='chat GGUF'):
+        hindsight_runtime._models()
+    state['chat'] = 'chat'
+    with pytest.raises(RuntimeError, match='Nomic embedding'):
+        hindsight_runtime._models()

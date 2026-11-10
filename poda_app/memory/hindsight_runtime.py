@@ -15,7 +15,7 @@ from threading import Event, RLock
 
 import httpx
 
-from ..runtime import config, inference, inference_bridge, models
+from ..runtime import config, inference, inference_bridge, models, model_catalog
 from ..runtime.db import get_setting, set_setting
 from ..security import egress
 
@@ -44,8 +44,12 @@ def installed() -> bool:
 def _models() -> tuple[str, str, str]:
     registry = models.registry()
     chat = registry["profiles"]["balanced"]["model"]
-    if not inference.status()["reachable"] or not registry["embedding_installed"] or not chat:
-        raise RuntimeError("Install a chat GGUF and the Nomic embedding GGUF in System before starting Hindsight.")
+    if not inference.status()["reachable"]:
+        raise RuntimeError("Install the local llama.cpp runtime in System before starting Hindsight.")
+    if not chat:
+        raise RuntimeError("Install and select a chat GGUF in System before starting Hindsight.")
+    if not registry["embedding_installed"]:
+        raise RuntimeError("Hindsight needs the Nomic embedding model. Select Install and turn on to download it.")
     base, _ = inference_bridge.start()
     return base, chat, config.EMBED_MODEL
 
@@ -59,6 +63,7 @@ def _environment() -> dict[str, str]:
 def status() -> dict:
     alive = _process is not None and _process.poll() is None and _url is not None
     return {"installed": installed(), "local_server_reachable": alive, "phase": _phase,
+            "embedding_installed": bool(model_catalog.installed(config.EMBED_MODEL)),
             "setup_error": _last_error}
 
 
@@ -80,6 +85,19 @@ def install_and_start() -> None:
     with _LOCK:
         _CANCEL.clear()
         try:
+            if not model_catalog.installed(config.EMBED_MODEL):
+                if not inference.status()["reachable"]:
+                    raise RuntimeError("Install the local llama.cpp runtime in System before starting Hindsight.")
+                if not models.registry()["profiles"]["balanced"]["model"]:
+                    raise RuntimeError("Install and select a chat GGUF in System before starting Hindsight.")
+                if egress.offline_mode():
+                    raise RuntimeError("Turn off Offline Mode to download the Nomic embedding model for Hindsight.")
+                _phase = "downloading embedding model"
+                egress._log("hindsight_setup", "GET", "huggingface.co", "/", None, 0, 0, "Install Nomic embedding model", 0, False)
+                try:
+                    model_catalog.install_model(config.EMBED_MODEL)
+                except Exception as exc:
+                    raise RuntimeError(f"Could not install the Nomic embedding model: {exc}") from exc
             model_config = _models()
             if not installed():
                 if egress.offline_mode():

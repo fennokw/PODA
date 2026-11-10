@@ -1,4 +1,4 @@
-/* Render assistant replies as inert, local previews. Downloads stay independent of the preview. */
+/* Render assistant replies as inert, local previews and export diagrams as images. */
 (() => {
   'use strict';
   const { el } = window.PODA;
@@ -210,15 +210,28 @@
       const status = node.querySelector('.chat-visual-status');
       const host = node.querySelector('.chat-visual-image');
       const image = el('img', { alt, decoding: 'async' });
-      if (diagramWidth) {
-        image.width = Math.min(2400, Math.ceil(diagramWidth));
-        host.tabIndex = 0;
-      }
+      host.tabIndex = 0;
       const url = URL.createObjectURL(blob);
       image.onload = () => {
         image.onload = null;
         status.hidden = true;
         host.hidden = false;
+        const controls = el('div', { class: 'chat-visual-controls', 'aria-label': 'Image zoom controls' });
+        let zoom = 1;
+        const updateZoom = () => {
+          if (zoom === 1) { image.style.width = ''; image.classList.remove('zoomed'); }
+          else { image.classList.add('zoomed'); image.style.width = `${Math.round(image.dataset.fitWidth * zoom)}px`; }
+          controls.querySelector('[data-zoom-label]').textContent = `${Math.round(zoom * 100)}%`;
+        };
+        const change = (next) => {
+          if (zoom === 1) image.dataset.fitWidth = image.getBoundingClientRect().width;
+          zoom = Math.max(1, Math.min(8, next)); updateZoom();
+        };
+        controls.append(el('button', { type: 'button', class: 'btn btn-sm', onclick: () => change(zoom / 1.5), 'aria-label': 'Zoom out' }, '−'),
+          el('span', { class: 'small', 'data-zoom-label': '' }, '100%'),
+          el('button', { type: 'button', class: 'btn btn-sm', onclick: () => change(zoom * 1.5), 'aria-label': 'Zoom in' }, '+'),
+          el('button', { type: 'button', class: 'btn btn-sm', onclick: () => change(1) }, 'Fit'));
+        host.after(controls);
         node.classList.add('preview-ready');
         node.dispatchEvent(new Event('poda:preview-ready', { bubbles: true }));
         resolve();
@@ -301,6 +314,51 @@
     }
   }
 
+  // Uncompressed ZIP keeps each original Markdown byte and every standalone SVG together.
+  function zipFiles(files) {
+    const encode = new TextEncoder(), chunks = [], directory = [];
+    let offset = 0;
+    function header(length) { const bytes = new Uint8Array(length); return [bytes, new DataView(bytes.buffer)]; }
+    function crc32(bytes) {
+      let crc = 0xffffffff;
+      for (const byte of bytes) { crc ^= byte; for (let k = 0; k < 8; k++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1)); }
+      return (crc ^ 0xffffffff) >>> 0;
+    }
+    for (const [name, content] of files) {
+      const filename = encode.encode(name), data = typeof content === 'string' ? encode.encode(content) : content;
+      const crc = crc32(data), [local, l] = header(30), [central, c] = header(46);
+      l.setUint32(0, 0x04034b50, true); l.setUint16(4, 20, true); l.setUint16(6, 0x800, true);
+      l.setUint32(14, crc, true); l.setUint32(18, data.length, true); l.setUint32(22, data.length, true); l.setUint16(26, filename.length, true);
+      c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x800, true);
+      c.setUint32(16, crc, true); c.setUint32(20, data.length, true); c.setUint32(24, data.length, true); c.setUint16(28, filename.length, true); c.setUint32(42, offset, true);
+      chunks.push(local, filename, data); directory.push(central, filename); offset += local.length + filename.length + data.length;
+    }
+    const directorySize = directory.reduce((n, part) => n + part.length, 0), [end, e] = header(22);
+    e.setUint32(0, 0x06054b50, true); e.setUint16(8, files.length, true); e.setUint16(10, files.length, true);
+    e.setUint32(12, directorySize, true); e.setUint32(16, offset, true);
+    return new Blob([...chunks, ...directory, end], { type: 'application/zip' });
+  }
+
+  async function downloadMarkdownWithDiagrams(url, filename) {
+    const response = await fetch(url, { credentials: 'same-origin', cache: 'no-store' });
+    if (!response.ok) throw new Error('The Markdown file could not be downloaded.');
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const source = new TextDecoder().decode(bytes);
+    if (!markup) throw new Error('The Markdown renderer is unavailable.');
+    const diagrams = markup.parse(source, {}).filter((token) => token.type === 'fence' && token.info.trim().split(/\s+/)[0].toLowerCase() === 'mermaid');
+    const safeName = (filename || 'poda-response.md').replace(/[\\/]/g, '_');
+    const stem = safeName.replace(/\.md$/i, '');
+    let output, outputName;
+    if (!diagrams.length) { output = new Blob([bytes], { type: 'text/markdown' }); outputName = safeName; }
+    else {
+      const images = await Promise.all(diagrams.map((diagram) => renderDiagram(diagram.content)));
+      output = zipFiles([[safeName, bytes], ...images.map((svg, i) => [`${stem}-diagram-${i + 1}.svg`, svg])]);
+      outputName = `${stem}-with-diagrams.zip`;
+    }
+    const objectURL = URL.createObjectURL(output), link = el('a', { href: objectURL, download: outputName });
+    document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(objectURL), 60000);
+  }
+
   function attachmentPreview(filename) {
     if (!imageType(filename)) return null;
     const preview = el('figure', { class: 'chat-visual chat-attachment', 'data-preview': 'image',
@@ -313,5 +371,5 @@
     return preview;
   }
 
-  window.PODAChatRendering = { renderInto, attachmentPreview };
+  window.PODAChatRendering = { renderInto, attachmentPreview, downloadMarkdownWithDiagrams };
 })();
