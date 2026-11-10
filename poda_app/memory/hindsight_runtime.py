@@ -145,6 +145,8 @@ def start(model_config: tuple[str, str, str] | None = None) -> None:
                "HINDSIGHT_API_RERANKER_PROVIDER": "rrf", "HINDSIGHT_API_MCP_ENABLED": "false",
                "HINDSIGHT_API_TENANT_EXTENSION": "hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension",
                "HINDSIGHT_API_TENANT_API_KEY": token, "HINDSIGHT_API_LOG_LEVEL": "warning",
+               # The startup banner uses Unicode even when stdout is redirected on Windows.
+               "PYTHONIOENCODING": "utf-8",
                "HF_HUB_OFFLINE": "1", "OTEL_SDK_DISABLED": "true", "LITELLM_LOCAL_MODEL_COST_MAP": "True"}
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0))
