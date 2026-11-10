@@ -5,95 +5,15 @@ import json
 import re
 import uuid
 import time
-import os
 from typing import Any
 
-from . import config, ollama
+from . import config, inference
 from . import hardware
 from . import model_catalog
 from .db import connect, now_iso, rows, get_setting, set_setting
 
-# Official Ollama library Qwen tags; sizes are approximate download weights, not resident RAM.
-# Source: ollama.com/library/qwen3.6/tags and ollama.com/library/qwen3.5/tags.
-QWEN36_CANDIDATES = [
-    {
-        "tag": "qwen3.6:27b-q4_K_M",
-        "disk_gb": 17,
-        "arch": "27B",
-        "quant": "Q4_K_M",
-        "kind": "general"
-    },
-    {
-        "tag": "qwen3.6:27b-q8_0",
-        "disk_gb": 30,
-        "arch": "27B",
-        "quant": "Q8_0",
-        "kind": "general"
-    },
-    {
-        "tag": "qwen3.6:27b-bf16",
-        "disk_gb": 56,
-        "arch": "27B",
-        "quant": "BF16",
-        "kind": "general"
-    },
-    {
-        "tag": "qwen3.6:27b-coding",
-        "disk_gb": 18.5,
-        "arch": "27B coding",
-        "quant": "default",
-        "kind": "coding"
-    },
-    {
-        "tag": "qwen3.6:35b-a3b-q4_K_M",
-        "disk_gb": 24,
-        "arch": "35B / 3B active MoE",
-        "quant": "Q4_K_M",
-        "kind": "general"
-    },
-    {
-        "tag": "qwen3.6:35b-a3b-q8_0",
-        "disk_gb": 39,
-        "arch": "35B / 3B active MoE",
-        "quant": "Q8_0",
-        "kind": "general"
-    },
-    {
-        "tag": "qwen3.6:35b-a3b-bf16",
-        "disk_gb": 72,
-        "arch": "35B / 3B active MoE",
-        "quant": "BF16",
-        "kind": "general"
-    },
-    {
-        "tag": "qwen3.5:9b-q4_K_M",
-        "disk_gb": 6.6,
-        "arch": "9B",
-        "quant": "Q4_K_M",
-        "kind": "general"
-    },
-    {
-        "tag": "qwen3.5:9b-q8_0",
-        "disk_gb": 10,
-        "arch": "9B",
-        "quant": "Q8_0",
-        "kind": "general"
-    },
-    {
-        "tag": "qwen3.5:27b-q4_K_M",
-        "disk_gb": 17,
-        "arch": "27B",
-        "quant": "Q4_K_M",
-        "kind": "general"
-    },
-    {
-        "tag": "qwen3.5:27b-q8_0",
-        "disk_gb": 30,
-        "arch": "27B",
-        "quant": "Q8_0",
-        "kind": "general"
-    }
-]
+PROFILE_NAMES = ("fast", "balanced", "deep", "vision", "fast_coding", "deep_coding")
+
 
 def context_budget(unified_memory_gb: float) -> dict[str, int]:
     """Measured policy: Conservative initial profile, subject to real installed-model benchmarks on this Mac."""
@@ -104,39 +24,20 @@ def context_budget(unified_memory_gb: float) -> dict[str, int]:
     return {"fast": 8192, "balanced": 16384, "deep": 32768}
 
 
-def qwen36_assessment(unified_memory_gb: float, installed: list[str]) -> list[dict[str, Any]]:
-    out = []
-    # Reserve ~6 GB for macOS + PODA + browser + Ollama runtime, plus KV cache headroom.
-    headroom_gb = 6.0
-    for cand in QWEN36_CANDIDATES:
-        usable = unified_memory_gb - headroom_gb
-        fits_8k = cand["disk_gb"] + 1.2 <= usable
-        fits_32k = cand["disk_gb"] + 4.5 <= usable
-        out.append({**cand, "installed": any(m.startswith(cand["tag"]) for m in installed),
-                    "memory_safe_8k": fits_8k, "memory_safe_32k": fits_32k,
-                    "verdict": ("memory-safe" if fits_32k else ("tight: 8K context only, expect swapping under load" if fits_8k else "not memory-safe on this Mac"))})
-    return out
-
-
 def selected_profiles() -> dict[str, str]:
-    return {p: get_setting("model_profile_"+p) for p in ("fast", "balanced", "deep")}
+    return {profile: get_setting("model_profile_" + profile) for profile in PROFILE_NAMES}
 
 
 def set_profile(profile: str, model: str, installed: list[str]) -> None:
-    if profile not in {"fast", "balanced", "deep"}:
-        raise ValueError("Unknown model profile")
-    if model not in installed or "embed" in model.lower():
-        raise ValueError("Choose an installed Ollama chat model")
-    set_setting("model_profile_"+profile, model)
-
-
-def catalog(hw: dict[str, Any] | float, installed: list[str]) -> dict[str, Any]:
-    # Float support retained for older in-process callers; do not invent hardware.
-    measured = hw if isinstance(hw,dict) else {"unified_memory_gb":hw,"ram_total_gb":hw,
-        "memory_architecture":"unified","disk_free_gb":0}
-    assessment = model_catalog.assess(measured,installed)
-    return {"recommendations":qwen36_assessment(float(measured.get("unified_memory_gb") or 0),installed),
-            "installed":installed,"selected":selected_profiles(), **assessment}
+    if profile not in PROFILE_NAMES:
+        raise ValueError("Unknown model profile.")
+    if model:
+        item = model_catalog.installed(model)
+        if model not in installed or not item or item["role"] == "embedding":
+            raise ValueError("Choose an installed GGUF chat model.")
+        if profile == "vision" and not item.get("vision"):
+            raise ValueError("The visual role requires a GGUF with its matching projector.")
+    set_setting("model_profile_" + profile, model)
 
 
 def recorded_benchmarks() -> list[dict[str, Any]]:
@@ -185,48 +86,57 @@ def measured_memory_gb() -> float:
 
 
 def registry(installed: list[str] | None = None, unified_memory_gb: float | None = None) -> dict[str, Any]:
-    installed = installed if installed is not None else (ollama.status().get("models") or [])
+    installed = installed if installed is not None else inference.installed_models()
+    inventory = {item["id"]: item for item in model_catalog.inventory()}
     mem = measured_memory_gb() if unified_memory_gb is None else float(unified_memory_gb)
-    budget = context_budget(mem)
-    # Safe fallback when hardware detection is unavailable: small context only.
-    if mem <= 0:
-        budget = {"fast": 4096, "balanced": 8192, "deep": 8192}
+    budget = context_budget(mem) if mem > 0 else {"fast": 4096, "balanced": 8192, "deep": 8192}
+    limit = inference.settings()["context_limit"]
+    assignments = selected_profiles()
+    language_models = [name for name in installed if name != config.EMBED_MODEL
+                       and inventory.get(name, {}).get("role") not in {"embedding", "vision"}]
+    coding = sorted((name for name in language_models if inventory.get(name, {}).get("role") == "coding"),
+                    key=lambda name: inventory[name]["size"])
+    vision = [name for name in installed if inventory.get(name, {}).get("vision")]
 
-    # User-selected profile tags must match an actually installed model exactly.
-    # Other local models imported through Ollama are equally eligible.
-    def pick(profile: str, preferred: str, fallbacks: list[str]) -> str | None:
-        configured = get_setting("model_profile_" + profile)
-        if configured in installed and not any(w in configured.lower() for w in ("embed", "nomic-")):
-            return configured
-        for candidate in [preferred, *fallbacks]:
-            for name in installed:
-                if name == candidate or (":" not in candidate and name.startswith(candidate+":")):
-                    return name
-        return next((m for m in installed if "embed" not in m.lower() and "nomic-" not in m.lower()), None)
+    def pick(profile: str, preferred: str, candidates: list[str]) -> str | None:
+        return next((name for name in [assignments[profile], preferred, *candidates] if name in candidates), None)
 
-    fast = pick("fast", config.FAST_MODEL, ["llama3.2:3b", "qwen3.5:4b", "qwen3:8b"])
-    balanced = pick("balanced", config.ADVANCED_MODEL, ["qwen3.6:27b-q4_K_M", "qwen3:14b", "qwen3.5:9b"])
-    deep = pick("deep", config.OPTIONAL_DEEP_MODEL, ["qwen3.6:35b-a3b-q4_K_M", "qwen3.6:27b-coding", "qwen3:14b"])
+    defaults = {"fast": config.FAST_MODEL, "balanced": config.ADVANCED_MODEL, "deep": config.OPTIONAL_DEEP_MODEL}
+    general = sorted(language_models, key=lambda name: inventory.get(name, {}).get("size", 0))
+    selected = {profile: pick(profile, default, (list(reversed(general)) if profile == "deep" else general) or vision)
+                for profile, default in defaults.items()}
+    for role in defaults:
+        if assignments[role] in vision:
+            selected[role] = assignments[role]
+    selected["vision"] = pick("vision", "", vision)
+    selected["fast_coding"] = pick("fast_coding", "", coding) or (
+        assignments["fast_coding"] if assignments["fast_coding"] in language_models else selected["fast"])
+    selected["deep_coding"] = pick("deep_coding", "", list(reversed(coding))) or (
+        assignments["deep_coding"] if assignments["deep_coding"] in language_models else selected["deep"])
+    for role in ("fast_coding", "deep_coding"):
+        if assignments[role] in language_models or assignments[role] in vision:
+            selected[role] = assignments[role]
+    levels = {"fast": "fast", "balanced": "balanced", "deep": "deep", "vision": "balanced",
+              "fast_coding": "balanced", "deep_coding": "deep"}
+    prediction = {"fast": 900, "balanced": 2200, "deep": 5200}
     return {
         "installed": installed,
-        "profiles": {
-            "fast": {"model": fast, "num_ctx": budget["fast"], "num_predict": 900, "temperature": 0.08, "think": False},
-            "balanced": {"model": balanced, "num_ctx": budget["balanced"], "num_predict": 1600, "temperature": 0.09, "think": True},
-            "deep": {"model": deep, "num_ctx": budget["deep"], "num_predict": 3000, "temperature": 0.10, "think": True},
-        },
+        "profiles": {role: {
+            "model": name, "num_ctx": min(limit, budget[levels[role]]), "num_predict": prediction[levels[role]],
+            "temperature": .1, "think": bool(inventory.get(name, {}).get("thinking") and levels[role] != "fast"),
+        } for role, name in selected.items()},
         "embedding": config.EMBED_MODEL,
-        "embedding_installed": any(m.startswith(config.EMBED_MODEL) for m in installed),
-        "qwen36": qwen36_assessment(mem, installed),
+        "embedding_installed": config.EMBED_MODEL in installed,
         "unified_memory_gb": None if config.WINDOWS else mem,
-        "memory_measurement": ("Windows physical RAM" if config.WINDOWS else "sysctl hw.memsize") if mem > 0 else "unavailable; conservative context limits",
+        "memory_measurement": "Measured hardware" if mem else "Conservative context limits",
     }
 
 
 def complexity_score(message: str) -> int:
-    text = message.lower()
+    words = set(re.findall(r"[a-z]+", message.lower()))
     score = 0
     for word in ["analyze", "prioritize", "plan", "debug", "complex", "strategy", "calendar", "email", "project", "rank", "optimize", "explain", "compare", "schedule", "refactor", "implement", "test", "patch", "schema"]:
-        if word in text:
+        if word in words:
             score += 2
     score += min(6, len(message) // 350)
     if "```" in message:
@@ -242,16 +152,23 @@ def needs_grounded_model(message: str) -> bool:
     return bool(_DATA_ACCESS.search(message or ""))
 
 
+_CODE = re.compile(r"\b(?:code|coding|debug|refactor|repository|script|software|python|javascript|typescript|html|css|rust|patch|unit tests?)\b", re.I)
+_REASON = re.compile(r"\b(?:debug|diagnose|proof|prove|derive|tradeoffs?|refactor|optimi[sz]e|algorithm|architect(?:ure)?|root cause)\b", re.I)
+
+
 def choose_profile(message: str, mode: str, thinking_level: str) -> str:
+    score = complexity_score(message)
+    live_account = re.search(r"\b(?:my|our|connected) (?:calendar|notion|inbox|e-?mails?|workload|projects?)\b", message, re.I)
+    if _CODE.search(message) and not live_account:
+        return "deep_coding" if mode == "deep" or (mode != "fast" and (thinking_level == "deep" or score >= 6)) else "fast_coding"
     if mode == "fast":
         return "fast"
     if mode == "advanced":
         return "balanced"
     if mode == "deep":
         return "deep"
-    score = complexity_score(message)
-    if thinking_level == "deep" and score >= 2:
-        return "deep" if score >= 6 else "balanced"
+    if thinking_level == "deep":
+        return "deep" if score >= 6 or _REASON.search(message) else "balanced"
     if score >= 4 or needs_grounded_model(message):
         return "balanced"
     return "fast"
@@ -259,20 +176,19 @@ def choose_profile(message: str, mode: str, thinking_level: str) -> str:
 
 def resolve(message: str, mode: str, thinking_level: str, reg: dict[str, Any] | None = None) -> dict[str, Any]:
     reg = reg or registry()
+    profiles = reg["profiles"]
     profile_name = choose_profile(message, mode, thinking_level)
-    profile = dict(reg["profiles"][profile_name])
-    # Thinking level adjusts the context/prediction budget without changing which models are available.
+    if not profiles.get(profile_name, {}).get("model"):
+        profile_name = next((role for role in ("balanced", "fast", "deep") if profiles[role].get("model")), "fast")
+    profile = dict(profiles[profile_name])
+    needs_reasoning = (thinking_level == "deep" or profile_name in {"deep", "deep_coding"}
+                       or bool(_REASON.search(message)) or complexity_score(message) >= 6)
+    profile["think"] = profile.get("think", False) and thinking_level != "fast" and needs_reasoning
     if thinking_level == "fast":
-        profile["num_ctx"] = min(profile["num_ctx"], reg["profiles"]["fast"]["num_ctx"])
+        profile["num_ctx"] = min(profile["num_ctx"], profiles["fast"]["num_ctx"])
         profile["num_predict"] = min(profile["num_predict"], 1200)
-    elif thinking_level == "deep":
-        profile["num_predict"] = max(profile["num_predict"], 2400)
-    if not profile.get("model"):
-        for fallback in ("balanced", "fast", "deep"):
-            if reg["profiles"][fallback].get("model"):
-                profile = dict(reg["profiles"][fallback])
-                profile_name = fallback
-                break
+    elif profile["think"]:
+        profile["num_predict"] = max(profile["num_predict"], 3200)
     profile["profile"] = profile_name
-    profile["options"] = {"temperature": profile["temperature"], "num_ctx": profile["num_ctx"], "num_predict": profile["num_predict"]}
+    profile["options"] = {key: profile[key] for key in ("temperature", "num_ctx", "num_predict")}
     return profile

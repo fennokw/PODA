@@ -11,7 +11,7 @@ from typing import Any
 
 import numpy as np
 
-from ..runtime import config, ollama
+from ..runtime import inference, models
 from ..runtime.db import connect, now_iso, one, rows, set_setting
 from ..memory import store, surface, layout
 from ..memory.embedding_jobs import enqueue as enqueue_embeddings
@@ -38,7 +38,7 @@ def _cluster(conversations: list[ImportConversation]) -> list[list[int]]:
     try:
         vecs = []
         for offset in range(0, len(docs), 32):
-            vecs.extend(store.normalize(v) for v in ollama.embed(docs[offset:offset + 32], timeout=600))
+            vecs.extend(store.normalize(v) for v in inference.embed(docs[offset:offset + 32], timeout=600))
     except Exception:
         vecs = []
     if vecs and len(vecs) == len(docs):
@@ -83,10 +83,9 @@ def _label_cluster(conversations: list[ImportConversation], ids: list[int], numb
     terms = _terms(" ".join(titles) + " " + text, 12)
     prompt = """Name a high-level personal knowledge cloud from these conversation titles/excerpts. Return ONLY JSON: {\"title\": \"2-5 words\", \"summary\": \"one sentence\", \"tags\": [\"...\"]}. Keep it broad enough to contain related future conversations; do not invent facts or include private specifics in the title.\n\n""" + "\n".join(f"- {t}" for t in titles[:25]) + "\n\nEXCERPTS:\n" + text[:12000]
     try:
-        installed = ollama.installed_models(timeout=2.0)
-        model = next((m for m in installed if "qwen" in m.lower()), None) or (installed[0] if installed else None)
+        model = models.registry()["profiles"]["fast"]["model"]
         if model:
-            resp = ollama.chat([{"role":"user","content":prompt}], model, options={"temperature":0.05,"num_ctx":16384,"num_predict":240}, think=False if model.startswith("qwen") else None, timeout=180)
+            resp = inference.chat([{"role":"user","content":prompt}], model, options={"temperature":0.05,"num_ctx":16384,"num_predict":240}, think=False, timeout=180)
             raw = (resp.get("message",{}).get("content") or "").strip()
             match = re.search(r"\{.*\}", raw, re.S)
             data = json.loads(match.group(0) if match else raw)

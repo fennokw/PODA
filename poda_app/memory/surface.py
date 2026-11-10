@@ -17,7 +17,7 @@ from typing import Any
 
 import numpy as np
 
-from ..runtime import ollama, models
+from ..runtime import inference, models
 from ..runtime.db import connect, now_iso, rows, one
 from . import store
 
@@ -186,8 +186,8 @@ def distill_text(members: list[dict[str, Any]], model: str | None) -> tuple[dict
               '{"title": "<= 60 chars", "core": "<= 3 sentences stating the shared meaning, decisions, preferences or facts, no detail", '
               '"triggers": "comma separated cues that should recall this"}. Do not invent facts; if the exchanges disagree, say so briefly.\n\nEXCHANGES:\n' + _member_digest(members))
     try:
-        resp = ollama.chat([{"role": "user", "content": prompt}], model, options={"temperature": 0.05, "num_ctx": 8192, "num_predict": 320},
-                           think=False if model.startswith("qwen3") else None, timeout=120)
+        resp = inference.chat([{"role": "user", "content": prompt}], model, options={"temperature": 0.05, "num_ctx": 8192, "num_predict": 320},
+                           think=False, timeout=120)
         text = (resp.get("message", {}).get("content") or "").strip()
         match = re.search(r"\{.*\}", text, re.S)
         data = json.loads(match.group(0)) if match else {}
@@ -354,11 +354,11 @@ def _background_rebuild() -> None:
 
 
 def schedule_startup_rebuild() -> bool:
-    """Start an incremental rebuild in the background when Ollama is reachable. Disabled by PODA_BACKGROUND_SURFACES=0."""
+    """Start an incremental rebuild in the background when llama.cpp is reachable. Disabled by PODA_BACKGROUND_SURFACES=0."""
     if os.getenv("PODA_BACKGROUND_SURFACES", "1") == "0" or _STATUS["running"]:
         return False
     try:
-        if not ollama.status().get("reachable"):
+        if not inference.status().get("reachable"):
             return False
     except Exception:
         return False

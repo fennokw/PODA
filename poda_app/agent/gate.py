@@ -158,11 +158,11 @@ def unsupported_action_response(message: str, cap: dict[str, Any], *, sandbox_ta
 
 
 def capability_answer(cap: dict[str, Any]) -> str:
-    models = cap["ollama"].get("models") or []
+    models = cap["inference"].get("models") or []
     fs = cap.get("filesystem", {})
     notion = cap.get("notion", {})
     lines = ["Current verified PODA state (refreshed from the runtime, not inferred):", ""]
-    lines.append(f"- **Ollama:** {'reachable' if cap['ollama'].get('reachable') else 'not reachable'}. Installed: {', '.join(models[:8]) or 'none detected'}.")
+    lines.append(f"- **llama.cpp:** {'reachable' if cap['inference'].get('reachable') else 'not reachable'}. Installed: {', '.join(models[:8]) or 'none detected'}.")
     if fs.get("granted_roots"):
         lines.append("- **Files:** granted paths — " + "; ".join(f"`{r['path']}` ({r['mode']}{', can run Python' if r.get('allow_execute') else ''})" for r in fs["granted_roots"]) + ". Nothing outside these is accessible. Every write produces a receipt.")
     else:

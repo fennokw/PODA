@@ -27,15 +27,15 @@ def test_chat_emits_tool_and_proposal_events(client, monkeypatch, tmp_folder):
                 {"function": {"name": "fs_read", "arguments": {"path": str(tmp_folder / "notes.md")}}},
                 {"function": {"name": "fs_write", "arguments": {"path": str(tmp_folder / "copy.md"), "content": "alpha beta"}}}]}},
         ])
-        monkeypatch.setattr(orchestrator.ollama, "chat", lambda *a, **k: next(plans))
-        monkeypatch.setattr(orchestrator.ollama, "status", lambda: {"reachable": True, "models": ["llama3.2:3b"]})
+        monkeypatch.setattr(orchestrator.inference, "chat", lambda *a, **k: next(plans))
+        monkeypatch.setattr(orchestrator.inference, "status", lambda: {"reachable": True, "models": ["llama3.2:3b"]})
 
         async def fake_stream(messages, model, options=None, tools=None, think=None, timeout=900):
             system = messages[0]["content"]
             assert "PENDING PROPOSAL" in system and "TOOL RESULTS" in system and "TOOLS (PODA executes" in system
             yield {"message": {"content": "I will copy notes.md once you approve."}, "done": False}
             yield {"message": {"content": ""}, "done": True, "eval_count": 5, "eval_duration": 1000}
-        monkeypatch.setattr(chat_router.ollama, "chat_stream", fake_stream)
+        monkeypatch.setattr(chat_router.inference, "chat_stream", fake_stream)
         monkeypatch.setattr(chat_router.models, "resolve", lambda *a, **k: {"model": "llama3.2:3b", "profile": "fast", "num_ctx": 8192, "options": {}, "think": False})
         monkeypatch.setattr(chat_router.retrieval, "recall", lambda q, limit=18, **kw: {"mode": "test", "weights": {}, "results": [], "depth_used": kw.get("depth", "auto"), "surfaces": []})
         r = client.post("/chat/stream", json={"message": f"Read notes.md in {tmp_folder} and create copy.md with the same text", "mode": "fast"})
@@ -63,7 +63,7 @@ def test_chat_emits_tool_and_proposal_events(client, monkeypatch, tmp_folder):
         async def report_stream(messages, model, options=None, tools=None, think=None, timeout=900):
             assert "ACTION RECEIPTS" in messages[0]["content"] and "fs_write" in messages[0]["content"]
             yield {"message": {"content": "Done per receipt."}, "done": True}
-        monkeypatch.setattr(chat_router.ollama, "chat_stream", report_stream)
+        monkeypatch.setattr(chat_router.inference, "chat_stream", report_stream)
         r2 = client.post("/chat/stream", json={"message": "Report what you did", "continuation_of": proposal["proposal_id"]})
         assert any(e == "done" for e, _ in _events(r2.text))
 
@@ -72,8 +72,8 @@ def test_chat_emits_tool_and_proposal_events(client, monkeypatch, tmp_folder):
             assert "ACTION RECEIPTS" in messages[0]["content"]
             yield {"message": {"content": "Ready to continue."}, "done": True}
 
-        monkeypatch.setattr(chat_router.ollama, "chat_stream", continue_stream)
-        monkeypatch.setattr(orchestrator.ollama, "chat", lambda *a, **kw: {"message": {"tool_calls": [
+        monkeypatch.setattr(chat_router.inference, "chat_stream", continue_stream)
+        monkeypatch.setattr(orchestrator.inference, "chat", lambda *a, **kw: {"message": {"tool_calls": [
             {"function": {"name": "fs_write", "arguments": {"path": str(tmp_folder / "copy.md"), "content": "alpha beta"}}},
             {"function": {"name": "fs_write", "arguments": {"path": str(tmp_folder / "next.md"), "content": "next"}}},
         ]}})
@@ -101,15 +101,15 @@ def test_chat_emits_tool_and_proposal_events(client, monkeypatch, tmp_folder):
         def fallback_plan(messages, model, **kwargs):
             attempted_models.append(model)
             if model == "rejected-local":
-                raise orchestrator.ollama.OllamaError("local model does not support tools")
+                raise orchestrator.inference.InferenceError("local model does not support tools")
             return {"message": {"tool_calls": [
                 {"function": {"name": "fs_write", "arguments": {"path": str(tmp_folder / name), "content": content}}}
                 for name, content in (("copy.md", "alpha beta"), ("next.md", "next"), ("third.md", "third"))
             ]}}
 
-        monkeypatch.setattr(chat_router.ollama, "chat_stream", final_stream)
+        monkeypatch.setattr(chat_router.inference, "chat_stream", final_stream)
         monkeypatch.setattr(orchestrator, "_planner_models", lambda *args: ["rejected-local", "llama3.2:3b"])
-        monkeypatch.setattr(orchestrator.ollama, "chat", fallback_plan)
+        monkeypatch.setattr(orchestrator.inference, "chat", fallback_plan)
         resumed = client.post("/chat/stream", json={
             "message": "Continue from the latest checkpoint", "continuation_of": followup["proposal_id"], "resume_workflow": True})
         events = _events(resumed.text)
@@ -182,7 +182,7 @@ def test_chat_download_is_available_without_filesystem_grants(client, monkeypatc
         assert "chat attachment named poda-output.csv" in messages[0]["content"]
         yield {"message": {"content": "Here is the file.\n\n```csv\nname,count\nalpha,3\n```"}, "done": True}
 
-    monkeypatch.setattr(chat_router.ollama, "chat_stream", fake_stream)
+    monkeypatch.setattr(chat_router.inference, "chat_stream", fake_stream)
     monkeypatch.setattr(chat_router.models, "resolve", lambda *a, **k: {
         "model": "test", "profile": "fast", "num_ctx": 8192, "options": {}})
     monkeypatch.setattr(chat_router.orchestrator, "tool_prerequisites_exist", lambda _: False)
@@ -213,7 +213,7 @@ def test_sandbox_pdf_from_chat_persists_and_can_be_revised(client, monkeypatch):
         assert "one fenced markdown code block" in messages[0]["content"]
         yield {"message": {"content": "```markdown\n# PODA Sandbox\nVersion one.\n```"}, "done": True}
 
-    monkeypatch.setattr(chat_router.ollama, "chat_stream", fake_stream)
+    monkeypatch.setattr(chat_router.inference, "chat_stream", fake_stream)
     monkeypatch.setattr(chat_router.models, "resolve", lambda *a, **k: {
         "model": "test", "profile": "fast", "num_ctx": 8192, "options": {}})
     monkeypatch.setattr(chat_router.orchestrator, "tool_prerequisites_exist", lambda _: False)
@@ -296,7 +296,7 @@ def test_chat_routes_revision_of_last_workspace_file_without_folder_grant(client
         yield {"message": {"content": "Workspace revision route reached."}, "done": True}
 
     monkeypatch.setattr(chat_router.orchestrator, "plan", plan)
-    monkeypatch.setattr(chat_router.ollama, "chat_stream", fake_stream)
+    monkeypatch.setattr(chat_router.inference, "chat_stream", fake_stream)
     monkeypatch.setattr(chat_router.models, "resolve", lambda *a, **k: {
         "model": "test", "profile": "fast", "num_ctx": 8192, "options": {}})
     assert not grants.list_grants()
@@ -328,7 +328,7 @@ def test_mermaid_markdown_export_without_a_folder_grant(client, monkeypatch, ret
         yield {"message": {"content": refusal + "\n\n"}, "done": False}
         yield {"message": {"content": expected + "\nCan you confirm the steps?"}, "done": True}
 
-    monkeypatch.setattr(chat_router.ollama, "chat_stream", fake_stream)
+    monkeypatch.setattr(chat_router.inference, "chat_stream", fake_stream)
     monkeypatch.setattr(chat_router.models, "resolve", lambda *a, **k: {
         "model": "test", "profile": "fast", "num_ctx": 8192, "options": {}})
     monkeypatch.setattr(chat_router.orchestrator, "tool_prerequisites_exist", lambda _: False)
@@ -376,7 +376,7 @@ def test_chat_creates_one_verified_zip_instead_of_separate_files(client, monkeyp
     calls = iter([{"message": {"tool_calls": [{"function": {"name": "sandbox_write", "arguments": {
         "path": "rainbow.py", "content": "ignored"}}}]}}, {"message": {"content": "Ready to package."}}])
     monkeypatch.setattr(chat_router.orchestrator, "_planner_models", lambda _: ["test"])
-    monkeypatch.setattr(chat_router.ollama, "chat", lambda *a, **k: next(calls))
+    monkeypatch.setattr(chat_router.inference, "chat", lambda *a, **k: next(calls))
     monkeypatch.setattr(chat_router.models, "resolve", lambda *a, **k: {
         "model": "test", "profile": "fast", "num_ctx": 8192, "options": {}})
 
@@ -385,7 +385,7 @@ def test_chat_creates_one_verified_zip_instead_of_separate_files(client, monkeyp
         body = json.dumps([{"filename": name, "content": content} for name, content in members.items()])
         yield {"message": {"content": f"Would you like me to proceed?\n```json\n{body}\n```"}, "done": True}
 
-    monkeypatch.setattr(chat_router.ollama, "chat_stream", fake_stream)
+    monkeypatch.setattr(chat_router.inference, "chat_stream", fake_stream)
     assert not grants.list_grants()
     response = client.post("/chat/stream", json={"message": task, "use_memory": False})
     events = _events(response.text)

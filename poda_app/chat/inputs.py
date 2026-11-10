@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..agent import sandbox_files
-from . import artifacts
+from . import artifacts, document_ocr
 
 MAX_FILES = 4
 MAX_TOTAL_BYTES = 32 * 1024 * 1024
@@ -81,34 +81,7 @@ def _text(data: bytes) -> str | None:
         return None
 
 
-def _pdf(file: InputFile, limit: int, *, editing: bool) -> str:
-    from pypdf import PdfReader
-
-    pdf = PdfReader(io.BytesIO(file.data), strict=False)
-    if pdf.is_encrypted:
-        raise ValueError("Unlock this PDF before attaching it.")
-    if len(pdf.pages) > 120:
-        raise ValueError("Attach a PDF excerpt of up to 120 pages.")
-    parts = []
-    remaining = limit
-    for index, page in enumerate(pdf.pages, 1):
-        text = (page.extract_text() or "").strip()
-        if not text:
-            continue
-        section = f"[Page {index}]\n{text}"
-        parts.append(section[:remaining])
-        remaining -= len(section)
-        if remaining < 0 or remaining == 0 and index < len(pdf.pages):
-            if editing:
-                raise ValueError("This PDF is too long for a full edit in the current model context. Attach a smaller excerpt.")
-            parts.append("[PDF excerpt ends here. Attach the remaining pages separately if needed.]")
-            break
-    if not parts:
-        raise ValueError("This PDF has no selectable text. Attach screenshots of the pages you want PODA to read.")
-    return "\n\n".join(parts)
-
-
-def _image(file: InputFile) -> str:
+def _image(file: InputFile) -> tuple[str, str]:
     from PIL import Image, ImageOps
 
     with Image.open(io.BytesIO(file.data)) as original:
@@ -123,7 +96,11 @@ def _image(file: InputFile) -> str:
             flattened.paste(rgba, mask=rgba.getchannel("A"))
             image = flattened
         image.convert("RGB").save(output, "PNG")
-    return base64.b64encode(output.getvalue()).decode("ascii")
+        try:
+            recognized = document_ocr.image_text(image)
+        except Exception:
+            recognized = ""
+    return base64.b64encode(output.getvalue()).decode("ascii"), recognized
 
 
 @dataclass
@@ -143,11 +120,16 @@ def prepare(files: tuple[InputFile, ...], message: str, limit: int, editing: Inp
     for file in files:
         try:
             if file.suffix in IMAGE_SUFFIXES:
-                result.images.append(_image(file))
+                image, recognized = _image(file)
+                result.images.append(image)
                 result.image_names.append(file.name)
-                continue
-            if file.suffix == ".pdf":
-                content = _pdf(file, per_file, editing=file is editing)
+                if not recognized:
+                    continue
+                content = "[Recognized image text · OCR can contain transcription errors]\n" + recognized[:per_file]
+            elif file.suffix == ".pdf":
+                content = document_ocr.pdf_text(file.data, per_file, editing=file is editing)
+            elif file.suffix in {".docx", ".xlsx"}:
+                content = document_ocr.office_text(file.data, file.suffix, per_file)
             elif file.suffix == ".zip":
                 members = _zip_members(file)
                 if file is editing:
@@ -178,7 +160,7 @@ def prepare(files: tuple[InputFile, ...], message: str, limit: int, editing: Inp
             else:
                 text = _text(file.data)
                 if text is None:
-                    raise ValueError("Use a ZIP, PDF, image, or UTF-8 text/code file.")
+                    raise ValueError("Use a ZIP, PDF, DOCX, XLSX, image, or UTF-8 text/code file.")
                 content = text[:per_file] + ("\n[Text excerpt ends here.]" if len(text) > per_file else "")
             blocks.append(f"Attachment {json.dumps(file.name, ensure_ascii=False)}\n{content}")
         except Exception as exc:

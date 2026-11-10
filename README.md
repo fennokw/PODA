@@ -4,11 +4,11 @@ PODA is a local-first assistant for chat, memory, mail, projects, and automation
 
 ## Install from source
 
-1. Clone this repository or download and extract its source ZIP. Install Node.js 24, Python 3.11 or newer, and Ollama for local models. If Open3D requires libusb, install it with Homebrew using `brew install libusb`.
+1. Clone this repository or download and extract its source ZIP. Install Node.js 24 and Python 3.11 or newer. If Open3D requires libusb, install it with Homebrew using `brew install libusb`.
 2. Run `./Install-PODA.command` from the source folder. If the ZIP extractor stripped the executable bit, run `bash Install-PODA.command`.
 3. The command builds `PODA.app` from this folder, sets up the Python runtime, creates a PODA shortcut on your Desktop, and opens the app. Keep this folder in place so the shortcut can find the app. Rerun the command after pulling updates or editing the code.
 
-Start Ollama and run `ollama pull llama3.2:3b` and `ollama pull nomic-embed-text` for starter chat and embedding models. PODA stores desktop data in `~/Library/Application Support/PODA-Public` and credentials in Keychain.
+PODA stores desktop data in `~/Library/Application Support/PODA-Public` and credentials in Keychain.
 
 ## Source layout
 
@@ -20,6 +20,10 @@ A prebuilt Apple Silicon package is available in the [desktop workflow artifacts
 
 Daily Automation resolves email event dates against the original send time, then verifies authorized Notion additions. To use the same read-only scheduling tools from an MCP client, run `python -m poda_app.scheduling.mcp` over stdio from the source folder with the PODA Python environment.
 
-Use **Personalize → Memory search with Hindsight** to install and enable the local search engine. Setup uses an installed Ollama chat model and the PODA embedding model. Hindsight keeps a derived index in the app's data folder. **Add-ons** contains the downloadable program catalog and saved skills. Program tools require a separate trust opt-in and per-tool enable switch. **Developer mode** in the toolbar reveals technical diagnostics.
+Use **Personalize → Memory search with Hindsight** to install and enable the local search engine. Setup uses an installed GGUF chat model and the Nomic GGUF embedding model. Hindsight keeps a derived index in the app's data folder. **Add-ons** contains the downloadable program catalog and saved skills. Program tools require a separate trust opt-in and per-tool enable switch. **Developer mode** in the toolbar reveals technical diagnostics.
 
-In Chat, choose **Attach files**, drop files into the chat, or paste a screenshot. Files are shared with that message only. PODA can inspect source ZIPs and text-based PDFs and return edited copies. A revised PDF uses PODA’s document layout. To read images, install a local vision model such as `qwen3-vl:4b` from **System → Model installer and profile selection**.
+In Chat, choose **Attach files**, drop files into the chat, or paste a screenshot. Files are shared with that message only. PODA can inspect source ZIPs and text-based PDFs and return edited copies. A revised PDF uses PODA’s document layout. To read images, download Gemma 3 Vision or import a GGUF with its matching projector from **System → Model installer and profile selection**.
+
+PODA packages its own llama.cpp engine. In **System**, download or import a GGUF and assign it to a model role. Install the Nomic embedding model for semantic recall and Hindsight. Advanced controls include speculative decoding, K/V cache precision, GPU offload, and Flash Attention. The first engine or model download needs an internet connection. Inference and OCR run locally afterward.
+
+Uploaded PDFs use native text when available and local PP-OCR for scanned pages. Chat also reads DOCX and XLSX content and recognizes screenshot text before asking a visual model to interpret image details.

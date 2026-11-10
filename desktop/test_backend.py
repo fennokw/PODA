@@ -13,6 +13,15 @@ from pathlib import Path
 BACKEND = Path(os.environ.get("PODA_TEST_BACKEND", Path(__file__).parent / ".backend")).resolve()
 
 
+def test_packaged_llama_cpp_runs():
+    name = "llama-server.exe" if sys.platform == "win32" else "llama-server"
+    binary = next((BACKEND / "llama-runtime").rglob(name))
+    version = subprocess.run([str(binary), "--version"], cwd=binary.parent, check=True,
+                             capture_output=True, text=True, timeout=15)
+    assert "12247" in version.stdout + version.stderr
+
+
+
 def test_desktop_requires_token_and_local_session(tmp_path):
     assert not (BACKEND / "poda_app" / "server.py").exists()
     assert (BACKEND / "poda_app" / "main.py").is_file()

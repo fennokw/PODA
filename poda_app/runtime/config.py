@@ -35,17 +35,10 @@ HOST = "127.0.0.1"
 PORT = int(os.getenv("PODA_PORT", "8787"))
 CREDENTIAL_NAMESPACE = os.getenv("PODA_CREDENTIAL_NAMESPACE", "PODA-Windows" if WINDOWS else "PODA")
 
-OLLAMA_BASE = os.getenv("PODA_OLLAMA_BASE", "http://127.0.0.1:11434").rstrip("/")
-OLLAMA_CHAT_URL = os.getenv("PODA_OLLAMA_CHAT_URL", f"{OLLAMA_BASE}/api/chat")
-OLLAMA_TAGS_URL = os.getenv("PODA_OLLAMA_TAGS_URL", f"{OLLAMA_BASE}/api/tags")
-OLLAMA_EMBED_URL = os.getenv("PODA_OLLAMA_EMBED_URL", f"{OLLAMA_BASE}/api/embed")
-OLLAMA_PS_URL = f"{OLLAMA_BASE}/api/ps"
-OLLAMA_SHOW_URL = f"{OLLAMA_BASE}/api/show"
-
-FAST_MODEL = os.getenv("PODA_FAST_MODEL", "llama3.2:3b")
-ADVANCED_MODEL = os.getenv("PODA_ADVANCED_MODEL", "qwen3:14b")
-OPTIONAL_DEEP_MODEL = os.getenv("PODA_DEEP_MODEL", "qwen3:14b")
-EMBED_MODEL = os.getenv("PODA_EMBED_MODEL", "nomic-embed-text")
+FAST_MODEL = "qwen3-4b-q4_k_m"
+ADVANCED_MODEL = "qwen3-8b-q4_k_m"
+OPTIONAL_DEEP_MODEL = "qwen3-14b-q4_k_m"
+EMBED_MODEL = "nomic-embed-text-v1.5-f16"
 EMBED_SPACE_VERSION = f"{EMBED_MODEL}:v1"
 
 # Encryption at rest: public release defaults to REQUIRED; startup fails if SQLCipher/the operating system credential store cannot work.
@@ -61,7 +54,6 @@ NOTION_KEYCHAIN_ACCOUNT = "primary"
 EGRESS_ALLOWLIST = {
     "addon_catalog": {"raw.githubusercontent.com"},
     "notion": {"api.notion.com"},
-    "ollama": {"127.0.0.1", "localhost"},
 }
 
 _SOURCE_GLOBS = ("poda_app/**/*.py", "poda_app/static/**/*", "*.cmd", "*.ps1", "requirements.txt")

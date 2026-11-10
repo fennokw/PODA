@@ -49,14 +49,14 @@ def guarded_request(service: str, method: str, url: str, *, headers: dict[str, s
     allowed = config.EGRESS_ALLOWLIST.get(service, set())
     # Never forward bearer tokens across a redirect or to a host not named in the per-service allowlist.
     # Deny non-TLS external URLs, userinfo, nonstandard ports and malformed destinations.
-    valid = (parsed.scheme == ("http" if service == "ollama" else "https")
+    valid = (parsed.scheme == "https"
              and parsed.username is None and parsed.password is None
-             and parsed.port in (None, 80 if service == "ollama" else 443)
+             and parsed.port in (None, 443)
              and not parsed.fragment and host in allowed)
     if not valid:
         _log(service, method, host, parsed.path, None, 0, 0, purpose, 0, True)
         raise EgressBlocked(f"Outbound host '{host}' is not allowlisted for connector '{service}'")
-    if service != "ollama" and offline_mode():
+    if offline_mode():
         _log(service, method, host, parsed.path, None, 0, 0, purpose, 0, True)
         raise EgressBlocked("PODA is in offline mode; external connectors are disabled")
     started = time.perf_counter()

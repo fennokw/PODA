@@ -12,11 +12,10 @@ import tempfile
 import time
 from pathlib import Path
 from threading import Event, RLock
-from urllib.parse import urlsplit
 
 import httpx
 
-from ..runtime import config, ollama
+from ..runtime import config, inference, inference_bridge, models
 from ..runtime.db import get_setting, set_setting
 from ..security import egress
 
@@ -43,20 +42,12 @@ def installed() -> bool:
 
 
 def _models() -> tuple[str, str, str]:
-    url = urlsplit(config.OLLAMA_BASE)
-    if (url.scheme != "http" or url.hostname not in {"127.0.0.1", "localhost", "::1"}
-            or url.username or url.password or url.path or url.query or url.fragment):
-        raise RuntimeError("Hindsight requires Ollama on this computer.")
-    try:
-        names = ollama.installed_models()
-    except ollama.OllamaError as exc:
-        raise RuntimeError("Start Ollama, then try Hindsight again.") from exc
-    embed = next((name for name in names if name.split(":")[0] == config.EMBED_MODEL.split(":")[0]), None)
-    chat = next((name for name in names if "embed" not in name.lower() and name != embed
-                 and not re.search(r"(?:^|[:-])cloud(?:$|[:-])", name, re.I)), None)
-    if not embed or not chat:
-        raise RuntimeError(f"Open System and install a chat model and {config.EMBED_MODEL} in Ollama first.")
-    return config.OLLAMA_BASE, chat, embed
+    registry = models.registry()
+    chat = registry["profiles"]["balanced"]["model"]
+    if not inference.status()["reachable"] or not registry["embedding_installed"] or not chat:
+        raise RuntimeError("Install a chat GGUF and the Nomic embedding GGUF in System before starting Hindsight.")
+    base, _ = inference_bridge.start()
+    return base, chat, config.EMBED_MODEL
 
 
 def _environment() -> dict[str, str]:
@@ -203,13 +194,13 @@ def start(model_config: tuple[str, str, str] | None = None) -> None:
                "PG0_HOME": str(_ROOT / "database"),
                "PG0_INSTALLATION_DIR": str(_ROOT / "postgres"),
                "HINDSIGHT_API_DATABASE_URL": f"pg0://hindsight:{password}@poda?listen_addresses=127.0.0.1",
-               "HINDSIGHT_API_LLM_PROVIDER": "ollama", "HINDSIGHT_API_LLM_BASE_URL": base + "/v1",
-               "HINDSIGHT_API_LLM_MODEL": chat, "HINDSIGHT_API_LLM_API_KEY": "ollama",
-               # Ollama serves this protocol locally. All inference stays on loopback.
+               "HINDSIGHT_API_LLM_PROVIDER": "openai", "HINDSIGHT_API_LLM_BASE_URL": base + "/v1",
+               "HINDSIGHT_API_LLM_MODEL": chat, "HINDSIGHT_API_LLM_API_KEY": inference_bridge.token_for(base),
+               # llama.cpp serves this protocol locally. All inference stays on loopback.
                "HINDSIGHT_API_EMBEDDINGS_PROVIDER": "openai",
                "HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL": base + "/v1",
                "HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL": embed,
-               "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY": "ollama",
+               "HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY": inference_bridge.token_for(base),
                "HINDSIGHT_API_RERANKER_PROVIDER": "rrf", "HINDSIGHT_API_MCP_ENABLED": "false",
                "HINDSIGHT_API_TENANT_EXTENSION": "hindsight_api.extensions.builtin.tenant:ApiKeyTenantExtension",
                "HINDSIGHT_API_TENANT_API_KEY": token, "HINDSIGHT_API_LOG_LEVEL": "warning",

@@ -1,6 +1,6 @@
 """Server-owned chat generation with resumable, replayable streams.
 
-Opening another PODA screen disconnects only the stream subscriber. The Ollama
+Opening another PODA screen disconnects only the stream subscriber. The llama.cpp
 generation task belongs to this server, not to the browser request lifecycle.
 Running tasks are ephemeral across process restarts, while finished chat messages
 remain in PODA's encrypted history/memory tables.

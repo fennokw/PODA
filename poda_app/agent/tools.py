@@ -79,7 +79,7 @@ def _memory_dive(surface_id: str | None = None, query: str | None = None, limit:
 def _list_capabilities() -> dict[str, Any]:
     from ..runtime.capability import manifest
     cap = manifest()
-    return {"ok": True, "result": {k: cap[k] for k in ("filesystem", "code", "notion", "calendar", "email", "ollama", "offline_mode")}, "error": None, "verification": "live ledger probe"}
+    return {"ok": True, "result": {k: cap[k] for k in ("filesystem", "code", "notion", "calendar", "email", "inference", "offline_mode")}, "error": None, "verification": "live ledger probe"}
 
 
 def _str(desc: str, **kw: Any) -> dict[str, Any]:
@@ -270,7 +270,7 @@ def availability(snapshot: dict[str, Any] | None = None) -> dict[str, dict[str, 
     return out
 
 
-def ollama_tool_specs(snapshot: dict[str, Any] | None = None, only_available: bool = True) -> list[dict[str, Any]]:
+def model_tool_specs(snapshot: dict[str, Any] | None = None, only_available: bool = True) -> list[dict[str, Any]]:
     avail = availability(snapshot)
     specs = []
     for name, spec in TOOLS.items():

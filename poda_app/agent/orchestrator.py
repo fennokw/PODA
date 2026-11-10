@@ -1,6 +1,6 @@
 """Tool planning and proposal lifecycle.
 
-The model may *suggest* tool calls through Ollama structured tool calling. PODA validates every call,
+The model may *suggest* tool calls through llama.cpp structured tool calling. PODA validates every call,
 executes read-only steps immediately (receipted), and turns mutating steps into a pending proposal that
 the user must approve. Success is decided by receipts, never by model text.
 """
@@ -13,7 +13,7 @@ import re
 import uuid
 from typing import Any
 
-from ..runtime import ollama, models
+from ..runtime import config, inference, models
 from ..runtime.db import connect, now_iso, rows, one
 from . import tools
 
@@ -53,13 +53,15 @@ def workflow_categories(message: str) -> tuple[str, ...]:
 
 
 def _planner_models(profile_model: str | None) -> list[str]:
-    installed = ollama.status().get("models") or []
+    installed = inference.status().get("models") or []
     # Prefer the selected Balanced profile rather than hardcoded old Qwen tags.
     registered = models.registry(installed)
     picks = [registered["profiles"]["balanced"].get("model"),
              registered["profiles"]["fast"].get("model"), profile_model,
              registered["profiles"]["deep"].get("model")]
-    return list(dict.fromkeys(model for model in picks if model in installed)) or [profile_model or ""]
+    ordered = list(dict.fromkeys(model for model in [*picks, *installed] if model in installed and model != config.EMBED_MODEL))
+    compatible = [model for model in ordered if inference.model_supports_tools(model)]
+    return compatible or ordered[:2] or [profile_model or ""]
 
 
 def _coding_lessons(message: str, session_id: str | None) -> str:
@@ -114,7 +116,7 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
          reply_archive: bool = False, schedule_candidates: list[dict] | None = None,
          schedule_timezone: str | None = None, schedule_day: str | None = None) -> dict[str, Any]:
     """Return {needs_tools, steps, rationale, executed:[{step, receipt, result}], flagged:[...], proposal_id|None}."""
-    specs = tools.ollama_tool_specs(snapshot)
+    specs = tools.model_tool_specs(snapshot)
     verified_mail_flow = unattended and schedule_candidates is not None
     if verified_mail_flow:
         specs = [spec for spec in specs if spec["function"]["name"] != "notion_calendar_create"]
@@ -207,17 +209,17 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
         prompt = messages + [entry for group in history for entry in group]
         while True:
             try:
-                response = ollama.chat(
+                response = inference.chat(
                     prompt, model, options={"temperature": 0.0, "num_ctx": 16384, "num_predict": 900},
-                    tools=specs, think=False if model.startswith("qwen3") else None,
+                    tools=specs, think=False,
                     timeout=75, streaming=True, max_elapsed=150, stop=stop)
                 break
             except Exception as exc:
-                # An Ollama rejection can be specific to the model. Replay only
+                # An llama.cpp rejection can be specific to the model. Replay only
                 # this inference call. Tool execution and receipts stay outside it.
                 if stop and stop.is_set():
                     return out
-                fallback = next(candidates, None) if not tried_fallback and isinstance(exc, ollama.OllamaError) else None
+                fallback = next(candidates, None) if not tried_fallback and isinstance(exc, inference.InferenceError) else None
                 if not fallback:
                     reason = f"planner unavailable: {exc}"
                     out["rationale"] = reason
@@ -312,7 +314,7 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
         history.append([{"role": "assistant", "content": text[:1200],
                          "tool_calls": (reply.get("tool_calls") or [])[:len(tool_results_for_model)]},
                         *tool_results_for_model])
-        # Trim complete rounds so Ollama never sees orphaned tool messages.
+        # Trim complete rounds so llama.cpp never sees orphaned tool messages.
         while history and sum(len(json.dumps(group)) for group in history) > MAX_PLANNER_HISTORY_CHARS:
             history.pop(0)
         if pending_mutations or (unattended and tool_count >= MAX_UNATTENDED_TOOL_CALLS):

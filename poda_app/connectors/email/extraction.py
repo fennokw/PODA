@@ -6,9 +6,8 @@ import re
 from datetime import datetime
 from typing import Any
 
-import requests
 
-from ...runtime import config, models
+from ...runtime import inference, models
 from .models import UNTRUSTED_PREFIX, UNTRUSTED_SUFFIX
 
 SCHEMA = {
@@ -99,16 +98,12 @@ def extract(message: dict[str, Any], model: str | None = None, timeout: float = 
     body = (message.get("body_text") or "")[:12000]
     content = (f"Subject: {message.get('subject')}\nFrom: {message.get('from_name')} {message.get('from_address_masked')}\nDate: {message.get('date')}\n\n"
                + UNTRUSTED_PREFIX + body + UNTRUSTED_SUFFIX)
-    payload = {"model": model, "stream": False, "keep_alive": "10m", "format": SCHEMA,
-               "messages": [{"role": "system", "content": PROMPT.format(message_date=message.get("date") or datetime.now().isoformat())},
-                            {"role": "user", "content": content}],
-               "options": {"temperature": 0.0, "num_ctx": 8192, "num_predict": 900}}
-    if str(model).startswith("qwen3"):
-        payload["think"] = False
-    r = requests.post(config.OLLAMA_CHAT_URL, json=payload, timeout=timeout)
-    if not r.ok:
-        raise RuntimeError(f"Ollama {r.status_code}: {r.text[:200]}")
-    text = (r.json().get("message") or {}).get("content") or ""
+    result = inference.chat(
+        [{"role": "system", "content": PROMPT.format(message_date=message.get("date") or datetime.now().isoformat())},
+         {"role": "user", "content": content}],
+        model, options={"temperature": 0.0, "num_ctx": 8192, "num_predict": 900},
+        timeout=timeout, think=False, format=SCHEMA)
+    text = (result.get("message") or {}).get("content") or ""
     data = _parse_json(text)
     return {"message_id": message.get("id"), "model": model, "commitments": normalize(data.get("commitments") or [], body),
             "note": "unconfirmed; nothing written"}

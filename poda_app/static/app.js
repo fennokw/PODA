@@ -56,7 +56,7 @@
   const screens = [['ask', 'Chat', '1'], ['personalize', 'Personalize', '9'], ['projects', 'Projects', '3'], ['notion', 'Calendar', '4'], ['mail', 'Mail', '5'], ['files', 'Files & access', '6'], ['addons', 'Add-ons', ''], ['privacy', 'Privacy', '7'], ['daily', 'Daily Automation', '0'], ['system', 'System', '8']];
   for (const [name, label, key] of screens) registerCommand({ label: `Go to ${label}`, kind: 'Screen', key, keywords: name === 'mail' ? 'email inbox gmail apple mail' : '', run: () => navigate(name) });
   registerCommand({ label: 'Open memory viewer', kind: 'Screen', key: '2', keywords: 'open3d 3d second brain', run: () => window.location.assign('/memory-viewer') });
-  registerCommand({ label: 'Check capabilities', kind: 'Action', keywords: 'ledger status', run: async () => { const c = await api('/capabilities'); toast(`Ollama ${c.ollama?.reachable ? 'reachable' : 'unreachable'} · Notion ${c.notion?.status || 'DISCONNECTED'} · ${c.filesystem?.granted_roots?.length || 0} path grants`); navigate('system'); } });
+  registerCommand({ label: 'Check capabilities', kind: 'Action', keywords: 'ledger status', run: async () => { const c = await api('/capabilities'); toast(`llama.cpp ${c.inference?.reachable ? 'reachable' : 'unreachable'} · Notion ${c.notion?.status || 'DISCONNECTED'} · ${c.filesystem?.granted_roots?.length || 0} path grants`); navigate('system'); } });
   registerCommand({ label: 'Create encrypted backup', kind: 'Action', keywords: 'privacy export', run: async () => { const r = await api('/privacy/backup', { method: 'POST' }); toast(`Backup written: ${r.path.split('/').pop()}`, 'ok'); } });
   registerCommand({ label: 'Toggle offline mode', kind: 'Action', keywords: 'network egress', run: async () => { const s = await api('/privacy/status'); const next = !s.egress?.offline_mode; await api('/privacy/offline', { method: 'POST', body: { enabled: next } }); toast(`Offline mode ${next ? 'enabled' : 'disabled'}`, 'ok'); } });
   registerCommand({ label: 'Refresh capability ledger', kind: 'Action', run: async () => { await api('/capabilities/ledger'); toast('Ledger refreshed from runtime', 'ok'); } });
@@ -558,7 +558,7 @@
                 const tps = data.eval_count && data.eval_duration_ms ? (data.eval_count / (data.eval_duration_ms / 1000)).toFixed(1) : null;
                 metaRow.append(el('span', {}, fmtTime(new Date().toISOString())), pill(data.model || 'PODA', data.profile === 'gate' || data.profile === 'ledger' ? 'accent' : 'muted'), tps ? el('span', { class: 'mono' }, `${tps} tok/s`) : null);
                 badges.prepend(pill(data.profile === 'gate' ? 'Action gate' : data.profile === 'ledger' ? 'Capability ledger' : `Model · ${data.profile || 'auto'}`, 'accent'));
-                sessionBox.innerHTML = ''; sessionBox.appendChild(kv([['Model', data.model || ''], ['Profile', data.profile || ''], ['Output tokens', data.eval_count ?? 'n/a'], ['Speed', tps ? `${tps} tok/s` : 'n/a'], ['Prompt tokens', data.prompt_eval_count ?? 'n/a'], ['Session', askState.sessionId ? askState.sessionId.slice(0, 8) : 'new']]));
+                sessionBox.innerHTML = ''; sessionBox.appendChild(kv([['Model', data.model || ''], ['Profile', data.profile || ''], ['Output tokens', data.eval_count ?? 'n/a'], ['Speed', tps ? `${tps} tok/s` : 'n/a'], ['Prompt tokens', data.prompt_eval_count ?? 'n/a'], ['Speculation', data.speculation || 'off'], ['Session', askState.sessionId ? askState.sessionId.slice(0, 8) : 'new']]));
                 setStatus(`Done · ${data.model || ''}`, false);
                 rich.renderInto(bubble, full);
                 addDownload(metaRow, data.download, askState.sessionId);
@@ -676,7 +676,7 @@
     });
     if (askState.runId) send('', null, askState.runId);
     textarea.focus();
-    return { teardown: () => { const subscriber = askState.controller; askState.controller = null; subscriber?.abort(); } }; // Detaches the viewer, not Ollama.
+    return { teardown: () => { const subscriber = askState.controller; askState.controller = null; subscriber?.abort(); } }; // Detaches the viewer, not llama.cpp.
   });
 
   // =====================================================================
@@ -1558,12 +1558,12 @@
   route('system', async ({ view, inspector, setTitle, setInspectorTitle }) => {
     setTitle('System'); setInspectorTitle('System details'); $('#viewCrumb').textContent = 'Models and this computer';
     const hwBox = el('div'); const modelsBox = el('div'); const benchBox = el('div'); const ledgerBox = el('div'); const managerBox = el('div');
-    view.appendChild(el('div', { class: 'screen stack' }, section('This computer', null, hwBox), section('Model installer and profile selection', 'local Ollama', managerBox), section('Model profiles', 'selected only from installed models', modelsBox), section('Benchmarks', 'measured on this hardware', benchBox), section('Capability ledger', 'live and persisted', ledgerBox)));
+    view.appendChild(el('div', { class: 'screen stack' }, section('This computer', null, hwBox), section('Model installer and profile selection', 'local llama.cpp', managerBox), section('Model profiles', 'selected only from installed models', modelsBox), section('Benchmarks', 'measured on this hardware', benchBox), section('Capability ledger', 'live and persisted', ledgerBox)));
     try { const b = await api('/system/build'); const st = await api('/system/startup').catch(() => null); inspector.append(kv([['Version', b.version], ['Build ID', el('span', { class: 'mono' }, b.build_id)], ['Memory viewer', b.memory_viewer], ['Database', el('span', { class: 'mono small' }, b.db_path)], ['Port', b.port]]), st ? el('details', { class: 'thought-panel dev-only' }, el('summary', {}, 'Startup report'), el('pre', {}, JSON.stringify(st, null, 2))) : null); } catch (err) { inspector.appendChild(errorNode(err)); }
     load(hwBox, async () => {
       const h = await api('/system/hardware');
-      return el('div', { class: 'stack-sm' }, el('div', { class: 'stats' }, ...[[h.chip || 'unknown', 'chip'], [`${h.unified_memory_gb ?? h.ram_total_gb} GB`, h.unified_memory_gb == null ? 'physical RAM' : 'unified memory'], [h.gpu_memory_dedicated_gb==null ? 'shared / unavailable' : h.gpu_memory_dedicated_gb+' GB','dedicated VRAM'], [`${h.disk_free_gb} GB`, 'disk free'], [h.gpu || h.metal || 'unavailable', 'graphics'], [h.ollama?.version || (h.ollama?.reachable ? 'reachable' : 'unreachable'), 'ollama']].map(([v, k]) => el('div', { class: 'stat' }, el('span', { class: 'v' }, v), el('span', { class: 'k' }, k)))),
-        (h.ollama_resident || []).length ? el('div', { class: 'row' }, el('span', { class: 'faint small' }, 'Resident now:'), ...h.ollama_resident.map((m) => el('span', { class: 'chip' }, `${m.name} `, el('b', {}, `${fmtBytes(m.size_vram || m.size)} · ctx ${m.context_length || '?'}`)))) : el('p', { class: 'faint small' }, 'No model is resident in memory right now.'));
+      return el('div', { class: 'stack-sm' }, el('div', { class: 'stats' }, ...[[h.chip || 'unknown', 'chip'], [`${h.unified_memory_gb ?? h.ram_total_gb} GB`, h.unified_memory_gb == null ? 'physical RAM' : 'unified memory'], [h.gpu_memory_dedicated_gb==null ? 'shared / unavailable' : h.gpu_memory_dedicated_gb+' GB','dedicated VRAM'], [`${h.disk_free_gb} GB`, 'disk free'], [h.gpu || h.metal || 'unavailable', 'graphics'], [h.inference?.version || (h.inference?.reachable ? 'reachable' : 'unreachable'), 'llama.cpp']].map(([v, k]) => el('div', { class: 'stat' }, el('span', { class: 'v' }, v), el('span', { class: 'k' }, k)))),
+        (h.inference_resident || []).length ? el('div', { class: 'row' }, el('span', { class: 'faint small' }, 'Resident now:'), ...h.inference_resident.map((m) => el('span', { class: 'chip' }, `${m.name} `, el('b', {}, `ctx ${m.context_length || '?'} · ${m.speculation || 'none'}`)))) : el('p', { class: 'faint small' }, 'No model is resident in memory right now.'));
     });
     async function drawModels() {
       await load(modelsBox, async () => {
@@ -1574,13 +1574,13 @@
         return el('div', { class: 'stack' }, el('div', { class: 'row' },
           el('span', { class: 'chip' }, 'installed ', el('b', {}, (m.installed || []).join(', ') || 'none')),
           el('span', { class: 'chip' }, 'embedding ', el('b', {}, m.embedding+' '+(m.embedding_installed?'':'(missing)'))),
-          el('span', { class: 'small muted' }, 'Compare all local model families and their quantizations above.')), el('div', { class: 'table-scroll', tabindex: 0 }, profiles));
+          el('span', { class: 'small muted' }, 'Choose model roles and GGUF quantizations above.')), el('div', { class: 'table-scroll', tabindex: 0 }, profiles));
       });
     }
     async function drawBench() {
       await load(benchBox, async () => {
         const m = await api('/system/models'); const rows = m.benchmarks || [];
-        if (!rows.length) return emptyState('No benchmarks recorded', 'Run one from the model profiles above. Each run measures load, first token, tokens per second, and resident memory.');
+        if (!rows.length) return emptyState('No benchmarks recorded', 'Run one from the model profiles above. Each run measures model readiness, first token, and tokens per second.');
         const table = el('table', { class: 'table' }, el('thead', {}, el('tr', {}, ...['Model', 'Context', 'Load', 'First token', 'Gen tok/s', 'Prompt tok/s', 'Memory', 'When'].map((h) => el('th', {}, h)))));
         table.appendChild(el('tbody', {}, ...rows.slice(0, 30).map((b) => el('tr', {}, el('td', { class: 'mono' }, b.model), el('td', { class: 'num' }, `${(b.num_ctx / 1024).toFixed(0)}K`), el('td', { class: 'num' }, `${b.load_s}s`), el('td', { class: 'num' }, `${b.first_token_s}s`), el('td', { class: 'num' }, b.gen_tok_s ?? ''), el('td', { class: 'num' }, b.prompt_tok_s ?? ''), el('td', { class: 'num' }, fmtBytes(b.memory_bytes)), el('td', { class: 'small faint' }, fmtTime(b.created_at))))));
         return table;
@@ -1588,12 +1588,14 @@
     }
     async function bench(model, num_ctx) {
       const t = toast(`Benchmarking ${model} at ${num_ctx / 1024}K context…`, '', 60000);
-      try { const r = await api('/system/benchmark', { method: 'POST', body: { model, num_ctx } }); t.remove(); toast(`${model}: ${r.gen_tok_s} tok/s, first token ${r.first_token_s}s, ${fmtBytes(r.memory_bytes)}`, 'ok', 8000); drawBench(); }
+      try { const r = await api('/system/benchmark', { method: 'POST', body: { model, num_ctx } }); t.remove(); const accepted = r.speculative_tokens?.accepted_tokens;
+        const draft = accepted == null ? '' : ` · ${accepted} draft tokens accepted`;
+        toast(`${model} · ${r.gen_tok_s ?? 'unknown'} tok/s · first token ${r.first_token_s ?? 'unknown'}s · ${r.speculation || 'none'}${draft}`, 'ok', 8000); drawBench(); }
       catch (err) { t.remove(); toast(errorDetail(err).message, 'danger'); }
     }
     if (window.PODAModelManager?.mount) window.PODAModelManager.mount(managerBox);
     drawModels(); drawBench();
-    load(ledgerBox, async () => { const l = await api('/capabilities/ledger'); return el('div', { class: 'stack-sm' }, el('div', { class: 'row' }, pill(`Ollama ${l.current?.ollama?.reachable ? 'reachable' : 'unreachable'}`, l.current?.ollama?.reachable ? 'ok' : 'danger'), statusPill(l.current?.notion?.status), pill(`${(l.current?.filesystem?.granted_roots || []).length} path grants`, 'accent'), pill(l.current?.memory?.encrypted_at_rest ? 'encrypted at rest' : 'not encrypted', l.current?.memory?.encrypted_at_rest ? 'ok' : 'danger')), jsonBox(l.current)); });
+    load(ledgerBox, async () => { const l = await api('/capabilities/ledger'); return el('div', { class: 'stack-sm' }, el('div', { class: 'row' }, pill(`llama.cpp ${l.current?.inference?.reachable ? 'reachable' : 'unreachable'}`, l.current?.inference?.reachable ? 'ok' : 'danger'), statusPill(l.current?.notion?.status), pill(`${(l.current?.filesystem?.granted_roots || []).length} path grants`, 'accent'), pill(l.current?.memory?.encrypted_at_rest ? 'encrypted at rest' : 'not encrypted', l.current?.memory?.encrypted_at_rest ? 'ok' : 'danger')), jsonBox(l.current)); });
   });
 
   // ---------- Boot ----------

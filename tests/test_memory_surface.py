@@ -6,15 +6,15 @@ import pytest
 
 os.environ.setdefault("PODA_BACKGROUND_SURFACES", "0")
 
-from poda_app.runtime import ollama  # noqa: E402
+from poda_app.runtime import inference  # noqa: E402
 
 
 def _ollama_ok():
-    s = ollama.status()
+    s = inference.status()
     return s.get("reachable") and any(m.startswith("nomic-embed-text") for m in s.get("models", []))
 
 
-needs_embeddings = pytest.mark.skipif(not _ollama_ok(), reason="Ollama with nomic-embed-text is not reachable")
+needs_embeddings = pytest.mark.skipif(not _ollama_ok(), reason="llama.cpp with nomic-embed-text is not reachable")
 
 
 def _pair(text_q, text_a, sid=None):
@@ -36,7 +36,7 @@ def _raw_node(um):
 
 def _node_for(um):
     """Fetch the pair node; if a transient embedding failure left it unassigned, run the incremental rebuild once
-    (exactly what the background job does in production) so the test measures assignment logic, not Ollama hiccups."""
+    (exactly what the background job does in production) so the test measures assignment logic, not llama.cpp hiccups."""
     from poda_app.runtime.db import connect
     from poda_app.memory import surface
     conn = connect()
@@ -73,7 +73,7 @@ def test_distill_updates_surface_and_respects_user_edit(client, monkeypatch):
     _pair("Remind me of my vocal chain in Pro Tools again?", "Pro-Q for cleanup, CLA for compression, then a plate reverb for vocals in Pro Tools.")
     sid = a["surface_id"]
     # Deterministic model stub so the test does not depend on model output quality.
-    monkeypatch.setattr(surface.ollama, "chat", lambda *args, **kw: {"message": {"content": '{"title": "Vocal mixing chain in Pro Tools", "core": "Example user mixes vocals in Pro Tools with Pro-Q, CLA compression and plate reverb.", "triggers": "vocal chain, pro tools, mixing"}'}})
+    monkeypatch.setattr(surface.inference, "chat", lambda *args, **kw: {"message": {"content": '{"title": "Vocal mixing chain in Pro Tools", "core": "Example user mixes vocals in Pro Tools with Pro-Q, CLA compression and plate reverb.", "triggers": "vocal chain, pro tools, mixing"}'}})
     r = client.post(f"/memory/surfaces/{sid}/distill").json()
     assert r["title"] == "Vocal mixing chain in Pro Tools" and "Pro-Q" in r["summary"] and r["stale"] is False
     assert r["distill_method"].startswith("model:") or r["member_count"] < 2
@@ -86,7 +86,7 @@ def test_distill_updates_surface_and_respects_user_edit(client, monkeypatch):
         conn.execute("UPDATE memory_nodes SET stale=1 WHERE id=?", (sid,)); conn.commit()
     finally:
         conn.close()
-    monkeypatch.setattr(surface.ollama, "chat", lambda *args, **kw: {"message": {"content": '{"title": "SHOULD NOT APPLY", "core": "x", "triggers": ""}'}})
+    monkeypatch.setattr(surface.inference, "chat", lambda *args, **kw: {"message": {"content": '{"title": "SHOULD NOT APPLY", "core": "x", "triggers": ""}'}})
     r2 = client.post(f"/memory/surfaces/{sid}/distill").json()
     assert r2["title"] == "My vocal chain (edited)" and r2["user_edited"] is True
 

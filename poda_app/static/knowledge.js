@@ -102,7 +102,7 @@
       }
       data.facts.forEach(add);
       const status = el('div', { class: 'small muted', role: 'status' });
-      const draft = button('Draft facts with Ollama', async () => {
+      const draft = button('Draft facts with llama.cpp', async () => {
         if (hasSourceDraft()) { status.textContent = 'Commit memory changes first.'; return; }
         draft.disabled = save.disabled = true;
         status.textContent = 'Reading the source with your local model…';

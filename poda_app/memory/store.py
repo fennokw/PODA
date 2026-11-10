@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 from ..runtime import config
 from ..runtime.db import connect, now_iso, rows, one
-from ..runtime import ollama
+from ..runtime import inference
 
 ROOT_ID = "root-personal-organization"
 CONVERSATION_CLOUD = "seed-conversation-memory"
@@ -105,8 +105,8 @@ def ensure_embeddings(conn, *, allow_network: bool = True) -> dict[str, list[flo
     for offset in range(0, len(missing), 24):
         batch = missing[offset:offset + 24]
         try:
-            batch_vectors = ollama.embed([text for _, text in batch])
-        except (ollama.OllamaError, OSError, ConnectionError):
+            batch_vectors = inference.embed([text for _, text in batch])
+        except (inference.InferenceError, OSError, ConnectionError):
             # Offline operation must preserve existing memories and allow FTS-only retrieval.
             # Missing vectors are retried on the next successful embedding request.
             break
@@ -375,7 +375,7 @@ def flush_session_to_graph(session_id: str, retain_messages: int = 0) -> dict[st
                 surface.assign_or_create(conn, nid)
                 conn.commit()
             except Exception:
-                conn.rollback()  # embeddings or local Ollama being offline must not lose memories
+                conn.rollback()  # embeddings or local llama.cpp being offline must not lose memories
         return {"promoted": len(promoted)}
     finally:
         conn.close()

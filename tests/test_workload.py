@@ -111,14 +111,15 @@ def test_local_model_analysis_respects_calibrated_total(client, monkeypatch):
     })
     assert result.status_code == 200
     item_id = result.json()["id"]
-    monkeypatch.setattr(analyzer.ollama, "status", lambda: {"reachable": True, "models": ["qwen3:14b"]})
+    monkeypatch.setattr(analyzer.inference, "status", lambda: {"reachable": True, "models": ["qwen3:14b"]})
+    monkeypatch.setattr(analyzer.inference, "installed_models", lambda: ["qwen3:14b"])
     def fake_chat(*args, **kwargs):
         return {"message": {"content": json.dumps({"steps": [
             {"title": "Read sources", "details": "Identify relevant arguments.", "weight": 2},
             {"title": "Draft the essay", "details": "Build paragraphs from the outline.", "weight": 5},
             {"title": "Revise", "details": "Check evidence and structure.", "weight": 2}
         ], "assumptions": ["Sources available"]})}}
-    monkeypatch.setattr(analyzer.ollama, "chat", fake_chat)
+    monkeypatch.setattr(analyzer.inference, "chat", fake_chat)
     try:
         analyzed = client.get("/workload/" + item_id + "/analysis")
         assert analyzed.status_code == 200, analyzed.text

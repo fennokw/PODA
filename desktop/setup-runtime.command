@@ -53,4 +53,4 @@ if ! "$VENV/bin/python" -c 'from sqlcipher3 import dbapi2' >/dev/null 2>&1; then
   echo 'ERROR: SQLCipher is REQUIRED for public-release personal storage. Resolve setup before starting PODA.'
   exit 1
 fi
-echo "PODA Python setup complete. Open PODA.app after starting Ollama"
+echo "PODA Python setup complete. Open PODA.app"

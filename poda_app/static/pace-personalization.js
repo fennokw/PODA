@@ -137,7 +137,7 @@
     };
     const memoryLearning=el('section',{class:'card stack',id:'memory-settings'},
       el('div',{class:'card-head'},el('h2',{},'Memory search with Hindsight')),
-      note('Find related memories even when you use different words. Hindsight builds a separate search index on this computer and uses your local Ollama models.'));
+      note('Find related memories even when you use different words. Hindsight builds a separate search index on this computer and uses your local llama.cpp models.'));
     const memoryStatus=el('div',{class:'stack-sm','aria-live':'polite'},note('Checking Hindsight…'));
     const controls=el('div',{class:'row'});
     const debug=el('details',{class:'disclosure dev-only'},el('summary',{},'Hindsight setup details'));
@@ -165,7 +165,7 @@
         if(data.setup_error)memoryStatus.append(note(data.setup_error));
         const action=el('button',{class:'btn btn-primary',type:'button'},data.installed?'Turn on Hindsight':'Install and turn on');
         action.onclick=async()=>{
-          if(!data.installed&&!(await confirmDialog({title:'Install Hindsight?',body:'PODA downloads the local memory engine and its database. Its search index is stored separately from the encrypted PODA memory database. Memory processing uses Ollama on this computer.',confirmLabel:'Install and turn on'})))return;
+          if(!data.installed&&!(await confirmDialog({title:'Install Hindsight?',body:'PODA downloads the local memory engine and its database. Its search index is stored separately from the encrypted PODA memory database. Memory processing uses llama.cpp on this computer.',confirmLabel:'Install and turn on'})))return;
           apply(action,()=>data.installed?api('/memory/hindsight/config',{method:'PUT',body:{enabled:true}}):
             api('/memory/hindsight/setup',{method:'POST',body:{confirm_download:true}}),
             data.installed?'Starting Hindsight…':'Downloading and starting Hindsight…','Hindsight is on.');

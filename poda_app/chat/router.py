@@ -11,14 +11,14 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from typing import Any, AsyncIterator
 from threading import Event
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 import re
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
-from ..runtime import config, ollama, models, capability, skill_library
+from ..runtime import config, inference, models, capability, skill_library
 from ..scheduling import evidence as scheduling
 from ..runtime.db import connect, one, rows
 from ..memory import store, retrieval, summaries
@@ -332,28 +332,25 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
         profile = await asyncio.to_thread(models.resolve, task_message, mode, req.thinking_level)
         model = profile.get("model")
         if not model:
-            msg = "No chat model is installed in Ollama. Run install_ollama_models.command, then retry."
+            msg = "Open System and download or import a chat GGUF to continue."
             yield frame("error", {"message": msg})
             return
         yield frame("status", {"message": "routing", "model": model, "profile": profile["profile"], "num_ctx": profile["num_ctx"]})
         prepared = None
         if input_files:
-            if urlsplit(config.OLLAMA_CHAT_URL).hostname not in {"127.0.0.1", "::1", "localhost"}:
-                yield frame("error", {"message": "Chat attachments require Ollama running on this computer."})
-                return
             yield frame("status", {"message": "reading_attachments", "model": model})
             input_budget = max(3000, min(40_000, (profile["num_ctx"] - (5000 if archive_export else 2500)) * 2))
             prepared = await asyncio.to_thread(inputs.prepare, input_files, task_message, input_budget, editing)
             if prepared.images:
                 try:
-                    vision = await asyncio.to_thread(ollama.vision_model, model)
-                except ollama.OllamaError:
+                    vision = await asyncio.to_thread(inference.vision_model, model)
+                except inference.InferenceError:
                     vision = None
                 if vision:
                     model = vision
                     yield frame("status", {"message": "reading_images", "model": vision})
                 else:
-                    prepared.warnings.append("Install a local vision model such as qwen3-vl:4b in System → Model installer and profile selection to read images. Then attach the images again.")
+                    prepared.warnings.append("Download or import a visual GGUF in System to analyze image details. Then attach the images again.")
                     prepared.images.clear()
             if prepared.warnings:
                 warning = "\n".join("- " + item for item in prepared.warnings)
@@ -615,23 +612,23 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
         show_document = bool((markdown_export or attachment and attachment.lower().endswith(".pdf"))
                              and not sandbox_write_proposed and not proposal_note)
         show_archive = archive_export and not sandbox_write_proposed
-        think_flag = profile.get("think") if model.startswith("qwen3") and not (prepared and prepared.images) else None
+        think_flag = False if prepared and prepared.images else profile.get("think", False)
         options = dict(profile["options"])
         stream_options = {}
         progress_at = 0
         if show_archive:
             options["num_predict"] = max(options.get("num_predict", 0), min(12_288, max(2800, int(profile["num_ctx"] * .58))))
-            if req.thinking_level != "deep" and model.startswith("qwen3") and not (prepared and prepared.images):
+            if req.thinking_level != "deep" and models.complexity_score(task_message) < 6:
                 think_flag = False
             stream_options["format"] = _ARCHIVE_FORMAT
         yield frame("status", {"message": "writing_archive" if show_archive else "generating_reply", "model": model})
         async def save_partial() -> None:
             partial = "".join(splitter.final).strip()
             if partial and not (ephemeral or show_document or show_archive):
-                await save_response(partial + "\n\n[Ollama ended the response early.]", model, completed=False)
+                await save_response(partial + "\n\n[llama.cpp ended the response early.]", model, completed=False)
 
         try:
-            async for chunk in ollama.chat_stream(messages, model, options=options, think=think_flag, **stream_options):
+            async for chunk in inference.chat_stream(messages, model, options=options, think=think_flag, **stream_options):
                 if await request.is_disconnected():
                     yield frame("status", {"message": "cancelled", "model": model})
                     partial = "".join(splitter.final).strip()
@@ -685,17 +682,17 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                     if show_archive:
                         yield frame("token", {"token": download["error"] or _ARCHIVE_READY})
                     yield frame("done", {"model": model, "download": download, "profile": profile["profile"], "eval_count": chunk.get("eval_count"), "eval_duration_ms": round((chunk.get("eval_duration") or 0) / 1e6),
-                                       "prompt_eval_count": chunk.get("prompt_eval_count")})
+                                       "prompt_eval_count": chunk.get("prompt_eval_count"), "speculation": chunk.get("speculation")})
                     if not ephemeral:
                         asyncio.get_running_loop().run_in_executor(None, summaries.maybe_compact, session_id)
                     return
             await save_partial()
-            yield frame("error", {"message": "Ollama ended the response early. You can retry this request."})
-        except ollama.OllamaError as exc:
+            yield frame("error", {"message": "llama.cpp ended the response early. You can retry this request."})
+        except inference.InferenceError as exc:
             await save_partial()
             if schedule_report:
                 yield frame("token", {"token": schedule_report})
-            yield frame("error", {"message": f"PODA ERROR: {exc}. Confirm Ollama is running and the model is installed."})
+            yield frame("error", {"message": f"PODA ERROR: {exc}. Confirm llama.cpp is running and the model is installed."})
         except Exception as exc:  # network hiccups, JSON errors
             if schedule_report:
                 yield frame("token", {"token": schedule_report})

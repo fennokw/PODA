@@ -1,18 +1,18 @@
-"""Memory acceptance tests that need the local embedding model. Skipped truthfully if Ollama is unreachable."""
+"""Memory acceptance tests that need the local embedding model. Skipped truthfully if llama.cpp is unreachable."""
 import json
 import uuid
 
 import pytest
 
-from poda_app.runtime import ollama
+from poda_app.runtime import inference
 
 
 def _ollama_ok():
-    s = ollama.status()
+    s = inference.status()
     return s.get("reachable") and any(m.startswith("nomic-embed-text") for m in s.get("models", []))
 
 
-pytestmark = pytest.mark.skipif(not _ollama_ok(), reason="Ollama with nomic-embed-text is not reachable")
+pytestmark = pytest.mark.skipif(not _ollama_ok(), reason="llama.cpp with nomic-embed-text is not reachable")
 
 
 def _draft(title, content, triggers="", parent="seed-personal-memory", **kw):

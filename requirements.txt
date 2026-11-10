@@ -6,6 +6,9 @@ pydantic==2.13.5
 python-multipart==0.0.20
 pypdf>=5.0,<7.0
 Pillow>=11.0,<14.0
+# Local OCR and rasterization for scanned document uploads.
+rapidocr-onnxruntime==1.4.4
+pypdfium2>=4.30,<6
 python-dateutil==2.9.0.post0
 cryptography==50.0.2
 sqlcipher3==0.6.2; sys_platform != "win32"

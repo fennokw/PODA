@@ -34,6 +34,8 @@ def stage(target: Path) -> None:
         shutil.copy2(path, destination)
     subprocess.run([sys.executable, "-m", "poda_app.runtime.chat_renderers",
                     str(target / "poda_app/static/chat-vendor")], cwd=ROOT, check=True)
+    subprocess.run([sys.executable, "-m", "poda_app.runtime.llama_install",
+                    str(target / "llama-runtime")], cwd=ROOT, check=True)
     for name in APP_FILES:
         shutil.copy2(ROOT / name, target / name)
     if (ROOT / "LICENSE-PODA").is_file():

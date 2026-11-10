@@ -34,7 +34,7 @@ def _model(monkeypatch, response):
         "model": "qwen3:14b", "profile": "balanced", "num_ctx": 8192, "think": True,
         "options": {"num_ctx": 8192, "num_predict": 1600},
     })
-    monkeypatch.setattr(chat.ollama, "chat_stream", response)
+    monkeypatch.setattr(chat.inference, "chat_stream", response)
 
     def fail(*args, **kwargs):
         raise AssertionError("This request should go directly to the reply writer.")
@@ -127,7 +127,7 @@ def test_image_reaches_the_verified_local_vision_model(client, monkeypatch):
         yield {"message": {"content": "The screenshot is red."}, "done": True}
 
     _model(monkeypatch, writer)
-    monkeypatch.setattr(chat.ollama, "vision_model", lambda preferred: "qwen3-vl:4b")
+    monkeypatch.setattr(chat.inference, "vision_model", lambda preferred: "qwen3-vl:4b")
     _, events = _prompt(client, "Describe this screenshot.", [("bug.png", screenshot.getvalue())])
     assert dict(events).get("done", {}).get("model") == "qwen3-vl:4b", events
     assert "screenshot is red" in "".join(data.get("token", "") for _, data in events)
@@ -146,14 +146,14 @@ def test_unsafe_zip_is_rejected_before_model_inference():
 def test_planner_idle_error_falls_back_once(monkeypatch):
     calls = []
     monkeypatch.setattr(orchestrator, "_planner_models", lambda _: ["strong", "fast", "third"])
-    monkeypatch.setattr(orchestrator.tools, "ollama_tool_specs", lambda _: [{"function": {"name": "sandbox_read"}}])
+    monkeypatch.setattr(orchestrator.tools, "model_tool_specs", lambda _: [{"function": {"name": "sandbox_read"}}])
 
     def infer(prompt, model, **kwargs):
         calls.append(model)
         assert kwargs["timeout"] == 75 and kwargs["streaming"] is True
-        raise chat.ollama.OllamaError("Ollama stopped sending tool planning progress.")
+        raise chat.inference.InferenceError("llama.cpp stopped sending tool planning progress.")
 
-    monkeypatch.setattr(chat.ollama, "chat", infer)
+    monkeypatch.setattr(chat.inference, "chat", infer)
     progress = []
     result = orchestrator.plan("Read files", {}, emit=lambda name, value: progress.append((name, value)))
     assert calls == ["strong", "fast"]

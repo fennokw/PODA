@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from typing import Any
 
-from . import config, ollama
+from . import config, inference
 
 
 def _sysctl(key: str) -> str | None:
@@ -59,8 +59,8 @@ def _probe_windows() -> dict[str, Any]:
         "disk_total_gb": round(disk.total / 1024**3, 1),
         "windows": platform.version(),
         "python": platform.python_version(),
-        "ollama": ollama.status(),
-        "ollama_resident": ollama.ps(),
+        "inference": inference.status(),
+        "inference_resident": inference.ps(),
     }
 
 
@@ -85,7 +85,7 @@ def probe() -> dict[str, Any]:
                     dedicated_vram = round(float(m.group(1)) / (1024 if m.group(2).upper()=="MB" else 1),1)
     except Exception:
         pass
-    ollama_state = ollama.status()
+    engine_state = inference.status()
     return {
         "chip": _sysctl("machdep.cpu.brand_string"),
         "cores": int(_sysctl("hw.ncpu") or 0),
@@ -99,6 +99,6 @@ def probe() -> dict[str, Any]:
         "metal": metal,
         "macos": platform.mac_ver()[0],
         "python": platform.python_version(),
-        "ollama": ollama_state,
-        "ollama_resident": ollama.ps(),
+        "inference": engine_state,
+        "inference_resident": inference.ps(),
     }
