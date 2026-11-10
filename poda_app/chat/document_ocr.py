@@ -55,6 +55,18 @@ def image_text(image) -> str:
     return "\n".join("\t".join(text for _, text in sorted(columns)) for _, columns in rows)
 
 
+def _large_image(page, width: float, height: float) -> bool:
+    from pypdfium2.raw import FPDF_PAGEOBJ_IMAGE
+
+    for image in page.get_objects(filter=[FPDF_PAGEOBJ_IMAGE]):
+        left, bottom, right, top = image.get_bounds()
+        visible_width = max(0, min(right, width) - max(left, 0))
+        visible_height = max(0, min(top, height) - max(bottom, 0))
+        if visible_width * visible_height >= width * height * .25:
+            return True
+    return False
+
+
 def pdf_text(data: bytes, limit: int, *, editing: bool) -> str:
     from pypdf import PdfReader
 
@@ -72,27 +84,37 @@ def pdf_text(data: bytes, limit: int, *, editing: bool) -> str:
             native = (page.extract_text(extraction_mode="layout") or "").strip()
             text = native
             label = f"Page {index}"
-            if not native or (len("".join(native.split())) < 40 and len(page.images)):
-                if scanned < 16:
-                    try:
-                        import pypdfium2 as pdfium
-                        if raster is None:
-                            raster = pdfium.PdfDocument(data)
-                        with closing(raster[index - 1]) as raster_page:
-                            width, height = raster_page.get_size()
-                            scale = min(2.8, 2400 / max(width, height))
-                            with closing(raster_page.render(scale=scale)) as bitmap:
-                                recognized = image_text(bitmap.to_pil())
-                        if recognized:
-                            text, label = recognized, label + " · OCR"
-                    except (ImportError, OSError, RuntimeError, ValueError):
-                        pass
-                    scanned += 1
-                elif not native:
+            # A text heading or caption can sit over a scanned table or form.
+            # Use the text layer for dense searchable pages and ignore small logos.
+            if len("".join(native.split())) < 350:
+                recognized = ""
+                skipped = False
+                try:
+                    import pypdfium2 as pdfium
+                    if raster is None:
+                        raster = pdfium.PdfDocument(data)
+                    with closing(raster[index - 1]) as raster_page:
+                        width, height = raster_page.get_size()
+                        if not native or _large_image(raster_page, width, height):
+                            if scanned < 16:
+                                scanned += 1
+                                scale = min(2.8, 2400 / max(width, height))
+                                with closing(raster_page.render(scale=scale)) as bitmap:
+                                    recognized = image_text(bitmap.to_pil())
+                            else:
+                                skipped = True
+                except (ImportError, OSError, RuntimeError, ValueError):
+                    pass
+                if skipped:
                     if editing:
                         raise ValueError("A single PDF edit supports OCR on up to 16 scanned pages.")
-                    parts.append("[Additional scanned pages omitted. Attach a smaller page range.]")
-                    break
+                    parts.append(f"[{label} · image text omitted. Attach a smaller page range.]")
+                if recognized:
+                    if native and "".join(native.lower().split()) not in "".join(recognized.lower().split()):
+                        text = native + "\n[OCR text from this page]\n" + recognized
+                        label += " · native text and OCR"
+                    else:
+                        text, label = recognized, label + " · OCR"
             if not text:
                 if editing:
                     raise ValueError(f"Page {index} could not be read. Attach a clearer scan before editing the entire PDF.")

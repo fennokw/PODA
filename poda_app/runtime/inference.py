@@ -269,6 +269,8 @@ def _payload(messages: list[dict], model: str, options: dict, tools: list | None
         payload["chat_template_kwargs"] = {"enable_thinking": think}
         if not think:
             payload["reasoning_effort"] = "none"
+        elif budget := options.get("reasoning_budget"):
+            payload["reasoning_budget_tokens"] = budget
     if format:
         payload["response_format"] = {"type": "json_object", **({"schema": format} if isinstance(format, dict) else {})}
     if streaming:
@@ -368,7 +370,7 @@ def chat(messages: list[dict], model: str, options: dict | None = None, tools=No
         for part in pieces:
             if part.get("done"):
                 break
-            final = part
+            final.update({key: value for key, value in part.items() if key != "message" and value})
             message = part["message"]
             text.append(message.get("content") or "")
             for index, call in enumerate(message.get("tool_calls") or []):

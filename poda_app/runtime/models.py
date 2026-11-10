@@ -160,7 +160,8 @@ def choose_profile(message: str, mode: str, thinking_level: str) -> str:
     score = complexity_score(message)
     live_account = re.search(r"\b(?:my|our|connected) (?:calendar|notion|inbox|e-?mails?|workload|projects?)\b", message, re.I)
     if _CODE.search(message) and not live_account:
-        return "deep_coding" if mode == "deep" or (mode != "fast" and (thinking_level == "deep" or score >= 6)) else "fast_coding"
+        complex_code = bool(_REASON.search(message)) or score >= 6
+        return "deep_coding" if mode == "deep" or (mode != "fast" and (thinking_level == "deep" or complex_code)) else "fast_coding"
     if mode == "fast":
         return "fast"
     if mode == "advanced":
@@ -191,4 +192,7 @@ def resolve(message: str, mode: str, thinking_level: str, reg: dict[str, Any] | 
         profile["num_predict"] = max(profile["num_predict"], 3200)
     profile["profile"] = profile_name
     profile["options"] = {key: profile[key] for key in ("temperature", "num_ctx", "num_predict")}
+    if profile["think"]:
+        deep = thinking_level == "deep" or profile_name in {"deep", "deep_coding"}
+        profile["options"]["reasoning_budget"] = 768 if deep else 256
     return profile
