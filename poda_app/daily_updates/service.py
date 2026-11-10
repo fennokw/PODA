@@ -255,6 +255,7 @@ async def execute(run_id:str,task:dict[str,Any]):
                         mode="auto",thinking_level="balanced",use_memory=False)
         result=await run_chat(req,BackgroundRequest(),ephemeral=True,
                               unattended_target=task.get("id"), unattended_revision=task.get("updated_at"),
+                              unattended_timezone=task["timezone"],
                               unattended_mail_accounts=json.loads(task.get("mail_account_ids_json") or "[]") or
                                      ([task["mail_account_id"]] if task.get("mail_account_id") else []))
         async def collect():

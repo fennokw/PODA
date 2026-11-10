@@ -10,7 +10,7 @@ import json
 import subprocess
 from typing import Any
 
-from .models import MailError, encode_id, split_sender, snippet, mask_address
+from .models import MailError, encode_id, split_sender, snippet, mask_address, original_sent_timestamp
 
 PROVIDER = "apple_mail"
 LIST_TIMEOUT = 20
@@ -113,7 +113,8 @@ function run(argv){
   const to = safe(() => m.toRecipients().map(r => safe(() => r.address(), "")), []);
   const cc = safe(() => m.ccRecipients().map(r => safe(() => r.address(), "")), []);
   let content = ""; try { content = m.content() || ""; } catch (e) { content = ""; }
-  return JSON.stringify({native_id: m.id(), subject, sender: m.sender(), date: iso(m.dateReceived()), read: m.readStatus(), flagged: m.flaggedStatus(),
+  const sent = safe(() => m.dateSent(), null);
+  return JSON.stringify({native_id: m.id(), subject, sender: m.sender(), date: iso(m.dateReceived()), sent_at: sent ? iso(sent) : null, headers: safe(() => m.allHeaders(), ""), read: m.readStatus(), flagged: m.flaggedStatus(),
                          message_id: safe(() => m.messageId(), null), reply_to: safe(() => m.replyTo(), null), to, cc, attachments: atts, body: String(content).slice(0, args.max_chars || 200000)});
 }''',
     "snippets": r'''
@@ -276,7 +277,7 @@ def _row(account: str, mailbox: str, r: dict[str, Any], account_id: str) -> dict
         "account_id": account_id, "mailbox": mailbox,
         "subject": r.get("subject") or "(no subject)",
         "from_name": name or mask_address(addr), "from_address_masked": mask_address(addr),
-        "to_masked": [], "date": r.get("date"), "read": bool(r.get("read")), "flagged": bool(r.get("flagged")),
+        "to_masked": [], "date": r.get("date"), "sent_at": r.get("sent_at"), "read": bool(r.get("read")), "flagged": bool(r.get("flagged")),
         "snippet": "", "has_attachments": None, "message_id": r.get("message_id"), "native_id": r.get("native_id"),
     }
 
@@ -318,6 +319,7 @@ def read_message(account: str, account_id: str, mailbox: str, native_id: str) ->
         "headers": {"reply_to": mask_address(data.get("reply_to")), "cc_masked": [mask_address(a) for a in data.get("cc") or []]},
         "untrusted": True,
     })
+    row["sent_at"], row["sender_timezone_known"] = original_sent_timestamp(data.get("headers"), row["sent_at"])
     row["snippet"] = snippet(row["body_text"])
     return row
 

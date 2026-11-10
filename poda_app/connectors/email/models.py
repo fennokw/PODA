@@ -5,6 +5,7 @@ import base64
 import hashlib
 import html
 import re
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 
@@ -103,3 +104,16 @@ UNTRUSTED_SUFFIX = "\n<<<END_EMAIL_CONTENT>>>"
 def wrap_untrusted(text: str, limit: int = 6000) -> str:
     body = (text or "")[:limit]
     return UNTRUSTED_PREFIX + body + UNTRUSTED_SUFFIX
+
+
+def original_sent_timestamp(headers: str, fallback: str | None) -> tuple[str | None, bool]:
+    """Keep the RFC Date offset when native mail can expose its transport headers."""
+    header = re.search(r"^Date:[ \t]*(.+(?:\r?\n[ \t].+)*)", headers or "", re.I | re.M)
+    if header:
+        try:
+            value = parsedate_to_datetime(re.sub(r"\r?\n[ \t]+", " ", header[1]))
+            if value.tzinfo is not None:
+                return value.isoformat(), True
+        except (ValueError, OverflowError):
+            pass
+    return fallback, False

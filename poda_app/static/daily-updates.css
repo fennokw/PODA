@@ -10,9 +10,9 @@
 .daily-result summary{cursor:pointer;display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:14px}
 .daily-result summary span:first-child{flex:1;font-weight:600}
 .daily-result-body{padding:10px 16px 18px;line-height:1.55;border-top:1px solid rgba(111,172,230,.14);overflow-wrap:anywhere}
-.daily-result-body .markdown{max-height:500px;overflow:auto}
+.daily-result-body .markdown{min-width:0;overflow-wrap:anywhere}
 .model-profile-row{display:grid;grid-template-columns:80px minmax(0,1fr) auto auto;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid rgba(119,166,212,.14)}
 .model-install-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 .model-install-row select{min-width:min(380px,100%);flex:1}
-@media(max-width:900px){.daily-columns{grid-template-columns:1fr}.model-profile-row{grid-template-columns:75px minmax(0,1fr)}}
+@container(max-width:820px){.daily-columns{grid-template-columns:1fr}.model-profile-row{grid-template-columns:75px minmax(0,1fr)}}
 @media(max-width:560px){.daily-entry{flex-direction:column}.daily-entry .row{max-width:100%;justify-content:flex-start}}

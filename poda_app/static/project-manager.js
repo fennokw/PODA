@@ -11,13 +11,13 @@
   const categories = ['general','homework','study','writing','coding','research','admin','creative','reading'];
 
   route('projects', async ({view,inspector,setTitle,setInspectorTitle})=>{
-    setTitle('Project Manager'); setInspectorTitle('Project overview');
+    setTitle('Projects'); setInspectorTitle('Project overview');
     document.getElementById('viewCrumb').textContent='Projects · source files · tasks · timeline';
     const screen=el('div',{class:'screen stack pm-screen'});
     view.appendChild(screen);
     inspector.append(
       text('PODA uses one project list backed by the original project records and workload-time calibration.','small muted'),
-      text('Uploaded documents live only in the encrypted PODA database. Linked computer files remain on disk and require Files & Agent permission to be read.','small muted'),
+      text('Uploaded documents live only in the encrypted PODA database. Linked computer files remain on disk and require Files & access permission to be read.','small muted'),
       text('Proposed sessions are drafts, never writes to Notion until separately approved.','small muted'));
 
     let selected=null;
@@ -31,8 +31,8 @@
       try {projects=(await api('/project-manager/projects')).projects || [];}
       catch(err){screen.append(text(errorDetail(err).message));return;}
       const head=el('div',{class:'pm-header'},
-        el('div',{},el('h2',{},'Project Manager'),
-          text('Track every workstream from intake to completion, with evidence and realistic time estimates.')),
+        el('div',{},el('h2',{},'Your projects'),
+          text('See what you’re working on, what is due, and how much time is left.')),
         btn('+ New project',create,true));
       screen.append(head);
       const active=projects.filter(p=>p.progress<100), complete=projects.filter(p=>p.progress>=100);

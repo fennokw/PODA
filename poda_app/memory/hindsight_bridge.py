@@ -3,24 +3,25 @@
 PODA memory_nodes is the source of truth. Hindsight's per-node documents are
 a MATERIALIZED INDEX, not a second PODA chat history or independent memory tree.
 Deletion and edits reconcile by stable document_id (poda-node-<uuid>).
-Optional: a self-hosted Hindsight server configured to use local Ollama.
+PODA starts and authenticates a managed local service with Ollama.
 """
 from __future__ import annotations
 
 import hashlib
-import json
+from threading import Lock
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from ..runtime.db import connect, get_setting, set_setting, rows, one, now_iso
+from . import hindsight_runtime
 
 router=APIRouter(prefix="/memory/hindsight",tags=["memory"])
-BASE="http://127.0.0.1:8888"
 BANK="poda-local-graph"
 MAX_SYNC_PER_CALL=35
+_SYNC_LOCK = Lock()
 
 
 def enabled()->bool:
@@ -36,8 +37,11 @@ def _request(method:str,path:str,payload:dict|None=None)->dict:
     # Local Ollama fact extraction can exceed ordinary HTTP read budgets;
     # recall is bounded tightly so chat remains responsive on outage.
     operation_timeout = 120 if method=="POST" and path.endswith("/memories") else 8
-    with httpx.Client(base_url=BASE,timeout=operation_timeout,trust_env=False,follow_redirects=False) as client:
+    url, headers = hindsight_runtime.endpoint()
+    with httpx.Client(base_url=url, headers=headers, timeout=operation_timeout, trust_env=False, follow_redirects=False) as client:
         response=client.request(method,path,json=payload)
+        if method == "DELETE" and response.status_code == 404:
+            return {}
         response.raise_for_status()
         return response.json() if response.content else {}
 
@@ -67,7 +71,16 @@ def _canonical_nodes(db):
 def sync_once(limit:int=MAX_SYNC_PER_CALL)->dict[str,Any]:
     if not enabled():
         return {"enabled":False,"synchronized":0,"deleted":0}
-    limit=max(1,min(int(limit),MAX_SYNC_PER_CALL))
+    if not _SYNC_LOCK.acquire(blocking=False):
+        return {"enabled": True, "synchronized": 0, "deleted": 0, "in_progress": True}
+    try:
+        hindsight_runtime.start()
+        return _reconcile(max(1, min(int(limit), MAX_SYNC_PER_CALL)))
+    finally:
+        _SYNC_LOCK.release()
+
+
+def _reconcile(limit: int) -> dict:
     db=connect()
     synced=deleted=0;errors=[]
     try:
@@ -78,25 +91,31 @@ def sync_once(limit:int=MAX_SYNC_PER_CALL)->dict[str,Any]:
         # Propagate deletions BEFORE any new retains. Treat absence from PODA
         # as an explicit invalidation; never import inferred Hindsight facts
         # as independent visible PODA nodes.
+        attempts = 0
         for missing in sorted(set(existing)-set(current))[:limit]:
+            if not enabled(): break
+            attempts += 1
             try:
                 _request("DELETE",_path("/documents/"+_document_id(missing)))
                 db.execute("DELETE FROM hindsight_node_index WHERE poda_node_id=?",(missing,))
                 db.commit();deleted+=1
             except Exception as exc:errors.append(f"delete {missing}: {type(exc).__name__}")
         for n in all_nodes:
-            if synced>=limit:break
+            if attempts >= limit or not enabled(): break
             text="\n".join(x for x in (n["title"],n["summary"],n["content"]) if x)[:8000]
             checksum=hashlib.sha256((text+"|"+str(n["parent_id"])+"|"+str(n["surface_id"])).encode()).hexdigest()
             old=existing.get(n["id"])
             if old and old["content_sha"]==checksum and old["status"]=="synced":continue
+            attempts += 1
             payload={"async":False,"items":[{"content":text,
                 "document_id":_document_id(n["id"]), "context":"PODA canonical memory node",
                 "metadata":{"poda_node_id":n["id"],"parent_id":str(n["parent_id"] or ""),
                             "surface_id":str(n["surface_id"] or ""),
                             "origin":"PODA","priority":str(n["importance"] or 0.5)}}]}
             try:
-                _request("POST",_path("/memories"),payload)
+                retained = _request("POST", _path("/memories"), payload)
+                if not retained.get("success"):
+                    raise RuntimeError("Hindsight did not confirm the retain operation.")
                 db.execute("""INSERT INTO hindsight_node_index(poda_node_id,content_sha,status,last_synced)
                               VALUES (?,?,?,?) ON CONFLICT(poda_node_id) DO UPDATE SET
                               content_sha=excluded.content_sha,status=excluded.status,last_synced=excluded.last_synced""",
@@ -114,7 +133,8 @@ def recall_node_ids(query:str,limit:int=12)->list[str]:
         result=_request("POST",_path("/memories/recall"),{"query":query[:1200],"budget":"low"})
         seen=[]
         for fact in result.get("results",[])[:max(1,min(limit,30))]:
-            node=(fact.get("metadata") or {}).get("poda_node_id")
+            document_id = fact.get("document_id") or ""
+            node = document_id.removeprefix("poda-node-") if document_id.startswith("poda-node-") else None
             if node and node not in seen:seen.append(node)
         return seen
     except (httpx.HTTPError,ValueError,KeyError,TypeError):
@@ -132,33 +152,60 @@ def status():
         ensure_tables(db)
         mapped=db.execute("SELECT COUNT(*) FROM hindsight_node_index").fetchone()[0]
     finally:db.close()
-    reachable=False
+    return {"enabled": enabled(), "indexed_nodes": mapped, **hindsight_runtime.status()}
+
+
+@router.get("/diagnostics")
+def diagnostics():
+    return {"log": hindsight_runtime.diagnostics()}
+
+
+class SetupRequest(BaseModel):
+    confirm_download: bool = False
+
+
+@router.post("/setup")
+def setup(req: SetupRequest, tasks: BackgroundTasks):
+    if not req.confirm_download:
+        raise HTTPException(400, detail="Confirm the Hindsight download to continue.")
     try:
-        # No remote endpoints, even for health diagnostics.
-        with httpx.Client(timeout=2,trust_env=False,follow_redirects=False) as c:
-            reachable=c.get(BASE+"/health").status_code==200
-    except httpx.HTTPError:pass
-    return {"enabled":enabled(),"local_server_reachable":reachable,
-            "indexed_nodes":mapped,"url":BASE,
-            "warning":"Requires a separately installed LOCAL Hindsight engine with Ollama; no cloud endpoints. Hindsight keeps a derived local index, PODA's encrypted graph remains authoritative."}
+        hindsight_runtime.install_and_start()
+    except RuntimeError as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
+    if get_setting("hindsight_managed_index", "false") != "true":
+        db = connect()
+        try:
+            ensure_tables(db)
+            db.execute("DELETE FROM hindsight_node_index")
+            db.commit()
+        finally:
+            db.close()
+        set_setting("hindsight_managed_index", "true")
+    set_setting("hindsight_local_enabled", "true")
+    tasks.add_task(_background_reconcile)
+    return status()
 
 
 @router.put("/config")
-def configure(req:ConfigRequest):
+def configure(req: ConfigRequest, tasks: BackgroundTasks):
     if req.enabled:
         try:
-            _request("GET","/health")
-        except Exception as exc:
-            raise HTTPException(409,detail="Start a local Hindsight server at 127.0.0.1:8888 with Ollama before enabling") from exc
-    set_setting("hindsight_local_enabled","true" if req.enabled else "false")
+            hindsight_runtime.start()
+        except RuntimeError as exc:
+            raise HTTPException(409, detail=str(exc)) from exc
+    set_setting("hindsight_local_enabled", "true" if req.enabled else "false")
+    if req.enabled:
+        tasks.add_task(_background_reconcile)
+    else:
+        hindsight_runtime.stop()
     return status()
 
 
 @router.post("/sync")
 def sync_memory(limit:int=35):
     try:return sync_once(limit)
-    except httpx.HTTPError as exc:
-        raise HTTPException(503,detail=f"Local Hindsight unavailable: {type(exc).__name__}") from exc
+    except (RuntimeError, httpx.HTTPError) as exc:
+        raise HTTPException(503, detail=str(exc)) from exc
 
 
 class FeedbackRequest(BaseModel):
@@ -191,15 +238,23 @@ def feedback(req: FeedbackRequest):
             "note":"Source node is preserved for user review; incorrect/outdated nodes are excluded from retrieval and Hindsight at next sync."}
 
 
+def _background_reconcile():
+    try:
+        sync_once(5)
+    except (RuntimeError, httpx.HTTPError):
+        pass
+
+
 async def background_sync():
     """Incrementally reconcile only after explicit opt-in; never fetch from cloud."""
     import asyncio
-    while True:
-        try:
-            if enabled():
-                await asyncio.to_thread(sync_once,15)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            pass
-        await asyncio.sleep(600)
+    try:
+        while True:
+            try:
+                if enabled():
+                    await asyncio.to_thread(sync_once, 15)
+            except Exception:
+                pass
+            await asyncio.sleep(60)
+    finally:
+        await asyncio.to_thread(hindsight_runtime.stop)

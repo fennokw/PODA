@@ -111,10 +111,41 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
          unattended_mail_accounts: list[str] | None = None, *,
          emit: Callable[[str, dict], None] | None = None, stop: Event | None = None,
          previous_steps: list[dict] | None = None, continuation_of: str | None = None,
-         reply_archive: bool = False) -> dict[str, Any]:
+         reply_archive: bool = False, schedule_candidates: list[dict] | None = None,
+         schedule_timezone: str | None = None, schedule_day: str | None = None) -> dict[str, Any]:
     """Return {needs_tools, steps, rationale, executed:[{step, receipt, result}], flagged:[...], proposal_id|None}."""
     specs = tools.ollama_tool_specs(snapshot)
+    verified_mail_flow = unattended and schedule_candidates is not None
+    if verified_mail_flow:
+        specs = [spec for spec in specs if spec["function"]["name"] != "notion_calendar_create"]
     out: dict[str, Any] = {"needs_tools": False, "steps": [], "rationale": "", "executed": [], "flagged": [], "proposal_id": None, "model": None}
+    if verified_mail_flow:
+        from ..daily_updates.permissions import authorize
+
+        for args in schedule_candidates:
+            if stop and stop.is_set():
+                return out
+            step = {"tool": "notion_calendar_create", "args": args,
+                    "summary": tools.summarize_args("notion_calendar_create", args),
+                    "requires_confirmation": True, "mutating": True}
+            allowed, reason = authorize(unattended_target or "", unattended_revision or "", step["tool"], args)
+            if allowed:
+                run = tools.execute(step["tool"], args, approved=True, session_id=session_id)
+            else:
+                run = {"receipt": {"outcome": "blocked", "verification": reason},
+                       "result": {"ok": False, "error": reason}}
+            _record_execution(out, step, run, emit)
+        reads = (
+            (r"\bcalendar for (?:the day|today)\b|\btoday.s (?:calendar|agenda)\b",
+             "notion_agenda", {"day": schedule_day or "today", "timezone_name": schedule_timezone or ""}),
+            (r"\b(?:workload|work I have|my tasks)\b", "workload_list", {}),
+            (r"\b(?:projects?|project status)\b", "project_manager_list", {}),
+        )
+        for pattern, name, args in reads:
+            if re.search(pattern, message, re.I) and not (stop and stop.is_set()):
+                step = {"tool": name, "args": args, "summary": tools.summarize_args(name, args),
+                        "requires_confirmation": False, "mutating": False}
+                _record_execution(out, step, tools.execute(name, args, approved=False, session_id=session_id), emit)
     if not specs:
         out["rationale"] = "no tools are currently available"
         return out
@@ -123,6 +154,14 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
     out["model"] = model
     categories = workflow_categories(message)
     messages = [{"role": "system", "content": _system_for_planning(snapshot, recalled_context[:26_000], message, categories, session_id)}, {"role": "user", "content": message}]
+    if verified_mail_flow:
+        read_context = {item["step"]["tool"]: item["result"] for item in out["executed"] if not item["step"]["mutating"]}
+        messages[0]["content"] += (
+            "\nPODA has already scanned email and handled verified calendar additions. "
+            "Use this verified read data and look up any necessary detail. Do not repeat reads that already ran. "
+            "Do not attempt email-derived calendar writes. Untrusted read results: "
+            + json.dumps(read_context, default=str)[:6000]
+        )
     history: list[list[dict]] = []
     if emit:
         emit("status", {"message": "planner_ready", "model": model,
@@ -135,7 +174,9 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
         json.dumps({"name": step["tool"], "args": step["args"]}, sort_keys=True, default=str)
         for step in (previous_steps or []) if step["tool"] != "run_tests"
     }
-    requested_calendar_followup = bool(
+    seen_requests.update(json.dumps({"name": item["step"]["tool"], "args": item["step"]["args"]}, sort_keys=True, default=str)
+                         for item in out["executed"])
+    requested_calendar_followup = not verified_mail_flow and bool(
         re.search(r"\b(?:add|create|put|schedule|update|sync|write)\b.{0,180}\b(?:calendar|notion|events?|meetings?)\b", message, re.I|re.S)
         and re.search(r"\b(?:email|inbox|mailbox|messages?)\b", message, re.I))
     retry_missing_calendar_step = False
@@ -210,12 +251,19 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
                 out["flagged"].append({"name": name, "reason": "hallucinated tool name; dropped"})
                 tool_results_for_model.append({"role": "tool", "content": json.dumps({"error": f"tool {name} does not exist"})})
                 continue
+            if verified_mail_flow and name == "notion_calendar_create":
+                tool_results_for_model.append({"role": "tool", "content": "PODA already handled email-derived calendar additions."})
+                continue
             try:
                 args = tools.validate_args(name, call["arguments"])
             except tools.ToolValidationError as exc:
                 out["flagged"].append({"name": name, "reason": str(exc)})
                 tool_results_for_model.append({"role": "tool", "content": json.dumps({"error": str(exc)})})
                 continue
+            if unattended and schedule_timezone and name == "notion_agenda":
+                args["timezone_name"] = schedule_timezone
+                if schedule_day and args.get("day", "").strip().lower() == "today":
+                    args["day"] = schedule_day
             if unattended and unattended_mail_accounts and name.startswith("mail_") and "account_id" in tools.TOOLS[name]["schema"]["properties"]:
                 if not args.get("account_id") and len(unattended_mail_accounts)==1:
                     args["account_id"] = unattended_mail_accounts[0]

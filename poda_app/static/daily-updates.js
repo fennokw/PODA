@@ -45,11 +45,11 @@
           box.onchange=()=>{if(box.checked)selectedAccounts.add(account.id);else selectedAccounts.delete(account.id);redrawPermissions();};
           mailAccountArea.append(el('label',{class:'check'},box,account.account_name+' · '+account.address_masked));
         }
-        if(!mailAccounts.length)mailAccountArea.append(note('No accounts connected. Add one in Mail first.'));
+        if(!mailAccounts.length)mailAccountArea.append(el('a',{class:'btn text-link',href:'#/mail'},'Connect a mail account'));
       };
       const redrawPermissions=()=>{
-        permissionArea.replaceChildren(el('h4',{},'Unattended action permissions'),
-          note('Each action and target must be approved separately. Mail grants are per selected account; no blanket send permission.'));
+        permissionArea.replaceChildren(el('h4',{},'What can this automation change?'),
+          note('Choose the changes PODA may make while you’re away. Reading emails and calendar entries does not need an extra approval.'));
         for(const entry of permissionCatalog){
           const isMail=entry.tool.startsWith('mail_');
           const grants=configuredPermissions.filter(p=>p.tool===entry.tool);
@@ -94,9 +94,9 @@
       const save=el('button',{class:'btn btn-primary',type:'submit'},'Save automation');
       form.append(el('h3',{},'Create daily automation'),
         field('Name',title),field('Automation prompt',prompt),
-        field('Times (24-hour, comma separated)',times),field('Time zone (IANA)',tz),
+        field('Run times (for example, 08:00, 17:00)',times),field('Time zone',tz),
         field('Connected inboxes',mailAccountArea),
-        note('Accounts are loaded from the Mail page. No passwords, account IDs or access codes need to be entered here.'),
+        note('Leave the inbox selection empty to use the connected inboxes.'),
         el('label',{class:'check'},enabled,'Active'),
         permissionArea,save);
       form.onsubmit=async e=>{
@@ -154,7 +154,8 @@
           el('span',{class:'small muted'},new Date(r.scheduled_for).toLocaleString())));
         details.append(el('div',{class:'daily-result-body'},r.response?
           el('div',{class:'markdown'},el('div',{html:md.render(r.response)})):
-          note(r.error||'Still processing...'),note(r.notified?'Desktop notification requested':'Notification not confirmed')));
+          r.error?el('div',{class:'stack-sm'},note('The run could not finish.'),el('pre',{class:'json dev-only'},r.error)):note('Still processing…'),
+          el('p',{class:'small muted dev-only'},r.notified?'Desktop notification requested':'Notification not confirmed')));
         history.append(details);
       }
       historyCol.append(history);

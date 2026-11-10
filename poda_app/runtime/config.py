@@ -59,6 +59,7 @@ NOTION_KEYCHAIN_SERVICE = "PODA.Public.Notion"
 NOTION_KEYCHAIN_ACCOUNT = "primary"
 
 EGRESS_ALLOWLIST = {
+    "addon_catalog": {"raw.githubusercontent.com"},
     "notion": {"api.notion.com"},
     "ollama": {"127.0.0.1", "localhost"},
 }

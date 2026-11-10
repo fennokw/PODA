@@ -184,6 +184,11 @@ def _date(value: str | None) -> str | None:
         return None
 
 
+def _received_at(meta: str) -> str | None:
+    match = re.search(r'INTERNALDATE "([^"]+)"', meta)
+    return _date(match[1]) if match else None
+
+
 def _flags_from(raw: str) -> tuple[bool, bool]:
     return ("\\Seen" in raw), ("\\Flagged" in raw)
 
@@ -204,7 +209,7 @@ def list_messages(address: str, account_id: str, mailbox: str = "INBOX", limit: 
         rows = []
         if page:
             seq = b",".join(page).decode()
-            typ, fetched = s.conn.uid("FETCH", seq, "(FLAGS BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO DATE MESSAGE-ID)] X-GM-MSGID)")
+            typ, fetched = s.conn.uid("FETCH", seq, "(FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO DATE MESSAGE-ID)] X-GM-MSGID)")
             if typ == "OK":
                 for item in fetched:
                     if not isinstance(item, tuple):
@@ -216,7 +221,7 @@ def list_messages(address: str, account_id: str, mailbox: str = "INBOX", limit: 
                     name, addr = split_sender(_hdr(hdr.get("From")))
                     rows.append({"id": encode_id(PROVIDER, address, mailbox, uid.group(1) if uid else "?"), "account_id": account_id, "mailbox": mailbox,
                                  "subject": _hdr(hdr.get("Subject")) or "(no subject)", "from_name": name or mask_address(addr), "from_address_masked": mask_address(addr),
-                                 "to_masked": [mask_address(a) for a in _hdr(hdr.get("To")).split(",") if a.strip()][:5], "date": _date(hdr.get("Date")),
+                                 "to_masked": [mask_address(a) for a in _hdr(hdr.get("To")).split(",") if a.strip()][:5], "date": _received_at(meta) or _date(hdr.get("Date")),
                                  "read": read, "flagged": flagged, "snippet": None, "has_attachments": None, "message_id": (hdr.get("Message-ID") or "").strip()})
         rows.sort(key=lambda r: r["date"] or "", reverse=True)
         return {"messages": rows, "total": len(uids) if query or unread_only else total, "unread": unread, "scanned": len(uids)}
@@ -225,7 +230,7 @@ def list_messages(address: str, account_id: str, mailbox: str = "INBOX", limit: 
 def read_message(address: str, account_id: str, mailbox: str, uid: str) -> dict[str, Any]:
     with _Session(address) as s:
         s.select(mailbox)
-        typ, data = s.conn.uid("FETCH", uid, "(FLAGS BODY.PEEK[])")
+        typ, data = s.conn.uid("FETCH", uid, "(FLAGS INTERNALDATE BODY.PEEK[])")
         if typ != "OK" or not data or not isinstance(data[0], tuple):
             raise MailError("not_found", "Message not found", status=404)
         meta = data[0][0].decode(errors="replace")
@@ -234,7 +239,7 @@ def read_message(address: str, account_id: str, mailbox: str, uid: str) -> dict[
         name, addr = split_sender(parsed["from"])
         return {"id": encode_id(PROVIDER, address, mailbox, uid), "account_id": account_id, "mailbox": mailbox, "subject": parsed["subject"],
                 "from_name": name or mask_address(addr), "from_address_masked": mask_address(addr), "to_masked": [mask_address(a) for a in parsed["to"]],
-                "date": parsed["date"], "read": read, "flagged": flagged, "snippet": snippet(parsed["body"]), "has_attachments": bool(parsed["attachments"]),
+                "date": _received_at(meta) or parsed["date"], "sent_at": parsed["date"], "sender_timezone_known": True, "read": read, "flagged": flagged, "snippet": snippet(parsed["body"]), "has_attachments": bool(parsed["attachments"]),
                 "message_id": parsed["message_id"], "body_text": parsed["body"], "attachments": parsed["attachments"],
                 "headers": {"reply_to": mask_address(parsed["reply_to"]), "cc_masked": [mask_address(a) for a in parsed["cc"]]}, "untrusted": True}
 

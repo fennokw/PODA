@@ -123,7 +123,9 @@ def _date_span(message: str, now: datetime) -> tuple[str | None, str | None]:
         return (today - timedelta(days=7)).isoformat(), today.isoformat()
     if any(k in q for k in ("past month", "last month", "last 30 days")):
         return (today - timedelta(days=30)).isoformat(), today.isoformat()
-    if any(k in q for k in ("yesterday",)):
+    if "since yesterday" in q or re.search(r"\b(?:past|last) (?:day|24 hours)\b", q):
+        return (today - timedelta(days=1)).isoformat(), today.isoformat()
+    if "yesterday" in q:
         v = today - timedelta(days=1)
         return v.isoformat(), v.isoformat()
     if "today" in q:
@@ -193,6 +195,8 @@ def report(params: dict[str, Any], outcome: dict[str, Any]) -> str:
     scored.sort(key=lambda v: (v[0], v[2].get("date") or ""), reverse=True)
     important = [(score, labels, row) for score, labels, row in scored if score >= 3]
     period = (f"{params['start_date']} through {params['end_date']}" if params.get("start_date") and params.get("end_date") else "the searched mailboxes")
+    if params.get("display_since"):
+        period = f"since {params['display_since']}"
     lines = [f"**Email review: {period}**"]
     lines.append(f"Search completed. I examined {data.get('scanned_headers', 0)} message headers and "
                  f"{data.get('read_bodies', 0)} message bodies; {len(messages)} candidate messages were returned.")
@@ -223,8 +227,13 @@ def report(params: dict[str, Any], outcome: dict[str, Any]) -> str:
     return "\n\n".join(lines)
 
 
-def fulfill(message: str, session_id: str | None, account_id: str | None = None) -> tuple[dict[str, Any], dict[str, Any], str]:
-    params = parameters(message, session_id)
+def fulfill(message: str, session_id: str | None, account_id: str | None = None, *,
+            now: datetime | None = None, date_first: bool = False) -> tuple[dict[str, Any], dict[str, Any], str]:
+    params = parameters(message, session_id, now)
+    if date_first:
+        params.update(query="", related_terms=[])
+        if now and getattr(now.tzinfo, "key", None):
+            params["date_timezone"] = now.tzinfo.key
     if account_id:
         params["account_id"] = account_id
     if params.get("query") and not FOLLOWUP.search(message):

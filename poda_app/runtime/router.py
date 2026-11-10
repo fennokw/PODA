@@ -11,9 +11,24 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from . import config, ollama, hardware, models, capability
-from .db import encryption_status, now_iso
+from .db import encryption_status, get_setting, now_iso, set_setting
 
 router = APIRouter()
+
+
+class ViewPreferences(BaseModel):
+    developer_mode: bool
+
+
+@router.get("/system/view-preferences")
+def view_preferences() -> ViewPreferences:
+    return ViewPreferences(developer_mode=get_setting("developer_mode", "false") == "true")
+
+
+@router.put("/system/view-preferences")
+def save_view_preferences(req: ViewPreferences) -> ViewPreferences:
+    set_setting("developer_mode", "true" if req.developer_mode else "false")
+    return req
 
 
 @router.get("/system/build")

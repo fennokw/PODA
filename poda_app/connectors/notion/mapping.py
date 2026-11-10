@@ -272,7 +272,8 @@ def _idempotency_key(event: dict[str, Any]) -> str:
     return hashlib.sha256(f"{str(event.get('title','')).strip().casefold()}|{event.get('start')}|{ext}".encode()).hexdigest()[:20]
 
 
-def find_duplicates(event: dict[str, Any], mapping: dict[str, Any], pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def find_duplicates(event: dict[str, Any], mapping: dict[str, Any], pages: list[dict[str, Any]], *,
+                    exact_start: bool = False) -> list[dict[str, Any]]:
     dups = []
     title = str(event.get("title", "")).strip().casefold()
     start = str(event.get("start") or "")[:10]
@@ -287,8 +288,12 @@ def find_duplicates(event: dict[str, Any], mapping: dict[str, Any], pages: list[
         for key, val in ext.items():
             if val is not None and str(interp["external_ids"].get(key) or "") == str(val):
                 reasons.append(f"same {key}")
-        if title and str(interp.get("title") or "").strip().casefold() == title and str(interp.get("date_start") or "")[:10] == start and start:
-            reasons.append("same title and date")
+        if title and str(interp.get("title") or "").strip().casefold() == title:
+            if exact_start and _same_date("start", {"start": interp.get("date_start"), "time_zone": interp.get("time_zone")},
+                                          {"start": event.get("start"), "time_zone": event.get("time_zone")}):
+                reasons.append("same title and start time")
+            elif not exact_start and start and str(interp.get("date_start") or "")[:10] == start:
+                reasons.append("same title and date")
         if reasons:
             dups.append({"page_id": p["id"], "title": interp.get("title"), "date_start": interp.get("date_start"), "url": p.get("url"), "reasons": reasons})
     return dups

@@ -21,11 +21,15 @@ from pathlib import Path
 from typing import Any
 
 from ..runtime import config
+from ..security import egress
 from ..runtime.db import connect, now_iso, rows, one, get_setting, set_setting
 from . import receipts, grants
 
 DEFAULT_REPO_PATHS = ["~/Downloads/CLI-Anything-main"]
 SOFTWARE_VENV = config.DATA_DIR / "software-venv"
+OFFICIAL_CATALOG = config.DATA_DIR / "addons" / "catalog"
+_CATALOG_REVISION = "34f519533bc175d2fe287ab8316b0dd99bb9cc43"
+_CATALOG_RAW = f"https://raw.githubusercontent.com/HKUDS/CLI-Anything/{_CATALOG_REVISION}/"
 _CACHE: dict[str, Any] = {"at": 0.0, "catalog": None}
 CACHE_TTL = 60.0
 MAX_OUTPUT = 64 * 1024
@@ -199,10 +203,12 @@ def _parse_registry(repo: Path, filename: str, source: str) -> list[dict[str, An
         clis = list(clis.values())
     out = []
     for e in clis or []:
-        if not isinstance(e, dict) or not e.get("name"):
+        if not isinstance(e, dict) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}", str(e.get("name") or "")):
             continue
         skill_rel = e.get("skill_md") or ""
         skill_path = (repo / skill_rel) if skill_rel and not skill_rel.startswith(("http", "npx")) else None
+        if skill_path and not skill_path.resolve().is_relative_to(repo.resolve()):
+            skill_path = None
         harness = _local_harness_dir(repo, e) if source == "cli-anything" else None
         if (skill_path is None or not skill_path.exists()):
             # Registry omits/misnames the skill for some harnesses; fall back to the canonical skills/ dir, then the packaged copy.
@@ -211,11 +217,22 @@ def _parse_registry(repo: Path, filename: str, source: str) -> list[dict[str, An
                 fallbacks += sorted(harness.glob("cli_anything/*/skills/SKILL.md"))
             skill_path = next((f for f in fallbacks if f.exists()), None)
         entry = e.get("entry_point") or (f"cli-anything-{e['name']}" if source == "cli-anything" else e["name"])
+        if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,95}", str(entry)):
+            continue
+        install_cmd = e.get("install_cmd") or ""
+        remote_skill = None
+        if source == "official":
+            subdir = re.fullmatch(r"pip install git\+https://github\.com/HKUDS/CLI-Anything\.git#subdirectory=([a-zA-Z0-9_./-]+/agent-harness)", install_cmd)
+            if not subdir or ".." in Path(subdir[1]).parts:
+                continue
+            install_cmd = f"pip install https://codeload.github.com/HKUDS/CLI-Anything/zip/{_CATALOG_REVISION}#subdirectory={subdir[1]}"
+            if re.fullmatch(r"skills/[a-zA-Z0-9_-]+/SKILL\.md", skill_rel):
+                remote_skill = skill_rel
         exe = _which(entry)
         out.append({
             "name": e["name"], "display_name": e.get("display_name") or e["name"], "description": e.get("description") or "",
             "requires": e.get("requires") or "", "category": e.get("category") or "other", "entry_point": entry,
-            "install_cmd": e.get("install_cmd") or "", "homepage": e.get("homepage"), "version": e.get("version"),
+            "install_cmd": install_cmd, "remote_skill": remote_skill, "homepage": e.get("homepage"), "version": e.get("version"),
             "skill_path": str(skill_path) if skill_path and skill_path.exists() else None, "skill_excerpt": _skill_excerpt(skill_path),
             "local_harness": str(harness) if harness else None, "installed": bool(exe), "executable": exe, "source": source,
             "repo": str(repo), "package_manager": e.get("package_manager") or ("pip" if source == "cli-anything" else None),
@@ -251,6 +268,8 @@ def catalog(force: bool = False) -> list[dict[str, Any]]:
     for repo in repo_paths():
         for e in _parse_registry(repo, "registry.json", "cli-anything") + _parse_registry(repo, "public_registry.json", "public"):
             seen.setdefault(e["name"], e)
+    for e in _parse_registry(OFFICIAL_CATALOG, "registry.json", "official"):
+        seen.setdefault(e["name"], e)
     for e in _cli_hub_entries():
         seen.setdefault(e["name"], e)
     # Installed harnesses that no registry mentions (e.g. generated locally).
@@ -299,7 +318,7 @@ def skill_hints(message: str, lines: int = 40) -> str:
     lower = (message or "").lower()
     out = []
     for e in catalog():
-        if not e.get("enabled"):
+        if not e.get("enabled") or not e.get("installed") or not external_execution_enabled():
             continue
         keys = {e["name"].lower(), str(e.get("display_name") or "").lower()}
         if any(k and k in lower for k in keys):
@@ -309,7 +328,56 @@ def skill_hints(message: str, lines: int = 40) -> str:
 
 
 def external_execution_enabled() -> bool:
+    try:
+        setting = get_setting("software_external_execution", "")
+    except Exception:
+        setting = ""
+    if setting in {"enabled", "disabled"}:
+        return setting == "enabled"
     return os.environ.get("PODA_ALLOW_EXTERNAL_SOFTWARE") == "I_TRUST_MY_INSTALLED_HARNESSES"
+
+
+def configure_external_execution(enabled: bool) -> None:
+    set_setting("software_external_execution", "enabled" if enabled else "disabled")
+    _CACHE["catalog"] = None
+    refresh_tools()
+    _sync_ledger()
+
+
+def download_catalog() -> int:
+    response = egress.guarded_request("addon_catalog", "GET", _CATALOG_RAW + "registry.json",
+                                      purpose="Download the CLI-Anything add-on catalog")
+    response.raise_for_status()
+    data = response.json()
+    if len(response.content) > 512 * 1024 or not isinstance(data, dict) or not isinstance(data.get("clis"), (list, dict)):
+        raise ValueError("The official catalog did not return a valid registry.")
+    OFFICIAL_CATALOG.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=OFFICIAL_CATALOG, delete=False) as handle:
+        pending = Path(handle.name)
+        json.dump(data, handle)
+    try:
+        pending.replace(OFFICIAL_CATALOG / "registry.json")
+    finally:
+        pending.unlink(missing_ok=True)
+    _CACHE["catalog"] = None
+    return len(catalog(force=True))
+
+
+def catalog_skill(name: str) -> str:
+    entry = get(name)
+    if not entry:
+        raise LookupError("This add-on was not found.")
+    if entry.get("skill_path"):
+        return Path(entry["skill_path"]).read_text(encoding="utf-8")[:24000]
+    if not entry.get("remote_skill"):
+        raise LookupError("This add-on does not provide downloadable instructions.")
+    response = egress.guarded_request("addon_catalog", "GET", _CATALOG_RAW + entry["remote_skill"],
+                                      purpose=f"Download instructions for {name}")
+    response.raise_for_status()
+    if len(response.content) > 96 * 1024:
+        raise ValueError("The add-on instructions exceed the size limit.")
+    return response.content.decode("utf-8")[:24000]
+
 
 
 def enabled_names() -> list[str]:
@@ -352,13 +420,17 @@ def install(name: str, confirm: bool = False, allow_network: bool = False, extra
     if not confirm:
         raise PermissionError("Installing software requires confirm=true")
     if not external_execution_enabled():
-        raise PermissionError("External harness installation is disabled. Explicitly opt in to trusted harness execution first.")
+        raise PermissionError("Turn on trusted program add-ons on the Add-ons screen first.")
+    if allow_network and egress.offline_mode():
+        raise PermissionError("Turn off Offline Mode in Privacy to download a program add-on.")
     if e.get("package_manager") not in (None, "pip"):
         raise RuntimeError(f"'{name}' is a {e.get('package_manager')} package; PODA only installs pip harnesses. Install it yourself with: {e.get('install_cmd')}")
     rid = receipts.open_receipt("software_install", name, {"allow_network": allow_network, "extras": extras}, approved=True, session_id=session_id)
     try:
         venv_info = ensure_venv()
         pip = [str(_venv_python()), "-m", "pip", "install", "--disable-pip-version-check"]
+        if not allow_network:
+            pip += ["--no-index", "--no-build-isolation"]
         if e.get("local_harness"):
             target = e["local_harness"] + (f"[{extras}]" if extras else "")
             cmd = pip + ["-e", target]
@@ -366,10 +438,11 @@ def install(name: str, confirm: bool = False, allow_network: bool = False, extra
         else:
             if not allow_network:
                 raise PermissionError("This harness has no local checkout; installing it downloads from GitHub/PyPI. Re-send with allow_network=true to allow that.")
-            spec = (e.get("install_cmd") or "").replace("pip install ", "").strip()
-            if not spec:
-                raise RuntimeError("No install command known for this harness")
-            cmd = pip + shlex.split(spec)
+            spec = (e.get("install_cmd") or "").removeprefix("pip install ").strip()
+            parts = shlex.split(spec)
+            if len(parts) != 1 or parts[0].startswith("-"):
+                raise RuntimeError("This add-on does not provide a supported install package.")
+            cmd = pip + parts
             network_note = "remote install (GitHub/PyPI)"
             _log_egress("github.com", f"install {name}", None)
         started = time.perf_counter()
@@ -471,9 +544,8 @@ def run(name: str, args: list[str], timeout_s: int = 60, want_json: bool = True,
         return {"ok": False, "result": None, "error": msg, "code": code, "verification": "not executed", "receipt": receipt}
 
     if not external_execution_enabled():
-        return blocked("External CLI harnesses are disabled by default. To run a trusted harness, set "
-                       "PODA_ALLOW_EXTERNAL_SOFTWARE=I_TRUST_MY_INSTALLED_HARNESSES before starting PODA. "
-                       "External harnesses run as your macOS user and are NOT sandboxed.", "EXTERNAL_EXECUTION_DISABLED")
+        return blocked("Turn on trusted program add-ons on the Add-ons screen to run this tool.",
+                       "EXTERNAL_EXECUTION_DISABLED")
 
     if not e:
         return blocked(f"Unknown harness '{name}'", "UNKNOWN_HARNESS")
