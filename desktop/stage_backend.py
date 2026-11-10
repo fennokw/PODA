@@ -13,6 +13,19 @@ APP_FILES = ("requirements.txt", "PODA_VERSION.txt", "LICENSE")
 APP_SUFFIXES = {".py", ".html", ".js", ".css", ".svg"}
 
 
+def materialize_engine_aliases(runtime: Path) -> None:
+    """Keep dylib aliases inside the signed bundle after Electron copies it."""
+    for link in runtime.rglob("*"):
+        if not link.is_symlink():
+            continue
+        source = link.resolve(strict=True)
+        if not source.is_relative_to(runtime) or not source.is_file():
+            raise ValueError(f"Invalid packaged llama.cpp alias: {link.name}")
+        link.unlink()
+        shutil.copy2(source, link)
+
+
+
 def stage(target: Path) -> None:
     if target.exists() and any(target.iterdir()):
         if target != HERE / ".backend" or not (target / "desktop_backend.py").is_file():
@@ -34,8 +47,10 @@ def stage(target: Path) -> None:
         shutil.copy2(path, destination)
     subprocess.run([sys.executable, "-m", "poda_app.runtime.chat_renderers",
                     str(target / "poda_app/static/chat-vendor")], cwd=ROOT, check=True)
-    subprocess.run([sys.executable, "-m", "poda_app.runtime.llama_install",
-                    str(target / "llama-runtime")], cwd=ROOT, check=True)
+    runtime = target / "llama-runtime"
+    subprocess.run([sys.executable, "-m", "poda_app.runtime.llama_install", str(runtime)], cwd=ROOT, check=True)
+    if sys.platform == "darwin":
+        materialize_engine_aliases(runtime)
     for name in APP_FILES:
         shutil.copy2(ROOT / name, target / name)
     if (ROOT / "LICENSE-PODA").is_file():
