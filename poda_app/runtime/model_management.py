@@ -94,6 +94,7 @@ def catalog() -> dict:
     return {"active_job": active,"catalog": model_catalog.catalog(hw), "installed": [model_catalog.summary(item) for item in model_catalog.inventory()],
             "selected": models.selected_profiles(), "roles": models.registry()["profiles"],
             "engine": hw["inference"], "settings": inference.settings(), "cache_types": model_catalog.CACHE_TYPES,
+            "cache_type_labels": {code: model_catalog.quantization_label(code) for code in model_catalog.CACHE_TYPES},
             "vulkan_available": config.WINDOWS and llama_install.executable("vulkan") is not None,
             "windows": config.WINDOWS, "hardware": {key: hw.get(key) for key in
                 ("ram_total_gb", "gpu_memory_dedicated_gb", "unified_memory_gb", "disk_free_gb")}}
@@ -123,7 +124,7 @@ def download(body: Download) -> dict:
     item = model_catalog.CATALOG.get(body.model)
     if not item:
         raise HTTPException(422, "Choose a model from the verified GGUF catalog.")
-    return _start(item.label + " " + item.quant, item.size,
+    return _start(f"{item.label} · {model_catalog.quantization_label(item.quant)}", item.size,
                   lambda report: model_catalog.summary(model_catalog.install_model(item.id, report)), network=True)
 
 
