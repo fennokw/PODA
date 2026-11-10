@@ -113,6 +113,31 @@ def install_and_start() -> None:
             raise
 
 
+def _prepare_windows_database() -> None:
+    database = _ROOT / "database"
+    if database.resolve() != database.absolute():
+        raise RuntimeError("The Hindsight database folder must be inside PODA's local data folder.")
+    database.mkdir(mode=0o700, parents=True, exist_ok=True)
+    system_tools = Path(os.environ["SystemRoot"]) / "System32"
+    try:
+        identity = subprocess.check_output(
+            [str(system_tools / "whoami.exe"), "/user", "/fo", "csv", "/nh"],
+            timeout=10, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        sid = re.search(rb'"(S-1-[0-9-]+)"', identity)
+        if not sid:
+            raise RuntimeError("Could not identify the Windows account running PODA.")
+        # PostgreSQL initializes under a restricted token. An inherited
+        # administrator-group grant alone does not let it prepare the data.
+        grant = f"*{sid[1].decode('ascii')}:(OI)(CI)F"
+        subprocess.run(
+            [str(system_tools / "icacls.exe"), str(database), "/grant:r", grant],
+            check=True, capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("PODA could not prepare permissions for its Hindsight database folder.") from exc
+
+
 def start(model_config: tuple[str, str, str] | None = None) -> None:
     global _process, _url, _token, _phase, _last_error
     with _LOCK:
@@ -153,6 +178,8 @@ def start(model_config: tuple[str, str, str] | None = None) -> None:
             port = listener.getsockname()[1]
         base_url = f"http://127.0.0.1:{port}"
         try:
+            if config.WINDOWS and not (_ROOT / ".initialized").exists():
+                _prepare_windows_database()
             with _LOG.open("a", encoding="utf-8") as log:
                 _process = subprocess.Popen([str(_bin("hindsight-api")), "--host", "127.0.0.1", "--port", str(port),
                                              "--log-level", "warning", "--no-access-log"],
