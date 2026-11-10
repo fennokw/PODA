@@ -26,6 +26,18 @@ def test_security_headers(client):
     assert r.headers["Cache-Control"].startswith("no-store")
 
 
+
+def test_diagram_frame_has_a_separate_sandbox_policy(client):
+    frame = client.get("/static/chat-diagram-frame.html")
+    assert frame.status_code == 200
+    assert frame.headers["X-Frame-Options"] == "SAMEORIGIN"
+    policy = frame.headers["Content-Security-Policy"]
+    assert "sandbox allow-scripts;" in policy
+    assert "default-src 'none'" in policy and "frame-ancestors 'self'" in policy
+    assert "connect-src" not in policy and "allow-same-origin" not in policy
+    assert client.get("/").headers["X-Frame-Options"] == "DENY"
+
+
 def test_capabilities_derive_from_runtime(client):
     cap = client.get("/capabilities").json()
     assert cap["local_only"] is True and cap["cloud_models"] is False

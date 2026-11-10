@@ -2,7 +2,7 @@
 (function () {
   'use strict';
   const { $, $$, el, api, ApiError, errorDetail, errorNode, toast, confirmDialog, promptDialog, skeleton, emptyState, pill, statusPill, route, renderRoute, navigate, registerCommand, openPalette, loadBuild, fmtTime, fmtBytes } = window.PODA;
-  const md = window.PODAMarkdown;
+  const rich = window.PODAChatRendering;
 
   // ---------- Navigation ----------
   $('#memoryBtn').addEventListener('click', () => { window.location.assign('/memory-viewer'); });
@@ -171,20 +171,42 @@
     textarea.addEventListener('input', () => { textarea.style.height = 'auto'; textarea.style.height = Math.min(textarea.scrollHeight, 180) + 'px'; });
     textarea.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); composer.requestSubmit(); } });
 
+    let stickToLatest = true;
+    let lastAutoScroll = 0;
+    function scrollToLatest() {
+      if (!stickToLatest) return;
+      messages.scrollTop = messages.scrollHeight;
+      lastAutoScroll = messages.scrollTop;
+    }
+    messages.addEventListener('scroll', () => {
+      if (Math.abs(messages.scrollTop - lastAutoScroll) < 1) return;
+      stickToLatest = messages.scrollHeight - messages.clientHeight - messages.scrollTop < 56;
+    });
+    messages.addEventListener('poda:preview-ready', scrollToLatest);
+
     function addMessage(role, content, meta) {
       const wrap = el('div', { class: `msg msg-${role}` });
       const bubble = el('div', { class: 'bubble' });
-      if (role === 'user') bubble.textContent = content; else bubble.innerHTML = md.render(content);
       const metaRow = el('div', { class: 'msg-meta' }, el('span', {}, role === 'user' ? 'You' : 'PODA'), meta ? el('span', {}, fmtTime(meta)) : null);
       wrap.append(bubble, metaRow);
       messages.appendChild(wrap);
-      messages.scrollTop = messages.scrollHeight;
+      if (role === 'user') bubble.textContent = content;
+      else rich.renderInto(bubble, content || '');
+      scrollToLatest();
       return { wrap, bubble, metaRow };
     }
     function addDownload(row, download, sessionId) {
       if (!download?.message_id || !sessionId || row.querySelector('[data-chat-download]')) return;
       if (download.error) row.append(el('span', { class: 'small', role: 'status' }, download.error));
-      if (download.sandbox_file) { row.append(sandboxDownloadLink(download.sandbox_file)); return; }
+      if (download.sandbox_file) {
+        const filename = download.sandbox_file;
+        row.append(sandboxDownloadLink(filename));
+        const alreadyShown = [...row.parentElement.querySelectorAll('.chat-visual-inline')]
+          .some((node) => node.dataset.filename === filename);
+        const preview = alreadyShown ? null : rich.attachmentPreview(filename);
+        if (preview) row.before(preview);
+        return;
+      }
       const url = `/chat/session/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(download.message_id)}/download`;
       row.append(el('a', { class: 'btn btn-sm', href: url, download: download.filename,
         'data-chat-download': 'true' }, download.filename === 'poda-response.md' ? 'Download reply' : `Download ${download.filename}`));
@@ -256,7 +278,7 @@
       if (parent === checkpointBox) checkpointBox.hidden = false;
       renderProposal(parent, { ...workflow, proposal_id: workflow.id });
     }
-    messages.scrollTop = messages.scrollHeight;
+    scrollToLatest();
     function newChat() {
       if (askState.runId) api('/chat/runs/' + encodeURIComponent(askState.runId) + '/cancel', { method: 'POST' }).catch(() => {});
       askState.controller?.abort();
@@ -332,6 +354,7 @@
 
     async function send(text, continuationOf, resumeId = null, resumeWorkflow = false) {
       if (askState.controller) return;
+      stickToLatest = true;
       if (!continuationOf && !resumeId) { const at = new Date().toISOString(); addMessage('user', text, at); askState.transcript.push({ role: 'user', content: text, at }); }
       const empty = $('.hero-empty', messages); if (empty) empty.remove();
       const { wrap, bubble, metaRow } = addMessage('assistant', '', null);
@@ -341,7 +364,7 @@
       wrap.insertBefore(thoughts, bubble); wrap.append(badges);
       const addActivity = workflowActivity(wrap);
       let full = '', thoughtText = '', raf = 0, finished = false;
-      const paint = () => { raf = 0; bubble.innerHTML = md.render(full); messages.scrollTop = messages.scrollHeight; };
+      const paint = () => { raf = 0; rich.renderInto(bubble, full, { streaming: true }); scrollToLatest(); };
       const schedule = () => { if (!raf) raf = requestAnimationFrame(paint); };
       const setStatus = (t, live) => { statusLine.innerHTML = ''; if (live) statusLine.appendChild(el('span', { class: 'live' })); statusLine.appendChild(el('span', {}, t)); };
       const subscription = new AbortController();
@@ -393,6 +416,7 @@
                 if (resumeWorkflow) proposalCards.get(continuationOf)?.querySelector('[data-resume-workflow]')?.remove();
                 break;
               case 'done': {
+                if (raf) { cancelAnimationFrame(raf); raf = 0; }
                 addActivity('Response finished · ' + (data.model || 'PODA'));
                 finished = true;
                 const tps = data.eval_count && data.eval_duration_ms ? (data.eval_count / (data.eval_duration_ms / 1000)).toFixed(1) : null;
@@ -400,6 +424,7 @@
                 badges.prepend(pill(data.profile === 'gate' ? 'Action gate' : data.profile === 'ledger' ? 'Capability ledger' : `Model · ${data.profile || 'auto'}`, 'accent'));
                 sessionBox.innerHTML = ''; sessionBox.appendChild(kv([['Model', data.model || ''], ['Profile', data.profile || ''], ['Output tokens', data.eval_count ?? 'n/a'], ['Speed', tps ? `${tps} tok/s` : 'n/a'], ['Prompt tokens', data.prompt_eval_count ?? 'n/a'], ['Session', askState.sessionId ? askState.sessionId.slice(0, 8) : 'new']]));
                 setStatus(`Done · ${data.model || ''}`, false);
+                rich.renderInto(bubble, full);
                 addDownload(metaRow, data.download, askState.sessionId);
                 askState.transcript.push({ role: 'assistant', content: full, at: new Date().toISOString(), download: data.download });
                 break;
@@ -410,13 +435,18 @@
           }
         }
         if (raf) cancelAnimationFrame(raf);
-        bubble.innerHTML = md.render(full) || bubble.innerHTML;
+        if (full) rich.renderInto(bubble, full);
         if (!finished) setStatus('Stream ended', false);
       } catch (err) {
-        if (err.name === 'AbortError') { bubble.innerHTML = md.render(full) + (full ? '' : '<p class="faint">Cancelled.</p>'); setStatus('Cancelled', false); }
+        if (err.name === 'AbortError') {
+          if (full) rich.renderInto(bubble, full);
+          else bubble.replaceChildren(el('p', { class: 'faint' }, 'Cancelled.'));
+          setStatus('Cancelled', false);
+        }
         else { bubble.innerHTML = ''; bubble.appendChild(errorNode(err)); setStatus('Failed', false); }
       } finally {
-        bubble.classList.remove('streaming'); if (askState.controller === subscription) askState.controller = null; sendBtn.disabled = false; stopBtn.hidden = true; messages.scrollTop = messages.scrollHeight;
+        if (raf) cancelAnimationFrame(raf);
+        bubble.classList.remove('streaming'); if (askState.controller === subscription) askState.controller = null; sendBtn.disabled = false; stopBtn.hidden = true; scrollToLatest();
         if (finished) { askState.runId = null; persistSession(); }
         if (!thoughtText) thoughts.remove(); else $('.live', thoughts)?.remove();
       }
@@ -434,7 +464,10 @@
           el('span', { class: 'receipt-chip', title: receipt.verification || '' },
             pill(receipt.outcome, receipt.outcome === 'succeeded' ? 'ok' : 'warn'), receipt.tool,
             el('span', { class: 'mono' }, '#' + receipt.id.slice(0, 8)))),
-        ...(data.receipts || []).map(sandboxReceiptLink));
+        ...(data.receipts || []).flatMap((receipt) => {
+          const link = sandboxReceiptLink(receipt);
+          return link ? [rich.attachmentPreview(link.download), link] : [];
+        }));
       const proposalUrl = '/agent/proposals/' + encodeURIComponent(data.proposal_id);
       if (status === 'pending') {
         const approve = el('button', { class: 'btn btn-primary btn-sm' }, 'Approve and run');

@@ -514,3 +514,33 @@ dialog::backdrop { background: rgba(2, 6, 16, 0.66); backdrop-filter: blur(6px);
   .cal-grid { overflow-x: auto; grid-template-columns: repeat(7, minmax(82px, 1fr)); }
   .composer-bar { gap: 4px; }
 }
+
+/* ---------- Chat previews ---------- */
+.messages { overflow-anchor: none; }
+.msg, .bubble { min-inline-size: 0; }
+.msg-assistant { grid-template-columns: minmax(0, 1fr); max-width: 100%; }
+.msg-user .bubble { white-space: pre-wrap; }
+.bubble > * + * { margin-block-start: 10px; }
+.bubble h1, .bubble h2, .bubble h3, .bubble h4, .bubble h5, .bubble h6 { line-height: 1.25; }
+.bubble h1 { font-size: 1.45em; }
+.bubble h2 { font-size: 1.25em; }
+.bubble h3, .bubble h4, .bubble h5, .bubble h6 { font-size: 1.1em; }
+.bubble blockquote { margin-inline: 0; padding-inline-start: 12px; border-inline-start: 2px solid var(--line-1); color: var(--text-2); }
+.bubble .table-scroll { padding-block-end: 4px; }
+.bubble .codeblock pre { margin: 0; max-height: min(55vh, 32rem); }
+.bubble .codeblock .lang { max-inline-size: 58%; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.bubble .codeblock .copy { white-space: nowrap; }
+.chat-math { overflow-wrap: normal; }
+.chat-math-block { overflow-x: auto; max-inline-size: 100%; padding: 3px 0; }
+.chat-math-block .katex-display { margin: .45em 0; min-inline-size: max-content; }
+.chat-visual { min-inline-size: 0; max-inline-size: 100%; border: 1px solid var(--line-1); border-radius: var(--r-control); padding: 10px; }
+.chat-visual-inline { display: block; margin-block: 8px; }
+.chat-visual-image { display: block; overflow: auto; overscroll-behavior: contain; max-block-size: min(65vh, 36rem); }
+.chat-visual-image[hidden] { display: none; }
+.chat-visual-image img { display: block; margin-inline: auto; max-inline-size: 100%; height: auto; }
+.chat-visual[data-preview="mermaid"] img { max-inline-size: none; }
+.chat-visual summary { color: var(--text-2); cursor: pointer; font-size: var(--fs-13); }
+.chat-visual details, .chat-visual figcaption { margin-block-start: 8px; }
+.chat-visual .codeblock { margin-block-start: 6px; }
+.chat-attachment { margin: 0; }
+.chat-render-frame { position: fixed; width: 0; height: 0; border: 0; pointer-events: none; }

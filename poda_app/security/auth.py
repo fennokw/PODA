@@ -30,6 +30,13 @@ CSP = (
 )
 
 
+DIAGRAM_FRAME = "/static/chat-diagram-frame.html"
+DIAGRAM_CSP = (
+    "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data: blob:; "
+    "frame-ancestors 'self'; sandbox allow-scripts; base-uri 'none'; form-action 'none'"
+)
+
+
 def _allowed_origins() -> set[str]:
     return {f"http://127.0.0.1:{config.PORT}", f"http://localhost:{config.PORT}"}
 
@@ -66,9 +73,9 @@ async def security_middleware(request: Request, call_next):
         if not _session_ok(request):
             return JSONResponse({"detail": "Missing or stale PODA session. Reload the PODA page to start a new local session."}, status_code=401)
     response: Response = await call_next(request)
-    response.headers["Content-Security-Policy"] = CSP
+    response.headers["Content-Security-Policy"] = DIAGRAM_CSP if path == DIAGRAM_FRAME else CSP
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN" if path == DIAGRAM_FRAME else "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["X-PODA-Build"] = config.BUILD_ID

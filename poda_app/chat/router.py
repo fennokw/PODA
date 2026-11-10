@@ -524,6 +524,9 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                        "calendar-additions section from the receipts. Do not report calendar writes in the digest.")
         system += ("\nPODA Sandbox has its own writable storage. Use fs_* only for the user's explicit external paths. "
                    "Never invent a file, a download link, or a completed action.")
+        system += ("\n" r"For visual chat output, use a fenced mermaid block for diagrams and a fenced svg block "
+                   r"for simple vector illustrations. Label fenced code with its language. "
+                   r"Use \( ... \) for inline math and put \[ and \] on separate lines around display math.")
         if attachment and not sandbox_write_proposed:
             language = "mermaid" if mermaid_export else artifacts.source_language(attachment)
             system += (f"\nThe user requested a chat attachment named {attachment}. Put the complete file source "
