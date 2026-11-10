@@ -618,8 +618,6 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
         progress_at = 0
         if show_archive:
             options["num_predict"] = max(options.get("num_predict", 0), min(12_288, max(2800, int(profile["num_ctx"] * .58))))
-            if req.thinking_level != "deep" and models.complexity_score(task_message) < 6:
-                think_flag = False
             stream_options["format"] = _ARCHIVE_FORMAT
         yield frame("status", {"message": "writing_archive" if show_archive else "generating_reply", "model": model})
         async def save_partial() -> None:

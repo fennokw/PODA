@@ -153,7 +153,10 @@ def needs_grounded_model(message: str) -> bool:
 
 
 _CODE = re.compile(r"\b(?:code|coding|debug|refactor|repository|script|software|python|javascript|typescript|html|css|rust|patch|unit tests?)\b", re.I)
-_REASON = re.compile(r"\b(?:debug|diagnose|proof|prove|derive|tradeoffs?|refactor|optimi[sz]e|algorithm|architect(?:ure)?|root cause)\b", re.I)
+_REASON = re.compile(
+    r"\b(?:debug|diagnose|proof|prove|derive|tradeoffs?|refactor|optimi[sz]e|algorithm|architect(?:ure)?"
+    r"|root cause|simulate|simulation|fluid dynamics?|numerical solver|particle system)\b", re.I,
+)
 
 
 def choose_profile(message: str, mode: str, thinking_level: str) -> str:
@@ -184,7 +187,7 @@ def resolve(message: str, mode: str, thinking_level: str, reg: dict[str, Any] | 
     profile = dict(profiles[profile_name])
     needs_reasoning = (thinking_level == "deep" or profile_name in {"deep", "deep_coding"}
                        or bool(_REASON.search(message)) or complexity_score(message) >= 6)
-    profile["think"] = profile.get("think", False) and thinking_level != "fast" and needs_reasoning
+    profile["think"] = profile.get("think", False) and mode != "fast" and thinking_level != "fast" and needs_reasoning
     if thinking_level == "fast":
         profile["num_ctx"] = min(profile["num_ctx"], profiles["fast"]["num_ctx"])
         profile["num_predict"] = min(profile["num_predict"], 1200)

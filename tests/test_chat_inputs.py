@@ -44,14 +44,18 @@ def _model(monkeypatch, response):
 
 def test_long_zip_skips_planner_streams_progress_and_adds_launchers(client, monkeypatch):
     async def writer(messages, model, options, think, format):
-        assert model == "qwen3:14b"
+        assert model == "deep_coding"
         assert options["num_predict"] >= 4000
-        assert think is False and format["type"] == "array"
+        assert think and options["reasoning_budget"] == 768 and format["type"] == "array"
         body = json.dumps([{"filename": "index.html", "content": "<!doctype html><h1>Fluid graphic</h1>"}])
         yield {"message": {"content": body[:20]}, "done": False}
         yield {"message": {"content": body[20:]}, "done": True}
 
+    resolve = chat.models.resolve
+    profiles = {role: {"model": role, "num_ctx": 8192, "num_predict": 1600,
+                       "temperature": .1, "think": True} for role in chat.models.PROFILE_NAMES}
     _model(monkeypatch, writer)
+    monkeypatch.setattr(chat.models, "resolve", lambda *args: resolve(*args, reg={"profiles": profiles}))
     request = ("Now give me a zip file of code that has a single click run command that will output a graphic that "
                "moves with my mouse and has fluid dynamic effect. Take your time.")
     events = _events(client.post("/chat/stream", json={"message": request, "use_memory": False}))
