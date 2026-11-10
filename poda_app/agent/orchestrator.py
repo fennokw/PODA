@@ -56,9 +56,9 @@ def _planner_models(profile_model: str | None) -> list[str]:
     installed = ollama.status().get("models") or []
     # Prefer the selected Balanced profile rather than hardcoded old Qwen tags.
     registered = models.registry(installed)
-    picks = [registered["profiles"]["balanced"].get("model"), profile_model,
-             registered["profiles"]["deep"].get("model"),
-             registered["profiles"]["fast"].get("model")]
+    picks = [registered["profiles"]["balanced"].get("model"),
+             registered["profiles"]["fast"].get("model"), profile_model,
+             registered["profiles"]["deep"].get("model")]
     return list(dict.fromkeys(model for model in picks if model in installed)) or [profile_model or ""]
 
 
@@ -151,6 +151,7 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
         return out
     candidates = iter(_planner_models(profile_model))
     model = next(candidates)
+    tried_fallback = False
     out["model"] = model
     categories = workflow_categories(message)
     messages = [{"role": "system", "content": _system_for_planning(snapshot, recalled_context[:26_000], message, categories, session_id)}, {"role": "user", "content": message}]
@@ -206,19 +207,23 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
         prompt = messages + [entry for group in history for entry in group]
         while True:
             try:
-                response = ollama.chat(prompt, model, options={"temperature": 0.0, "num_ctx": 16384, "num_predict": 900}, tools=specs, think=False if model.startswith("qwen3") else None)
+                response = ollama.chat(
+                    prompt, model, options={"temperature": 0.0, "num_ctx": 16384, "num_predict": 900},
+                    tools=specs, think=False if model.startswith("qwen3") else None,
+                    timeout=75, streaming=True, max_elapsed=150, stop=stop)
                 break
             except Exception as exc:
                 # An Ollama rejection can be specific to the model. Replay only
                 # this inference call. Tool execution and receipts stay outside it.
-                fallback = next(candidates, None) if isinstance(exc, ollama.OllamaError) else None
+                if stop and stop.is_set():
+                    return out
+                fallback = next(candidates, None) if not tried_fallback and isinstance(exc, ollama.OllamaError) else None
                 if not fallback:
                     reason = f"planner unavailable: {exc}"
                     out["rationale"] = reason
                     out["flagged"].append({"name": "workflow", "reason": reason})
                     return out
-                if stop and stop.is_set():
-                    return out
+                tried_fallback = True
                 if emit:
                     emit("status", {"message": "planner_fallback", "model": fallback})
                 model = out["model"] = fallback

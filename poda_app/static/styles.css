@@ -545,3 +545,13 @@ dialog::backdrop { background: rgba(2, 6, 16, 0.66); backdrop-filter: blur(6px);
 .chat-attachment { margin: 0; }
 /* Mermaid timelines measure the viewport before drawing. */
 .chat-render-frame { position: fixed; top: 0; left: -2000px; width: 960px; height: 640px; border: 0; pointer-events: none; }
+
+/* Files shared with one chat turn. */
+.composer.file-drop { border-color: var(--accent); background: var(--accent-soft); }
+.chat-files { display: flex; flex-wrap: wrap; gap: 6px; min-inline-size: 0; }
+.chat-files[hidden] { display: none; }
+.msg-user .chat-files { justify-content: flex-end; }
+.chat-file { display: inline-flex; align-items: center; gap: 4px; max-inline-size: 100%; padding: 3px 8px; border: 1px solid var(--line-1); border-radius: var(--r-control); font-size: var(--fs-13); overflow-wrap: anywhere; }
+.chat-file > span { min-inline-size: 0; }
+.chat-file button { flex: none; }
+.chat-input-warning { white-space: pre-wrap; }

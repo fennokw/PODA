@@ -48,10 +48,11 @@
     }
   }
   async function api(path, { method = 'GET', body, signal, raw = false } = {}) {
+    const multipart = body instanceof FormData;
     const res = await fetch(path, {
       method, signal, credentials: 'same-origin', cache: 'no-store',
-      headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      headers: body !== undefined && !multipart ? { 'Content-Type': 'application/json' } : undefined,
+      body: body === undefined || multipart ? body : JSON.stringify(body),
     });
     if (raw) return res;
     let data = null;

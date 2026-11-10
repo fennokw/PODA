@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, AsyncIterator, Iterable
+from threading import Event
+from typing import Any, AsyncIterator
 
 import httpx
 import requests
+from urllib3.exceptions import ReadTimeoutError
 
 from . import config
 
@@ -92,44 +94,103 @@ def embed(texts: list[str], model: str | None = None, timeout: float = 180) -> l
     return [[float(v) for v in vec] for vec in vectors]
 
 
+def vision_model(preferred: str) -> str | None:
+    """Select a verified local vision model, preferring the current route."""
+    names = installed_models()
+    vision_families = ("qwen3-vl", "qwen3.5", "qwen3.6", "gemma4", "gemma3", "llava", "minicpm-v")
+    ordered = sorted(names, key=lambda name: (
+        name != preferred, not name.startswith(vision_families), name))
+    for name in ordered:
+        if "cloud" in name.lower() or "/" in name and "." in name.split("/", 1)[0]:
+            continue
+        try:
+            info = show(name)
+        except OllamaError:
+            continue
+        if not info.get("remote_host") and not info.get("remote_model") and "vision" in (info.get("capabilities") or []):
+            return name
+    return None
+
+
 def chat(messages: list[dict[str, Any]], model: str, options: dict[str, Any] | None = None,
          tools: list[dict[str, Any]] | None = None, timeout: float = 600, think: bool | None = None,
-         format: str | dict[str, Any] | None = None) -> dict[str, Any]:
-    """Non-streaming chat; used for tool-selection and classification turns."""
-    payload: dict[str, Any] = {"model": model, "messages": messages, "stream": False, "keep_alive": "30m", "options": options or {}}
+         format: str | dict[str, Any] | None = None, *, streaming: bool = False,
+         max_elapsed: float | None = None, stop: Event | None = None) -> dict[str, Any]:
+    """Collect a short inference call, optionally watching for streamed progress."""
+    payload: dict[str, Any] = {"model": model, "messages": messages, "stream": streaming,
+                              "keep_alive": "30m", "options": options or {}}
     if tools:
         payload["tools"] = tools
     if think is not None:
         payload["think"] = think
     if format is not None:
         payload["format"] = format
-    r = requests.post(config.OLLAMA_CHAT_URL, json=payload, timeout=timeout)
-    if not r.ok:
-        raise OllamaError(f"Ollama {r.status_code}: {r.text[:400]}")
-    return r.json()
+    began = time.monotonic()
+    try:
+        with requests.post(config.OLLAMA_CHAT_URL, json=payload, timeout=(10, timeout), stream=streaming) as response:
+            if not response.ok:
+                raise OllamaError(f"Ollama {response.status_code}: {response.text[:400]}")
+            if not streaming:
+                return response.json()
+            content = []
+            calls = []
+            for line in response.iter_lines(chunk_size=1):
+                if stop and stop.is_set():
+                    raise OllamaError("Tool planning stopped.")
+                if max_elapsed is not None and time.monotonic() - began > max_elapsed:
+                    raise OllamaError("Tool planning reached its time limit.")
+                if not line:
+                    continue
+                chunk = json.loads(line)
+                if chunk.get("error"):
+                    raise OllamaError(str(chunk["error"])[:400])
+                reply = chunk.get("message") or {}
+                content.append(reply.get("content") or "")
+                calls.extend(reply.get("tool_calls") or [])
+                if chunk.get("done"):
+                    return {**chunk, "message": {**reply, "content": "".join(content), "tool_calls": calls}}
+            raise OllamaError("Ollama closed the tool planning stream before completing it.")
+    except requests.Timeout as exc:
+        raise OllamaError("Ollama did not respond before the idle timeout.") from exc
+    except requests.ConnectionError as exc:
+        if exc.args and isinstance(exc.args[0], ReadTimeoutError):
+            raise OllamaError("Ollama stopped sending tool planning progress.") from exc
+        raise OllamaError("Could not connect to the local Ollama server.") from exc
+    except (requests.RequestException, ValueError) as exc:
+        raise OllamaError("Ollama returned an invalid tool planning response.") from exc
 
 
 async def chat_stream(messages: list[dict[str, Any]], model: str, options: dict[str, Any] | None = None,
                       tools: list[dict[str, Any]] | None = None, think: bool | None = None,
-                      timeout: float = 900) -> AsyncIterator[dict[str, Any]]:
-    """Async streaming chat yielding raw Ollama chunks. Cancelling the iterator closes the socket."""
+                      timeout: float = 900, format: str | dict[str, Any] | None = None) -> AsyncIterator[dict[str, Any]]:
+    """Stream generation. The timeout is idle time per read, not a total task deadline."""
     payload: dict[str, Any] = {"model": model, "messages": messages, "stream": True, "keep_alive": "30m", "options": options or {}}
     if tools:
         payload["tools"] = tools
     if think is not None:
         payload["think"] = think
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10)) as client:
-        async with client.stream("POST", config.OLLAMA_CHAT_URL, json=payload) as response:
-            if response.status_code >= 400:
-                body = await response.aread()
-                raise OllamaError(f"Ollama {response.status_code}: {body[:400].decode('utf-8', 'replace')}")
-            async for line in response.aiter_lines():
-                if not line:
-                    continue
-                try:
-                    yield json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+    if format is not None:
+        payload["format"] = format
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=10), trust_env=False) as client:
+            async with client.stream("POST", config.OLLAMA_CHAT_URL, json=payload) as response:
+                if response.status_code >= 400:
+                    body = await response.aread()
+                    raise OllamaError(f"Ollama {response.status_code}: {body[:400].decode('utf-8', 'replace')}")
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if chunk.get("error"):
+                        raise OllamaError(str(chunk["error"])[:400])
+                    yield chunk
+    except httpx.ReadTimeout as exc:
+        raise OllamaError("Ollama stopped sending progress. Retry when it is free or select a model that fits your device.") from exc
+    except httpx.TransportError as exc:
+        raise OllamaError("PODA lost its connection to the local Ollama server.") from exc
 
 
 def benchmark(model: str, num_ctx: int, prompt: str | None = None, num_predict: int = 200) -> dict[str, Any]:

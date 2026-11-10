@@ -48,7 +48,7 @@ def requested_name(message: str) -> str | None:
     mentioned = next((m for m in _NAME.finditer(message) if m[1].casefold() != "mermaid.js"), None)
     wants_diagram = is_mermaid_request(message) and creates_attachment(message)
     names_file = (named or quoted or mentioned) and re.search(r"\b(create|generate|make|write|export|give me|provide)\b", message, re.I)
-    wants_zip = _ZIP_OUTPUT.search(message) and creates_attachment(message)
+    wants_zip = _ZIP_OUTPUT.search(message) and (creates_attachment(message) or re.search(r"\b(give me|provide|return|download)\b", message, re.I))
     if not (_REQUEST.search(message) or wants_diagram or wants_zip or names_file):
         return None
     explicit = quoted[2] if quoted else named[1] if named else None
