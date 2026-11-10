@@ -115,3 +115,22 @@ def test_external_cli_discovery_does_not_execute_when_disabled(monkeypatch):
         raise AssertionError("external subprocess invoked without developer opt-in")
     monkeypatch.setattr(software.subprocess, "run", no_subprocess)
     assert software._cli_hub_entries() == []
+
+
+def test_broad_access_confirmation_and_revoke(client, tmp_path):
+    from poda_app.agent import grants
+    from poda_app.runtime.db import set_setting
+    set_setting('broad_access_enabled', 'false')
+    target = tmp_path / 'broad-access-check.txt'
+    target.write_text('example')
+    try:
+        assert client.post('/privacy/broad-access', json={'enabled': True}).status_code == 400
+        assert client.post('/privacy/broad-access', json={'enabled': True, 'confirm': True}).json()['enabled']
+        assert client.get('/privacy/status').json()['broad_access']
+        assert grants.resolve(str(target), 'write')[0] == target.resolve()
+        assert client.post('/privacy/broad-access', json={'enabled': False}).json()['enabled'] is False
+        import pytest
+        with pytest.raises(PermissionError):
+            grants.resolve(str(target), 'write')
+    finally:
+        set_setting('broad_access_enabled', 'false')

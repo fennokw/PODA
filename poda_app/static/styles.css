@@ -563,7 +563,6 @@ dialog::backdrop { background: rgba(2, 6, 16, 0.66); backdrop-filter: blur(6px);
 .chat-visual-image[hidden] { display: none; }
 .chat-visual-image img { display: block; margin-inline: auto; max-inline-size: 100%; max-block-size: min(60vh, 34rem); width: auto; height: auto; object-fit: contain; }
 .chat-visual-image img.zoomed { max-inline-size: none; max-block-size: none; }
-.chat-visual-controls { display: flex; align-items: center; justify-content: center; gap: 8px; margin-block-start: 8px; }
 .chat-visual summary { color: var(--text-2); cursor: pointer; font-size: var(--fs-13); }
 .chat-visual details, .chat-visual figcaption { margin-block-start: 8px; }
 .chat-visual .codeblock { margin-block-start: 6px; }

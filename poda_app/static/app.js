@@ -325,6 +325,14 @@
       if (download.sandbox_file) {
         const filename = download.sandbox_file;
         row.append(sandboxDownloadLink(filename));
+        if (/\.png$/i.test(filename)) row.append(el('button', { class: 'btn btn-sm', onclick: async () => {
+          try {
+            const response = await fetch('/agent/sandbox/download/' + encodeURIComponent(filename), { credentials: 'same-origin' });
+            if (!response.ok) throw new Error('Image unavailable');
+            const png = new Blob([await response.arrayBuffer()], { type: 'image/png' });
+            await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]); toast('Image copied.', 'ok');
+          } catch { toast('Could not copy the image. Download the PNG instead.', 'danger'); }
+        } }, 'Copy image'));
         const alreadyShown = [...row.parentElement.querySelectorAll('.chat-visual-inline')]
           .some((node) => node.dataset.filename === filename);
         const preview = alreadyShown ? null : rich.attachmentPreview(filename);
@@ -571,7 +579,18 @@
                 sessionBox.innerHTML = ''; sessionBox.appendChild(kv([['Model', data.model || ''], ['Profile', data.profile || ''], ['Output tokens', data.eval_count ?? 'n/a'], ['Speed', tps ? `${tps} tok/s` : 'n/a'], ['Prompt tokens', data.prompt_eval_count ?? 'n/a'], ['Speculation', data.speculation || 'off'], ['Session', askState.sessionId ? askState.sessionId.slice(0, 8) : 'new']]));
                 setStatus(`Done · ${data.model || ''}`, false);
                 rich.renderInto(bubble, full);
-                addDownload(metaRow, data.download, askState.sessionId);
+                if (data.diagram_image && data.download?.message_id) {
+                  const imageStatus = el('span', { class: 'small muted', role: 'status' }, 'Preparing PNG…');
+                  metaRow.append(imageStatus);
+                  try {
+                    const png = await rich.diagramPNG(data.diagram_image);
+                    const form = new FormData(); form.append('file', png, 'diagram.png');
+                    const saved = await api(`/chat/session/${encodeURIComponent(askState.sessionId)}/messages/${encodeURIComponent(data.download.message_id)}/diagram-image`, { method: 'POST', body: form });
+                    data.download.sandbox_file = data.download.filename = saved.filename;
+                    imageStatus.remove();
+                    addDownload(metaRow, data.download, askState.sessionId);
+                  } catch (error) { imageStatus.textContent = `Could not create PNG: ${error.message}`; addDownload(metaRow, data.download, askState.sessionId); }
+                } else addDownload(metaRow, data.download, askState.sessionId);
                 askState.transcript.push({ role: 'assistant', content: full, at: new Date().toISOString(), download: data.download });
                 break;
               }
@@ -1269,7 +1288,7 @@
           if (!grants.length) return emptyState('No grants', 'Grant a specific file or folder to give PODA scoped access. Chat downloads are available without a grant.');
           return el('div', { class: 'stack-sm' }, ...grants.map((g) => el('div', { class: 'tl-item' }, el('span', { class: 'when' }, fmtTime(g.created_at)),
             el('div', { class: 'what' }, el('div', { class: 'row' }, el('strong', {}, g.label || g.root_path.split('/').pop()), pill(g.target_kind === 'file' ? 'file' : 'folder', 'muted'), pill(g.mode, g.mode === 'read' ? 'accent' : 'warn'), g.allow_execute ? pill('exec', 'lav') : null, g.expires_at ? pill(`expires ${fmtTime(g.expires_at)}`, 'muted') : null), el('span', { class: 'mono' }, g.root_path)),
-            el('button', { class: 'btn btn-sm btn-danger', onclick: async () => { if (!(await confirmDialog({ title: 'Revoke this grant?', body: `${g.root_path} becomes inaccessible to PODA immediately.`, confirmLabel: 'Revoke', danger: true }))) return; await api(`/agent/grants/${g.id}`, { method: 'DELETE' }); toast('Grant revoked', 'ok'); refresh(); } }, 'Revoke'))));
+            el('button', { class: 'btn btn-sm btn-danger', onclick: async () => { if (!(await confirmDialog({ title: 'Revoke this grant?', body: `${g.root_path} becomes inaccessible to PODA immediately.`, confirmLabel: 'Revoke', danger: true }))) return; await api(`/agent/grants/${encodeURIComponent(g.id)}`, { method: 'DELETE' }); toast('Grant revoked', 'ok'); refresh(); } }, 'Revoke'))));
         }),
         load(toolsBox, async () => {
           const r = await api('/agent/tools'); const tools = r.tools || [];
@@ -1513,7 +1532,9 @@
   route('privacy', async ({ view, inspector, setTitle, setInspectorTitle }) => {
     setTitle('Privacy'); setInspectorTitle('Threat model'); $('#viewCrumb').textContent = 'What is protected, and what is not';
     const encBox = el('div'); const connBox = el('div'); const egressBox = el('div'); const backupBox = el('div'); const retentionBox = el('div');
+    const broadBox = el('div');
     view.appendChild(el('div', { class: 'screen stack' },
+      section('Give access to everything', 'Optional broad access', broadBox),
       el('div', { class: 'grid-2' }, section('Encryption at rest', null, encBox), section('Connections and file roots', 'one button revokes each', connBox)),
       section('Outbound network audit', 'only metadata is logged, never bodies or tokens', egressBox),
       el('div', { class: 'grid-2' }, section('Backups and export', null, backupBox), section('Retention', null, retentionBox))));
@@ -1524,6 +1545,15 @@
       inspector.innerHTML = '';
       inspector.append(el('div', { class: 'threat' }, el('h3', {}, 'Protected'), el('ul', { class: 'ok' }, ...(s.threat_model?.protected || []).map((t) => el('li', {}, t))), el('h3', {}, 'Not protected'), el('ul', { class: 'no' }, ...(s.threat_model?.not_protected || []).map((t) => el('li', {}, t)))),
         el('p', { class: 'small faint' }, 'Privacy from remote services and casual file access can be engineered. Invisibility to every program on the same Mac cannot be promised.'));
+      broadBox.replaceChildren(el('div', { class: 'row-between' },
+        el('div', {}, el('strong', {}, s.broad_access ? 'Broad access is on' : 'Broad access is off'),
+          el('div', { class: 'small muted' }, 'Allows PODA to read and change files your account can access and run available actions without individual approval. macOS permissions, account scopes, offline mode and add-on settings still apply. Turning it off does not stop actions already running.')),
+        el('button', { class: s.broad_access ? 'btn' : 'btn btn-danger', onclick: async () => {
+          const enable = !s.broad_access;
+          if (enable && !(await confirmDialog({ title: 'Give PODA broad access?', body: 'PODA can read and change accessible files and carry out available actions without asking each time, including actions influenced by emails, websites or files it reads. It runs as your current user and cannot grant itself administrator privileges, macOS privacy permissions, or new account scopes. Already running actions may continue after you turn this off.', confirmLabel: 'Give broad access', danger: true }))) return;
+          try { await api('/privacy/broad-access', { method: 'POST', body: { enabled: enable, confirm: enable } }); toast(enable ? 'Broad access on.' : 'Broad access off.', 'ok'); refresh(); }
+          catch (error) { toast(errorDetail(error).message, 'danger'); }
+        } }, s.broad_access ? 'Turn off' : 'Give access')));
       const e = s.encryption || {};
       encBox.innerHTML = '';
       encBox.append(el('div', { class: 'row' }, pill(e.database_encrypted_on_disk ? 'SQLCipher encrypted on disk' : 'NOT encrypted on disk', e.database_encrypted_on_disk ? 'ok' : 'danger'), e.key_source ? pill(`key: ${e.key_source}`, 'muted') : null),
@@ -1534,7 +1564,7 @@
         el('div', { class: 'small faint' }, `Scopes: read ${notion.can_read_content ? 'yes' : 'no'} · insert ${notion.can_insert_content ? 'yes' : 'no'} · update ${notion.can_update_content ? 'yes' : 'no'} · only api.notion.com is allowlisted`),
         el('div', { class: 'divider' }), (() => { const box = el('div', { class: 'stack-sm' }, el('strong', {}, 'Mail accounts')); api('/mail/status').then((ms) => { const accounts = ms.accounts || []; if (!accounts.length) { box.appendChild(el('p', { class: 'faint small' }, 'None connected. PODA cannot read any mail.')); return; } for (const a of accounts) box.appendChild(el('div', { class: 'row-between' }, el('div', { class: 'row' }, el('span', { class: 'small' }, a.account_name), pill(a.provider === 'outlook_classic' ? 'Classic Outlook' : a.provider === 'apple_mail' ? 'Apple Mail' : 'Gmail IMAP', 'muted'), pill('read', 'ok'), a.allow_modify ? pill('edits', 'warn') : null, a.allow_send ? pill('send', 'danger') : null), el('button', { class: 'btn btn-sm btn-danger', onclick: async () => { if (!(await confirmDialog({ title: `Revoke mail access for ${a.account_name}?`, confirmLabel: 'Revoke', danger: true }))) return; await api(`/mail/accounts/${encodeURIComponent(a.id)}`, { method: 'DELETE' }); toast('Mail account revoked', 'ok'); refresh(); } }, 'Revoke'))); }).catch((err) => box.appendChild(el('p', { class: 'faint small' }, `Mail connector unavailable: ${errorDetail(err).message}`))); return box; })(),
         el('div', { class: 'divider' }), el('strong', {}, 'Authorized file roots'),
-        (s.file_grants || []).length ? el('div', { class: 'stack-sm' }, ...s.file_grants.map((g) => el('div', { class: 'row-between' }, el('span', { class: 'mono small' }, g.root_path), el('div', { class: 'row' }, pill(g.mode, 'accent'), el('button', { class: 'btn btn-sm btn-ghost', onclick: async () => { await api(`/agent/grants/${g.id}`, { method: 'DELETE' }); refresh(); } }, 'Revoke'))))) : el('p', { class: 'faint small' }, 'None. PODA cannot touch user files.'),
+        (s.file_grants || []).length ? el('div', { class: 'stack-sm' }, ...s.file_grants.map((g) => el('div', { class: 'row-between' }, el('span', { class: 'mono small' }, g.root_path), el('div', { class: 'row' }, pill(g.mode, 'accent'), el('button', { class: 'btn btn-sm btn-ghost', onclick: async () => { await api(`/agent/grants/${encodeURIComponent(g.id)}`, { method: 'DELETE' }); refresh(); } }, 'Revoke'))))) : el('p', { class: 'faint small' }, 'None. PODA cannot touch user files.'),
         el('div', { class: 'divider' }), el('div', { class: 'row-between' }, el('div', {}, el('strong', {}, 'Offline mode'), el('div', { class: 'faint small' }, 'Blocks every external connector. Chat and memory keep working locally.')), (() => { const sw = el('button', { class: 'switch', role: 'switch', 'aria-checked': s.egress?.offline_mode ? 'true' : 'false', 'aria-label': 'Offline mode' }); sw.onclick = async () => { const next = sw.getAttribute('aria-checked') !== 'true'; await api('/privacy/offline', { method: 'POST', body: { enabled: next } }); sw.setAttribute('aria-checked', String(next)); toast(`Offline mode ${next ? 'on' : 'off'}`, 'ok'); }; return sw; })()));
       await load(egressBox, async () => {
         const r = await api('/privacy/egress?limit=60');

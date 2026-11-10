@@ -216,22 +216,24 @@
         image.onload = null;
         status.hidden = true;
         host.hidden = false;
-        const controls = el('div', { class: 'chat-visual-controls', 'aria-label': 'Image zoom controls' });
-        let zoom = 1;
-        const updateZoom = () => {
-          if (zoom === 1) { image.style.width = ''; image.classList.remove('zoomed'); }
-          else { image.classList.add('zoomed'); image.style.width = `${Math.round(image.dataset.fitWidth * zoom)}px`; }
-          controls.querySelector('[data-zoom-label]').textContent = `${Math.round(zoom * 100)}%`;
-        };
+        let zoom = 1, initialScale = 1;
         const change = (next) => {
           if (zoom === 1) image.dataset.fitWidth = image.getBoundingClientRect().width;
-          zoom = Math.max(1, Math.min(8, next)); updateZoom();
+          zoom = Math.max(1, Math.min(8, next));
+          image.classList.toggle('zoomed', zoom > 1);
+          image.style.width = zoom === 1 ? '' : `${Math.round(image.dataset.fitWidth * zoom)}px`;
         };
-        controls.append(el('button', { type: 'button', class: 'btn btn-sm', onclick: () => change(zoom / 1.5), 'aria-label': 'Zoom out' }, '−'),
-          el('span', { class: 'small', 'data-zoom-label': '' }, '100%'),
-          el('button', { type: 'button', class: 'btn btn-sm', onclick: () => change(zoom * 1.5), 'aria-label': 'Zoom in' }, '+'),
-          el('button', { type: 'button', class: 'btn btn-sm', onclick: () => change(1) }, 'Fit'));
-        host.after(controls);
+        host.setAttribute('aria-label', 'Image preview. Pinch to zoom; use plus, minus, or zero on the keyboard.');
+        host.addEventListener('wheel', (event) => {
+          if (!event.ctrlKey) return;
+          event.preventDefault(); change(zoom * Math.exp(-event.deltaY * .01));
+        }, { passive: false });
+        host.addEventListener('gesturestart', (event) => { event.preventDefault(); initialScale = zoom; }, { passive: false });
+        host.addEventListener('gesturechange', (event) => { event.preventDefault(); change(initialScale * event.scale); }, { passive: false });
+        host.addEventListener('keydown', (event) => {
+          if (!['+', '=', '-', '0'].includes(event.key)) return;
+          event.preventDefault(); change(event.key === '0' ? 1 : zoom * (event.key === '-' ? 1 / 1.5 : 1.5));
+        });
         node.classList.add('preview-ready');
         node.dispatchEvent(new Event('poda:preview-ready', { bubbles: true }));
         resolve();
@@ -314,6 +316,26 @@
     }
   }
 
+  async function diagramPNG(source) {
+    const svg = await renderDiagram(source);
+    const documentSVG = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
+    if (documentSVG.localName !== 'svg' || documentSVG.querySelector('parsererror')) throw new Error('Invalid rendered diagram.');
+    const view = (documentSVG.getAttribute('viewBox') || '').trim().split(/[ ,]+/).map(Number);
+    if (view.length !== 4 || !Number.isFinite(view[2]) || !Number.isFinite(view[3]) || view[2] <= 0 || view[3] <= 0) throw new Error('Diagram dimensions are unavailable.');
+    const scale = Math.min(2, 4096 / Math.max(view[2], view[3]), Math.sqrt(16000000 / (view[2] * view[3])));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.ceil(view[2] * scale)); canvas.height = Math.max(1, Math.ceil(view[3] * scale));
+    const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+    try {
+      const img = new Image();
+      await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = () => reject(new Error('Could not render the diagram image.')); img.src = url; });
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Image conversion is unavailable.');
+      ctx.fillStyle = '#0d1424'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      return await new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not create PNG.')), 'image/png'));
+    } finally { URL.revokeObjectURL(url); }
+  }
+
   // Uncompressed ZIP keeps each original Markdown byte and every standalone SVG together.
   function zipFiles(files) {
     const encode = new TextEncoder(), chunks = [], directory = [];
@@ -371,5 +393,5 @@
     return preview;
   }
 
-  window.PODAChatRendering = { renderInto, attachmentPreview, downloadMarkdownWithDiagrams };
+  window.PODAChatRendering = { renderInto, attachmentPreview, downloadMarkdownWithDiagrams, diagramPNG };
 })();

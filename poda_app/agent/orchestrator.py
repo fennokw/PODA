@@ -292,6 +292,13 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
             spec = tools.TOOLS[name]
             step = {"tool": name, "args": args, "summary": tools.summarize_args(name, args), "requires_confirmation": bool(spec["requires_confirmation"]), "mutating": bool(spec["mutating"])}
             if spec["mutating"] or spec["requires_confirmation"]:
+                from . import grants
+                if not unattended and grants.broad_access_enabled():
+                    run = tools.execute(name, args, approved=True, session_id=session_id)
+                    _record_execution(out, step, run, emit)
+                    payload = run["result"].get("result") if run["result"].get("ok") else {"error": run["result"].get("error")}
+                    tool_results_for_model.append({"role": "tool", "content": json.dumps(payload, default=str)[:6000]})
+                    continue
                 if unattended:
                     from ..daily_updates.permissions import authorize
                     allowed, explanation = authorize(unattended_target or "", unattended_revision or "", name, args)

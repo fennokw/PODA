@@ -451,3 +451,59 @@ def test_storage_folder_opener_uses_active_profile_only(client, monkeypatch):
     assert client.post("/system/storage/open", headers={"Origin": "https://other.test"}).status_code == 403
     response = client.post("/system/storage/open", json={"path": "/unrelated"})
     assert response.status_code == 200 and opened == [str(config.DATA_DIR)]
+
+
+def test_previous_mermaid_photo_request_saves_verified_png(client, monkeypatch):
+    from io import BytesIO
+    from PIL import Image
+    from poda_app.chat import router as chat_router
+    from poda_app.memory import store
+    from poda_app.agent import sandbox_files
+
+    session = 'diagram-photo-test'
+    chart = 'flowchart TD\nA[Idea] --> B[Build]'
+    store.save_message('assistant', f'Here is the chart.\n\n```mermaid\n{chart}\n```', session_id=session, defer_memory=True)
+    monkeypatch.setattr(chat_router.models, 'resolve', lambda *a, **k: (_ for _ in ()).throw(AssertionError('should not call model')))
+    response = client.post('/chat/stream', json={'message': 'Save it as a photo I can copy or paste.', 'session_id': session, 'use_memory': False})
+    done = dict(_events(response.text))['done']
+    assert done['diagram_image'] == chart and done['model'] == 'diagram-image'
+    url = f"/chat/session/{session}/messages/{done['download']['message_id']}/diagram-image"
+    invalid = client.post(url, files={'file': ('diagram.png', b'not a png', 'image/png')})
+    assert invalid.status_code == 400
+    image = BytesIO()
+    Image.new('RGB', (10, 10), 'red').save(image, format='PNG')
+    result = client.post(url, files={'file': ('diagram.png', image.getvalue(), 'image/png')})
+    assert result.status_code == 200
+    filename = result.json()['filename']
+    assert sandbox_files.read_bytes(filename) == image.getvalue()
+    saved = client.get(f'/chat/session/{session}/messages').json()['messages'][-1]
+    assert saved['download']['sandbox_file'] == filename
+    assert client.post(url, files={'file': ('diagram.png', image.getvalue(), 'image/png')}).json()['filename'] == filename
+    assert not chat_router._diagram_photo_request('Create an image of a dog')
+
+
+def test_broad_access_runs_available_mutation_and_turns_off(client, monkeypatch, tmp_path):
+    from poda_app.chat import router as chat_router
+    from poda_app.agent import orchestrator
+    from poda_app.runtime.db import set_setting
+    set_setting('broad_access_enabled', 'true')
+    target = tmp_path / 'broad-write.txt'
+    try:
+        plans = iter([
+            {'message': {'tool_calls': [{'function': {'name': 'fs_write', 'arguments': {'path': str(target), 'content': 'done'}}}]}},
+            {'message': {'content': 'Saved.'}},
+        ])
+        monkeypatch.setattr(orchestrator.inference, 'chat', lambda *a, **k: next(plans))
+        monkeypatch.setattr(orchestrator.inference, 'status', lambda: {'reachable': True, 'models': ['test']})
+        monkeypatch.setattr(orchestrator, '_planner_models', lambda _: ['test'])
+        monkeypatch.setattr(chat_router.models, 'resolve', lambda *a, **k: {'model': 'test', 'profile': 'balanced', 'num_ctx': 8192, 'options': {}})
+        async def reply(*args, **kwargs):
+            yield {'message': {'content': 'Saved.'}, 'done': True}
+        monkeypatch.setattr(chat_router.inference, 'chat_stream', reply)
+        response = client.post('/chat/stream', json={'message': f'Write a file at {target}', 'use_memory': False})
+        events = _events(response.text)
+        assert target.read_text() == 'done'
+        assert any(event == 'tool' and data['name'] == 'fs_write' and data['outcome'] == 'succeeded' for event, data in events)
+        assert not any(event == 'proposal' for event, _ in events)
+    finally:
+        set_setting('broad_access_enabled', 'false')
