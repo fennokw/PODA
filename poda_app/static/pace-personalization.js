@@ -163,12 +163,13 @@
         memoryStatus.replaceChildren(el('div',{class:'row'},window.PODA.pill(ready?'On':data.enabled?'Starting':data.installed?'Off':'Ready to install',ready?'ok':'faint'),
           note(data.indexed_nodes+' memories indexed')));
         if(data.setup_error)memoryStatus.append(note(data.setup_error));
-        const action=el('button',{class:'btn btn-primary',type:'button'},data.installed?'Turn on Hindsight':'Install and turn on');
+        const needsDownload=!data.installed||data.embedding_installed===false;
+        const action=el('button',{class:'btn btn-primary',type:'button'},needsDownload?'Install and turn on':'Turn on Hindsight');
         action.onclick=async()=>{
-          if(!data.installed&&!(await confirmDialog({title:'Install Hindsight?',body:'PODA downloads the local memory engine and its database. Its search index is stored separately from the encrypted PODA memory database. Memory processing uses llama.cpp on this computer.',confirmLabel:'Install and turn on'})))return;
-          apply(action,()=>data.installed?api('/memory/hindsight/config',{method:'PUT',body:{enabled:true}}):
-            api('/memory/hindsight/setup',{method:'POST',body:{confirm_download:true}}),
-            data.installed?'Starting Hindsight…':'Downloading and starting Hindsight…','Hindsight is on.');
+          if(needsDownload&&!(await confirmDialog({title:'Install Hindsight?',body:'PODA downloads any missing local memory engine and the Nomic embedding model (about 262 MiB). Its search index is stored separately from the encrypted PODA memory database. Memory processing uses llama.cpp on this computer.',confirmLabel:'Install and turn on'})))return;
+          apply(action,()=>needsDownload?api('/memory/hindsight/setup',{method:'POST',body:{confirm_download:true}}):
+            api('/memory/hindsight/config',{method:'PUT',body:{enabled:true}}),
+            needsDownload?'Downloading and starting Hindsight…':'Starting Hindsight…','Hindsight is on.');
         };
         const off=el('button',{class:'btn',type:'button'},'Turn off');
         off.onclick=()=>apply(off,()=>api('/memory/hindsight/config',{method:'PUT',body:{enabled:false}}),'Stopping Hindsight…','Hindsight is off.');

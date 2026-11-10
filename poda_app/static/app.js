@@ -309,6 +309,16 @@
       scrollToLatest();
       return { wrap, bubble, metaRow };
     }
+    messages.addEventListener('click', async (event) => {
+      const link = event.target.closest('a[data-chat-download]');
+      if (!link || !/\.md$/i.test(link.getAttribute('download') || '')) return;
+      event.preventDefault();
+      if (link.dataset.exporting) return;
+      link.dataset.exporting = 'true';
+      try { await rich.downloadMarkdownWithDiagrams(link.href, link.getAttribute('download')); }
+      catch (error) { toast('Could not export diagrams: ' + error.message, 'danger'); }
+      finally { delete link.dataset.exporting; }
+    });
     function addDownload(row, download, sessionId) {
       if (!download?.message_id || !sessionId || row.querySelector('[data-chat-download]')) return;
       if (download.error) row.append(el('span', { class: 'small', role: 'status' }, download.error));
