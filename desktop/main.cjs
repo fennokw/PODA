@@ -29,7 +29,7 @@ async function startBackend(python) {
   mkdirSync(logs, { recursive: true, mode: 0o700 });
   const log = createWriteStream(path.join(logs, 'desktop-server.log'), { flags: 'a', mode: 0o600 });
   log.on('error', console.error);
-  const processEnv = { ...process.env, PODA_DATA_DIR: data, PODA_DESKTOP_TOKEN: token,
+  const processEnv = { ...process.env, PODA_DATA_DIR: data, PODA_DESKTOP_TOKEN: token, PODA_DESKTOP_PARENT_PID: String(process.pid),
     PYTHONDONTWRITEBYTECODE: '1', PYTHONNOUSERSITE: '1',
     PATH: ['/opt/homebrew/bin', '/usr/local/bin', process.env.PATH || '/usr/bin:/bin'].join(path.delimiter) };
   // Packaged builds always use the existing production encryption policy.
@@ -49,7 +49,10 @@ async function startBackend(python) {
     lines.on('line', line => {
       if (line.startsWith('PODA_DESKTOP_ERROR ')) {
         log.write(line + '\n');
-        try { done(reject)(new Error(JSON.parse(line.slice('PODA_DESKTOP_ERROR '.length)).message)); }
+        try {
+          const problem = JSON.parse(line.slice('PODA_DESKTOP_ERROR '.length));
+          done(reject)(Object.assign(new Error(problem.message), { code: problem.code }));
+        }
         catch (error) { done(reject)(error); }
         return;
       }
@@ -130,7 +133,24 @@ async function start() {
     app.quit();
     return;
   }
-  origin = await startBackend(python);
+  while (!origin && !closing) {
+    try { origin = await startBackend(python); }
+    catch (error) {
+      if (error.code !== 'profile_busy') throw error;
+      const previous = backend;
+      if (previous.exitCode === null && !previous.signalCode) {
+        await new Promise(resolve => previous.once('exit', resolve));
+      }
+      const result = await dialog.showMessageBox({
+        type: 'warning', title: 'PODA data folder is busy',
+        message: 'Another PODA server is using this data folder.',
+        detail: 'Quit the other PODA app and click Retry. If it was force-quit and Retry still shows this message, restart your Mac, then open PODA again.',
+        buttons: ['Retry', 'Quit'], defaultId: 0, cancelId: 1,
+      });
+      if (result.response !== 0) { app.quit(); return; }
+    }
+  }
+  if (closing) return;
   const localSession = session.fromPartition('poda-desktop');
   await localSession.setProxy({ mode: 'direct' });
   localSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));

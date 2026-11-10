@@ -102,6 +102,7 @@ def ensure_embeddings(conn, *, allow_network: bool = True) -> dict[str, list[flo
         missing.append((row, text))
     if not allow_network:
         return vectors
+    updates = []
     for offset in range(0, len(missing), 24):
         batch = missing[offset:offset + 24]
         try:
@@ -113,11 +114,16 @@ def ensure_embeddings(conn, *, allow_network: bool = True) -> dict[str, list[flo
         for (row, text), vec in zip(batch, batch_vectors):
             vec = normalize(vec)
             vectors[row["id"]] = vec
-            conn.execute(
-                """INSERT INTO memory_embeddings (node_id, model, text_hash, vector_json, updated_at) VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(node_id) DO UPDATE SET model=excluded.model, text_hash=excluded.text_hash, vector_json=excluded.vector_json, updated_at=excluded.updated_at""",
-                (row["id"], config.EMBED_MODEL, hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest(), json.dumps(vec), now_iso()),
-            )
+            updates.append((row["id"], config.EMBED_MODEL, hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest(), json.dumps(vec), now_iso()))
+    # Cache only after inference. Otherwise the first batch locks out every
+    # writer while the later batches wait for the model.
+    if updates:
+        conn.executemany(
+            """INSERT INTO memory_embeddings (node_id, model, text_hash, vector_json, updated_at)
+               SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM memory_nodes WHERE id=?)
+               ON CONFLICT(node_id) DO UPDATE SET model=excluded.model, text_hash=excluded.text_hash, vector_json=excluded.vector_json, updated_at=excluded.updated_at""",
+            ((*update, update[0]) for update in updates),
+        )
     return vectors
 
 
@@ -481,9 +487,9 @@ def ensure_seed(conn) -> None:
         conn.execute("INSERT OR IGNORE INTO memory_links (id, source_id, target_id, relation, strength, created_at, updated_at) VALUES (?, ?, ?, 'contains', 0.72, ?, ?)",
                      (f"migrated-contains-{row['id']}", PERSONAL_CLOUD, row["id"], now, now))
     # Mirror every historical chat turn that lacks a visible node.
-    for msg in rows(conn, "SELECT id, role, content, model, created_at FROM messages ORDER BY created_at ASC"):
-        if one(conn, "SELECT id FROM memory_nodes WHERE source_message_id=? LIMIT 1", (msg["id"],)):
-            continue
+    for msg in rows(conn, """SELECT m.id, m.role, m.content, m.created_at FROM messages m
+        WHERE NOT EXISTS (SELECT 1 FROM memory_nodes n WHERE n.source_message_id=m.id OR n.response_message_id=m.id)
+        ORDER BY m.created_at ASC"""):
         exact = None
         if msg["role"] == "user":
             exact = one(conn, "SELECT id FROM memory_nodes WHERE node_type='memory' AND source_message_id IS NULL AND content=? ORDER BY created_at ASC LIMIT 1", (msg["content"],))
@@ -500,11 +506,6 @@ def ensure_seed(conn) -> None:
     ]:
         conn.execute("INSERT OR IGNORE INTO memory_links (id, source_id, target_id, relation, strength, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
                      (f"seed-cross-{source}-{target}", source, target, relation, strength, now, now))
-    try:
-        from . import surface
-        surface.schedule_startup_rebuild()
-    except Exception:
-        pass
 
 
 def node_tier(node: dict[str, Any]) -> str:

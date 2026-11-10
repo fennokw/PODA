@@ -5,10 +5,51 @@ import hmac
 import json
 import os
 import socket
+import subprocess
+import sys
 from threading import Event, Thread
 
 
-def main() -> None:
+def _watch_pipe(closed: Event) -> None:
+    try:
+        while os.read(0, 1024):
+            pass
+    except OSError:
+        pass
+    finally:
+        closed.set()
+
+
+def _owner_gone(closed: Event, parent_pid: int) -> bool:
+    return closed.wait(0.2) or (os.name != "nt" and os.getppid() != parent_pid)
+
+
+def supervise() -> int:
+    """Keep shutdown independent of the API process, including native model/database calls."""
+    if not os.environ.get("PODA_DESKTOP_TOKEN"):
+        raise SystemExit("Open the PODA desktop app to start its backend.")
+    parent_pid = int(os.environ.pop("PODA_DESKTOP_PARENT_PID", os.getppid()))
+    closed = Event()
+    Thread(target=_watch_pipe, args=(closed,), name="poda-desktop-owner", daemon=True).start()
+    if _owner_gone(closed, parent_pid):
+        return 0
+    with subprocess.Popen([sys.executable, "-u", __file__, "--serve"], stdin=subprocess.PIPE) as child:
+        while child.poll() is None:
+            if not _owner_gone(closed, parent_pid):
+                continue
+            child.stdin.close()
+            try:
+                return child.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                print("PODA stopped an unresponsive local backend after its window process exited.",
+                      file=sys.stderr, flush=True)
+                child.kill()
+                child.wait()
+                return 0
+        return child.returncode
+
+
+def serve() -> None:
     token = os.environ.pop("PODA_DESKTOP_TOKEN", "")
     if not token:
         raise SystemExit("Open the PODA desktop app to start its backend.")
@@ -45,39 +86,32 @@ def main() -> None:
         pipe_closed = Event()
         stopped = Event()
 
-        def watch_pipe() -> None:
-            try:
-                while os.read(0, 1024):
-                    pass
-            except OSError:
-                pass
-            finally:
-                pipe_closed.set()
-
         def watch_parent() -> None:
-            while not pipe_closed.wait(0.5):
-                if os.name != "nt" and os.getppid() != parent_pid:
-                    break
+            while not _owner_gone(pipe_closed, parent_pid):
+                pass
             server.should_exit = True
-            # Release the OS lock if graceful shutdown hangs after Electron exits.
+            # Also release the lock if the supervisor itself is killed.
             if not stopped.wait(12):
                 os._exit(1)
 
         try:
             with claim_data_directory(wait_seconds=15):
-                print("PODA_DESKTOP " + json.dumps({"port": port}), flush=True)
-                Thread(target=watch_pipe, name="poda-desktop-pipe", daemon=True).start()
+                print("PODA_DESKTOP " + json.dumps({"port": port, "pid": os.getpid()}), flush=True)
+                Thread(target=_watch_pipe, args=(pipe_closed,), name="poda-desktop-pipe", daemon=True).start()
                 Thread(target=watch_parent, name="poda-desktop-parent", daemon=True).start()
                 try:
                     server.run(sockets=[listener])
                 finally:
                     stopped.set()
         except DataDirectoryInUse as exc:
-            print("PODA_DESKTOP_ERROR " + json.dumps({"message": str(exc)}), flush=True)
+            print("PODA_DESKTOP_ERROR " + json.dumps({"code": "profile_busy", "message": str(exc)}), flush=True)
             raise SystemExit(1) from None
         if not server.started:
             raise SystemExit(1)
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--serve"]:
+        serve()
+    else:
+        raise SystemExit(supervise())

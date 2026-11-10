@@ -17,10 +17,10 @@ fi
 python3 - <<'PYTHON'
 from poda_app.runtime.instance import DataDirectoryInUse, claim_data_directory
 try:
-    with claim_data_directory(wait_seconds=2):
+    with claim_data_directory(wait_seconds=15):
         pass
 except DataDirectoryInUse as exc:
-    raise SystemExit(str(exc)) from None
+    raise SystemExit(f"{exc}\nIf PODA was force-quit and the folder is still busy, restart your Mac and rerun the installer.") from None
 PYTHON
 
 (

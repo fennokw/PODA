@@ -88,12 +88,12 @@ def _start(label: str, size: int | None, action: Callable, *, network: bool) -> 
 
 @router.get("/catalog")
 def catalog() -> dict:
-    hw = hardware.probe()
+    hw = hardware.probe(include_graphics=False)
     with _lock:
         active = next((dict(item) for item in _jobs.values() if item["state"] == "running"), None)
     return {"active_job": active,"catalog": model_catalog.catalog(hw), "installed": [model_catalog.summary(item) for item in model_catalog.inventory()],
             "selected": models.selected_profiles(), "roles": models.registry()["profiles"],
-            "engine": inference.status(), "settings": inference.settings(), "cache_types": model_catalog.CACHE_TYPES,
+            "engine": hw["inference"], "settings": inference.settings(), "cache_types": model_catalog.CACHE_TYPES,
             "vulkan_available": config.WINDOWS and llama_install.executable("vulkan") is not None,
             "windows": config.WINDOWS, "hardware": {key: hw.get(key) for key in
                 ("ram_total_gb", "gpu_memory_dedicated_gb", "unified_memory_gb", "disk_free_gb")}}

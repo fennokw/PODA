@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from .runtime import config, inference
 from .runtime.db import init_database, connect
 from .runtime import capability
-from .memory import store
+from .memory import store, surface
 from .security.auth import security_middleware
 from .runtime.router import router as runtime_router
 from .memory.router import router as memory_router
@@ -39,6 +39,14 @@ from .memory.hindsight_bridge import router as hindsight_router, background_sync
 STARTUP_REPORT: dict = {}
 
 
+def refresh_startup_capabilities() -> None:
+    try:
+        capability.sync_ledger()
+    except Exception as exc:
+        print(f"[PODA capability ledger] startup refresh failed: {exc}")
+    surface.schedule_startup_rebuild()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     STARTUP_REPORT.update(init_database())
@@ -49,19 +57,17 @@ async def lifespan(app: FastAPI):
         conn.commit()
     finally:
         conn.close()
-    try:
-        capability.sync_ledger()
-    except Exception as exc:  # llama.cpp may be down; the ledger records that truthfully
-        print(f"[PODA capability ledger] startup refresh failed: {exc}")
     print(f"[PODA] v{config.VERSION} build {config.BUILD_ID} data={config.DATA_DIR} encryption={STARTUP_REPORT.get('encryption_status', {}).get('database_encrypted_on_disk')}")
     runner = asyncio.create_task(daily_service.scheduler(), name='poda-daily-scheduler')
     memory_runner = asyncio.create_task(background_sync(),name='poda-hindsight-sync')
+    capability_runner = asyncio.create_task(asyncio.to_thread(refresh_startup_capabilities), name="poda-startup-capabilities")
     try:
         yield
     finally:
         runner.cancel()
         memory_runner.cancel()
-        for running in (runner,memory_runner):
+        capability_runner.cancel()
+        for running in (runner, memory_runner, capability_runner):
             try: await running
             except asyncio.CancelledError: pass
         await asyncio.to_thread(inference.shutdown)

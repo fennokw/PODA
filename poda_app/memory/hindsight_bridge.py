@@ -251,8 +251,7 @@ async def background_sync():
     try:
         while True:
             try:
-                if enabled():
-                    await asyncio.to_thread(sync_once, 15)
+                await asyncio.to_thread(sync_once, 15)
             except Exception:
                 pass
             await asyncio.sleep(60)
