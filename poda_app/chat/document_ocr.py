@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import closing
 from functools import lru_cache
 from io import BytesIO
+from pathlib import Path
 from threading import Lock
 from zipfile import ZipFile
 
@@ -12,8 +13,21 @@ _ocr_lock = Lock()
 
 @lru_cache(maxsize=1)
 def _engine():
-    from rapidocr_onnxruntime import RapidOCR
-    return RapidOCR(intra_op_num_threads=2, inter_op_num_threads=1)
+    import rapidocr
+
+    models = Path(rapidocr.__file__).with_name("models")
+    weights = {
+        "Det.model_path": models / "PP-OCRv6_det_small.onnx",
+        "Cls.model_path": models / "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+        "Rec.model_path": models / "PP-OCRv6_rec_small.onnx",
+    }
+    if not all(path.is_file() for path in weights.values()):
+        raise RuntimeError("PODA’s bundled OCR weights are missing.")
+    return rapidocr.RapidOCR(params={
+        **{key: str(path) for key, path in weights.items()},
+        "EngineConfig.onnxruntime.intra_op_num_threads": 2,
+        "EngineConfig.onnxruntime.inter_op_num_threads": 1,
+    })
 
 
 def image_text(image) -> str:
@@ -23,9 +37,11 @@ def image_text(image) -> str:
     image.thumbnail((2400, 2400))
     pixels = np.ascontiguousarray(np.asarray(image)[:, :, ::-1])
     with _ocr_lock:
-        results, _ = _engine()(pixels)
+        result = _engine()(pixels)
+    if result.boxes is None or not result.txts:
+        return ""
     lines = []
-    for box, text, score in results or []:
+    for box, text, score in zip(result.boxes, result.txts, result.scores):
         if score < .45 or not text.strip():
             continue
         xs, ys = zip(*box)
