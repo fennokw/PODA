@@ -16,15 +16,52 @@ def test_shared_gpu_does_not_double_count_ram():
     result = model_catalog.catalog(hw)
     big = next(item for item in result if item["id"] == "qwen3-14b-q8_0")
     assert big["fit"] == "Fits estimated unified memory budget"
+    assert big["fit_status"] == "fits"
+    hw["unified_memory_gb"] = hw["ram_total_gb"] = 20
+    big = next(item for item in model_catalog.catalog(hw) if item["id"] == "qwen3-14b-q8_0")
+    assert big["fit_status"] == "tight"
     hw["unified_memory_gb"] = hw["ram_total_gb"] = 12
     big = next(item for item in model_catalog.catalog(hw) if item["id"] == "qwen3-14b-q8_0")
-    assert big["fit"] == "Tight or unknown memory fit"
+    assert big["fit_status"] == "exceeds"
+    assert big["disk_fit"]
 
 
 def test_model_catalog_contains_three_local_roles():
     result = model_catalog.catalog()
     assert {"coding", "general", "vision", "embedding"} <= {item["role"] for item in result}
     assert all("http" not in item["id"] for item in result)
+    assert all("bit" in item["quant_label"] and item["quant_label"] != "Bit level unknown" for item in result)
+    assert {"Qwen3.6 27B", "Qwen3.6 35B MoE", "Qwen3.5 4B", "Qwen3.5 9B", "Gemma 4 12B", "Gemma 4 26B MoE",
+            "Qwen3-VL 4B", "Qwen3-VL 8B", "Qwen3 Coder Next", "Devstral Small 2 24B", "GPT-OSS 20B",
+            "Llama 3.2 3B"} <= {item["label"] for item in result}
+    assert all(model_catalog.quantization_label(code) != "Bit level unknown" for code in model_catalog.CACHE_TYPES)
+
+
+def test_split_catalog_download_tracks_every_shard(monkeypatch, tmp_path):
+    asset = model_catalog.Asset
+    files = (asset("Q8_0/demo-00001-of-00002.gguf", 5, "first"),
+             asset("Q8_0/demo-00002-of-00002.gguf", 6, "second"))
+    projector = asset("mmproj-F16.gguf", 7, "projector")
+    model = model_catalog.Model("split-fixture", "Split fixture", "vision", "Q8_0", "demo/verified",
+                                files[0], projector, extra_shards=files[1:])
+    monkeypatch.setitem(model_catalog.CATALOG, model.id, model)
+    monkeypatch.setattr(model_catalog, "root", lambda: tmp_path / "models")
+    downloaded = []
+    progress = []
+
+    def download(url, target, digest, size, report):
+        downloaded.append((url, digest))
+        target.write_bytes(b"GGUF".ljust(size, b"0"))
+        report(size)
+
+    monkeypatch.setattr(model_catalog, "download", download)
+    installed = model_catalog.install_model(model.id, progress.append)
+    assert installed["path"].name == "demo-00001-of-00002.gguf"
+    assert installed["size"] == 11 and installed["projector_size"] == 7
+    assert [url.rsplit("/resolve/main/", 1)[1] for url, _ in downloaded] == [item.name for item in (*files, projector)]
+    assert progress == [5, 11, 18]
+    (installed["path"].parent / "demo-00002-of-00002.gguf").unlink()
+    assert model_catalog.installed(model.id) is None
 
 
 def test_multi_account_automation_selection(client,monkeypatch):
