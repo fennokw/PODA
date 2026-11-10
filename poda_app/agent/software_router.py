@@ -7,6 +7,8 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from . import software, receipts
+from ..runtime import skill_library
+from ..security.egress import EgressBlocked
 
 router = APIRouter()
 
@@ -54,8 +56,9 @@ def list_software(refresh: bool = False) -> dict[str, Any]:
         groups.setdefault(e.get("category") or "other", []).append({k: v for k, v in e.items() if k != "skill_excerpt"})
     usable = [e["name"] for e in items if e["installed"] and e.get("enabled")]
     return {"count": len(items), "installed": [e["name"] for e in items if e["installed"]], "usable": usable if software.external_execution_enabled() else [], "groups": groups,
+            "execution_allowed": software.external_execution_enabled(),
             "sources": [str(p) for p in software.repo_paths()], "venv": str(software.SOFTWARE_VENV), "venv_exists": software._venv_python().exists(),
-            "capability": {"can_drive_software": bool(usable) and software.external_execution_enabled(), "detail": (f"PODA can drive: {', '.join(usable)}" if usable and software.external_execution_enabled() else "External software execution is disabled until explicit developer opt-in." if usable else "No harness is installed and enabled — PODA cannot drive any external program yet.")}}
+            "capability": {"can_drive_software": bool(usable) and software.external_execution_enabled(), "detail": (f"PODA can drive: {', '.join(usable)}" if usable and software.external_execution_enabled() else "Trusted program add-ons are off." if usable else "No harness is installed and enabled — PODA cannot drive any external program yet.")}}
 
 
 @router.get("/software/receipts")
@@ -67,6 +70,47 @@ def software_receipts(limit: int = 50) -> dict[str, Any]:
 @router.post("/software/sources")
 def set_sources(req: SourcesRequest) -> dict[str, Any]:
     return {"sources": software.set_repo_paths(req.paths), "count": len(software.catalog(force=True))}
+
+
+class ExecutionRequest(BaseModel):
+    enabled: bool
+    confirm: bool = False
+
+
+@router.put("/software/execution")
+def configure_execution(req: ExecutionRequest):
+    if req.enabled and not req.confirm:
+        raise _err(400, "CONFIRM_REQUIRED", "Confirm that you trust the program add-ons before turning them on.")
+    software.configure_external_execution(req.enabled)
+    return {"execution_allowed": software.external_execution_enabled()}
+
+
+@router.post("/software/catalog/download")
+def download_catalog(req: ConfirmRequest):
+    if not req.confirm:
+        raise _err(400, "CONFIRM_REQUIRED", "Confirm the catalog download.")
+    try:
+        return {"count": software.download_catalog()}
+    except EgressBlocked as exc:
+        raise _err(403, "CATALOG_BLOCKED", str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise _err(502, "CATALOG_FAILED", "Could not download the add-on catalog. Try again.", str(exc)[:300]) from exc
+
+
+@router.post("/software/{name}/save-skill")
+def save_skill(name: str, req: ConfirmRequest):
+    if not req.confirm:
+        raise _err(400, "CONFIRM_REQUIRED", "Confirm adding these instructions.")
+    try:
+        body = software.catalog_skill(name)
+        entry = software.get(name)
+        return skill_library.store_skill((entry.get("display_name") or name)[:80], "harness", body)
+    except LookupError as exc:
+        raise _err(404, "NO_SKILL", str(exc)) from exc
+    except EgressBlocked as exc:
+        raise _err(403, "SKILL_BLOCKED", str(exc)) from exc
+    except (ValueError, OSError) as exc:
+        raise _err(502, "SKILL_FAILED", "Could not add the skill instructions. Try again.", str(exc)[:300]) from exc
 
 
 @router.get("/software/{name}")
@@ -84,7 +128,7 @@ def install_software(name: str, req: InstallRequest) -> dict[str, Any]:
     except LookupError as exc:
         raise _err(404, "UNKNOWN_HARNESS", str(exc))
     except PermissionError as exc:
-        raise _err(400, "CONFIRM_REQUIRED" if "confirm" in str(exc) else "NETWORK_REQUIRED", str(exc))
+        raise _err(400, "CONFIRM_REQUIRED" if "confirm" in str(exc) else "INSTALL_BLOCKED", str(exc))
     except Exception as exc:
         raise _err(500, "INSTALL_FAILED", str(exc)[:600])
 

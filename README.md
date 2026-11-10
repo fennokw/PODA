@@ -19,3 +19,5 @@ Start Ollama and run `ollama pull llama3.2:3b` and `ollama pull nomic-embed-text
 A prebuilt Apple Silicon package is available in the [desktop workflow artifacts](https://github.com/fennokw/PODA/actions/workflows/desktop.yml). The app uses an ad hoc macOS signature. The separate browser edition is available in [PODA Web](https://github.com/fennokw/PODA-Web).
 
 Daily Automation resolves email event dates against the original send time, then verifies authorized Notion additions. To use the same read-only scheduling tools from an MCP client, run `python -m poda_app.scheduling.mcp` over stdio from the source folder with the PODA Python environment.
+
+Use **Personalize → Memory search with Hindsight** to install and enable the local search engine. Setup uses an installed Ollama chat model and the PODA embedding model. Hindsight keeps a derived index in the app's data folder. **Add-ons** contains the downloadable program catalog and saved skills. Program tools require a separate trust opt-in and per-tool enable switch. **Developer mode** in the toolbar reveals technical diagnostics.

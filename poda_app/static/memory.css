@@ -1,12 +1,12 @@
 /* Canonical memory viewer chrome. Renderer semantics live in memory.js. */
 body.memory-page { overflow: auto; }
-.memory-shell { position: relative; z-index: 1; min-height: 100dvh; padding: var(--s-4) var(--s-5) var(--s-5); display: grid; grid-template-rows: auto auto auto minmax(640px, 1fr); gap: var(--s-3); }
+.memory-shell { position: relative; z-index: 1; min-height: 0; padding: var(--s-4) var(--s-5) var(--s-5); display: grid; grid-template-rows: auto auto auto auto; gap: var(--s-3); }
 .memory-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-4); padding: var(--s-3) var(--s-4); border: 1px solid var(--line-0); border-radius: var(--r-panel); background: var(--surface-0); }
 .memory-title { display: flex; align-items: center; gap: var(--s-3); }
 .memory-title h1 { font-size: var(--fs-20); letter-spacing: -0.01em; }
 .memory-head-actions { display: flex; align-items: center; gap: var(--s-4); }
 .return-home { font-weight: 600; letter-spacing: 0.04em; }
-.memory-commandbar { position: sticky; top: var(--s-2); z-index: var(--z-sticky); display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; padding: var(--s-2) var(--s-3); border: 1px solid var(--line-1); border-radius: var(--r-panel); background: rgba(8, 13, 26, 0.92); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); box-shadow: var(--shadow-1); }
+.memory-commandbar { position: static; display: flex; align-items: center; gap: var(--s-2); flex-wrap: wrap; padding: var(--s-2) var(--s-3); border: 1px solid var(--line-1); border-radius: var(--r-panel); background: rgba(8, 13, 26, 0.92); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); box-shadow: var(--shadow-1); }
 .commit-memory { min-width: 240px; letter-spacing: 0.06em; font-weight: 700; }
 .draft-status { font-family: var(--mono); font-size: var(--fs-12); letter-spacing: 0.04em; color: var(--text-2); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .draft-status[data-mode="dirty"] { color: var(--warn); }

@@ -8,9 +8,43 @@
   $('#memoryBtn').addEventListener('click', () => { window.location.assign('/memory-viewer'); });
   $$('.nav-item').forEach((b) => { if (b.id !== 'memoryBtn') b.addEventListener('click', () => navigate(b.dataset.route)); });
   $('#paletteBtn').addEventListener('click', openPalette);
-  $('#inspectorToggle').addEventListener('click', () => $('#inspector').classList.toggle('open'));
-  $('#inspectorClose').addEventListener('click', () => $('#inspector').classList.remove('open'));
+  const navMenu = $('#navMenu');
+  const setMenu = (open) => {
+    navMenu.setAttribute('aria-expanded', String(open));
+    $('#nav').classList.toggle('menu-open', open);
+  };
+  navMenu.addEventListener('click', () => setMenu(navMenu.getAttribute('aria-expanded') !== 'true'));
+  const showDetails = (open) => {
+    $('#inspector').hidden = !open;
+    $('.shell').classList.toggle('inspector-open', open);
+    $('#inspectorToggle').setAttribute('aria-expanded', String(open));
+  };
+  $('#inspectorToggle').addEventListener('click', () => showDetails($('#inspector').hidden));
+  $('#inspectorClose').addEventListener('click', () => { showDetails(false); $('#inspectorToggle').focus(); });
+  document.addEventListener('poda:navigation', () => { setMenu(false); showDetails(false); });
+  $('.skip-link').addEventListener('click', (event) => { event.preventDefault(); $('#view').focus(); });
+  const developerToggle = $('#developerToggle');
+  function applyDeveloperMode(enabled) {
+    document.documentElement.classList.toggle('developer-mode', enabled);
+    developerToggle.setAttribute('aria-pressed', String(enabled));
+  }
+  developerToggle.addEventListener('click', async () => {
+    developerToggle.disabled = true;
+    try {
+      const saved = await api('/system/view-preferences', { method: 'PUT',
+        body: { developer_mode: developerToggle.getAttribute('aria-pressed') !== 'true' } });
+      applyDeveloperMode(saved.developer_mode);
+      toast(saved.developer_mode ? 'Developer mode is on.' : 'Developer mode is off.', 'ok');
+    } catch (err) { toast(errorDetail(err).message, 'danger'); }
+    finally { developerToggle.disabled = false; }
+  });
+  api('/system/view-preferences').then(data => applyDeveloperMode(data.developer_mode)).catch(() => {});
   window.addEventListener('hashchange', renderRoute);
+  window.addEventListener('unhandledrejection', (event) => {
+    event.preventDefault();
+    const detail = errorDetail(event.reason);
+    toast(document.documentElement.classList.contains('developer-mode') ? detail.message : 'That action could not finish. Try again.', 'danger');
+  });
   document.addEventListener('keydown', (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey) return;
     const tag = document.activeElement?.tagName;
@@ -19,7 +53,7 @@
     if (map[e.key]) { e.preventDefault(); if (map[e.key] === 'memory') window.location.assign('/memory-viewer'); else navigate(map[e.key]); }
   });
 
-  const screens = [['ask', 'Ask', '1'], ['personalize', 'Personalize', '9'], ['projects', 'Project Manager', '3'], ['notion', 'Notion', '4'], ['mail', 'Mail', '5'], ['files', 'Files & Agent', '6'], ['privacy', 'Privacy', '7'], ['daily', 'Daily Automation', '0'], ['system', 'System', '8']];
+  const screens = [['ask', 'Chat', '1'], ['personalize', 'Personalize', '9'], ['projects', 'Projects', '3'], ['notion', 'Calendar', '4'], ['mail', 'Mail', '5'], ['files', 'Files & access', '6'], ['addons', 'Add-ons', ''], ['privacy', 'Privacy', '7'], ['daily', 'Daily Automation', '0'], ['system', 'System', '8']];
   for (const [name, label, key] of screens) registerCommand({ label: `Go to ${label}`, kind: 'Screen', key, keywords: name === 'mail' ? 'email inbox gmail apple mail' : '', run: () => navigate(name) });
   registerCommand({ label: 'Open memory viewer', kind: 'Screen', key: '2', keywords: 'open3d 3d second brain', run: () => window.location.assign('/memory-viewer') });
   registerCommand({ label: 'Check capabilities', kind: 'Action', keywords: 'ledger status', run: async () => { const c = await api('/capabilities'); toast(`Ollama ${c.ollama?.reachable ? 'reachable' : 'unreachable'} · Notion ${c.notion?.status || 'DISCONNECTED'} · ${c.filesystem?.granted_roots?.length || 0} path grants`); navigate('system'); } });
@@ -48,10 +82,10 @@
     return dl;
   }
   function yesNo(v) { return pill(v ? 'yes' : 'no', v ? 'ok' : 'danger'); }
-  function jsonBox(obj) { return el('pre', { class: 'json' }, JSON.stringify(obj, null, 2)); }
+  function jsonBox(obj) { return el('pre', { class: 'json dev-only' }, JSON.stringify(obj, null, 2)); }
   async function load(target, fn) {
     target.innerHTML = ''; target.appendChild(skeleton(3, true));
-    try { const node = await fn(); target.innerHTML = ''; if (node) target.appendChild(node); }
+    try { const node = await fn(); target.innerHTML = ''; if (node) target.appendChild(node.tagName === 'TABLE' ? el('div', { class: 'table-scroll', tabindex: 0 }, node) : node); }
     catch (err) { target.innerHTML = ''; target.appendChild(errorNode(err)); }
   }
 
@@ -75,7 +109,7 @@
   };
 
   route('ask', async ({ view, inspector, setTitle, setInspectorTitle }) => {
-    setTitle('Ask'); setInspectorTitle('Context');
+    setTitle('Chat'); setInspectorTitle('Chat details');
     $('#viewCrumb').textContent = 'Grounded local chat';
     const messages = el('div', { class: 'messages', id: 'messages', 'aria-live': 'polite' });
     const textarea = el('textarea', { placeholder: 'Ask PODA. Shift+Enter for a new line.', rows: 1, 'aria-label': 'Message' });
@@ -464,7 +498,7 @@
   // =====================================================================
   route('personalize', async ({ view, inspector, setTitle, setInspectorTitle }) => {
     setTitle('Personalize'); setInspectorTitle('Import privacy');
-    $('#viewCrumb').textContent = 'Bring your existing AI history into PODA';
+    $('#viewCrumb').textContent = 'Memory and work preferences';
 
     const fileInput = el('input', { class: 'input', type: 'file', accept: '.zip,application/zip', 'aria-label': 'ChatGPT or Claude data export ZIP' });
     const profileToggle = el('input', { type: 'checkbox', checked: true });
@@ -544,6 +578,15 @@
       el('div', { class: 'grid-2' }, f('deadline', 'Deadline', 'date'), f('progress', 'Progress %', 'number', { min: 0, max: 100, value: 0 })),
       el('div', { class: 'field' }, el('label', { class: 'label', for: 'p-notes' }, 'Notes'), el('textarea', { class: 'input', name: 'notes', id: 'p-notes', rows: 2 })),
       el('div', { class: 'row' }, el('button', { class: 'btn btn-primary', type: 'submit' }, 'Add project')));
+    const modeInput = form.elements.mode;
+    const expiry = form.elements.ttl_minutes;
+    const syncGrantMode = () => {
+      expiry.closest('.field').hidden = modeInput.value !== 'temp';
+      form.elements.allow_execute.disabled = modeInput.value === 'read';
+      if (modeInput.value === 'read') form.elements.allow_execute.checked = false;
+    };
+    modeInput.addEventListener('change', syncGrantMode);
+    syncGrantMode();
     form.addEventListener('submit', async (e) => {
       e.preventDefault(); const fd = new FormData(form);
       try {
@@ -587,7 +630,7 @@
   // NOTION
   // =====================================================================
   route('notion', async ({ view, inspector, setTitle, setInspectorTitle }) => {
-    setTitle('Notion'); setInspectorTitle('Connection status'); $('#viewCrumb').textContent = 'Original database behind Notion Calendar';
+    setTitle('Calendar'); setInspectorTitle('Calendar details'); $('#viewCrumb').textContent = 'Synced with Notion';
     const statusHead = el('div', { class: 'stack-sm' });
     const stepsBar = el('div', { class: 'steps' });
     const tokenBox = el('div', { class: 'stack-sm' });
@@ -601,14 +644,20 @@
     const calDetail = el('div', { class: 'stack-sm' });
     inspector.append(statusHead, el('div', { class: 'divider' }), el('div', { class: 'stack-sm' }, el('h3', {}, 'Selected calendar entry'), calDetail));
     calDetail.appendChild(el('p', { class: 'faint small' }, 'Click an entry in the calendar to see its properties here.'));
+    const connection = el('details', { class: 'disclosure card', open: true },
+      el('summary', {}, 'Connect or manage Notion'),
+      el('div', { class: 'stack disclosure-body' },
+        el('p', { class: 'muted' }, 'In Notion, open the original database and share it with your PODA integration under Connections.'),
+        stepsBar,
+        el('div', { class: 'grid-2' }, section('1. Add an integration token', null, tokenBox),
+          section('2. Pick the calendar database', null, sourceBox)),
+        el('div', { class: 'grid-2' }, section('3. Check database fields', null, schemaBox),
+          section('4. Verify calendar changes', null, writeBox)),
+        section('Match your calendar fields', null, mapperBox, previewBox)));
+    const liveRows = el('details', { class: 'disclosure card dev-only', ontoggle: () => { if (liveRows.open) drawRows(); } },
+      el('summary', {}, 'Live Notion rows'), el('div', { class: 'disclosure-body' }, rowsBox));
     view.appendChild(el('div', { class: 'screen stack' },
-      el('div', { class: 'notice notice-accent' }, 'PODA connects to the original Notion database or data source, never to a linked view. Share the original source with the PODA connection from its page menu: ••• then Connections then Add connections. The token is stored in macOS Keychain and never shown again.'),
-      stepsBar,
-      section('Calendar', 'what Notion Calendar shows for this database · read-only', calendarBox),
-      el('div', { class: 'grid-2' }, section('1. Integration token', null, tokenBox), section('2. Choose the data source', null, sourceBox)),
-      el('div', { class: 'grid-2' }, section('3. Live schema', null, schemaBox), section('4. Write verification', null, writeBox)),
-      section('Schema mapper', 'versioned; preview before trusting', mapperBox, previewBox),
-      section('Live rows', 'read-only', rowsBox)));
+      section('Calendar', null, calendarBox), connection, liveRows));
 
     let status = null;
     function drawSteps(st) {
@@ -632,7 +681,9 @@
         kv([['Database', cap.database_title || cap.database_id], ['Data source', cap.data_source_name || cap.data_source_id], ['Read', yesNo(cap.can_read_content)], ['Insert', yesNo(cap.can_insert_content)], ['Update', yesNo(cap.can_update_content)], ['Mapping', yesNo(cap.mapping_active)], ['API version', cap.api_version], ['Last verified', fmtTime(status?.last_verified_at || status?.config?.last_verified_at)]]),
         el('div', { class: 'row' }, el('button', { class: 'btn btn-sm', onclick: () => refreshStatus(true) }, 'Verify now'), el('button', { class: 'btn btn-sm btn-danger', onclick: disconnect }, 'Disconnect')));
       drawSteps(status);
-      drawCalendar(); drawToken(); drawSource(); drawSchema(); drawWrite(); drawMapper(); drawRows();
+      drawCalendar(); drawToken(); drawSource(); drawSchema(); drawWrite(); drawMapper();
+      connection.open = !status?.capability?.connected;
+      if (liveRows.open) drawRows();
     }
     async function disconnect() {
       if (!(await confirmDialog({ title: 'Disconnect Notion?', body: 'The stored token is deleted from the operating system credential store and PODA loses all Notion capabilities immediately.', confirmLabel: 'Disconnect', danger: true }))) return;
@@ -657,6 +708,7 @@
       return { start: startOfWeek(first), end: addDays(startOfWeek(last), 6), label: c.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }), month: c.getMonth() };
     }
     function showEvent(ev) {
+      showDetails(true);
       calDetail.innerHTML = '';
       const s = parseWhen(ev.start); const e = parseWhen(ev.end);
       const when = ev.all_day ? `${s.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}${e && dayKey(e) !== dayKey(s) ? ` → ${e.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}` : ''} · all day`
@@ -664,6 +716,7 @@
       calDetail.append(el('div', { class: 'row' }, el('strong', {}, ev.title), ev.type ? el('span', { class: `cal-type ${typeClass(ev.type)}` }, ev.type) : null),
         kv([['When', when], ['Status', ev.status], ['Commitment', ev.commitment], ['Area', (ev.area || []).join(', ')], ['Source', ev.source], ['Notes', ev.notes], ['Edited', fmtTime(ev.last_edited_time)]]),
         el('div', { class: 'row' }, ev.url ? el('a', { class: 'btn btn-sm', href: ev.url, target: '_blank', rel: 'noopener' }, 'Open in Notion') : null, ev.source_url ? el('a', { class: 'btn btn-sm btn-ghost', href: ev.source_url, target: '_blank', rel: 'noopener' }, 'Open source') : null));
+      calDetail.append(el('details', { class: 'dev-only disclosure' }, el('summary', {}, 'Raw calendar entry'), jsonBox(ev)));
       const options = (window.podaCalendarFields?.commitment_options || []);
       if (ev.page_id && options.length) {
         const selection = el('select', { class: 'input', 'aria-label': 'Commitment level' },
@@ -694,7 +747,15 @@
     function drawCalendar() {
       calendarBox.innerHTML = '';
       const cap = status?.capability || {};
-      if (!cap.connected) { calendarBox.appendChild(emptyState('Not connected', 'The calendar reads the connected data source’s date property once a source is connected.')); return; }
+      if (!cap.connected) {
+        calendarBox.appendChild(emptyState('Connect your calendar', 'Choose the Notion database that holds your events.',
+          el('button', { class: 'btn btn-primary', type: 'button', onclick: () => {
+            connection.open = true;
+            connection.scrollIntoView({ block: 'start' });
+            connection.querySelector('summary').focus({ preventScroll: true });
+          } }, 'Set up Notion')));
+        return;
+      }
       const range = calRange();
       const nav = el('div', { class: 'cal-nav' },
         el('div', { class: 'row' },
@@ -719,7 +780,9 @@
         }
         const todayKey = dayKey(new Date());
         const legendTypes = [...new Set(events.map((e) => e.type).filter(Boolean))];
-        const legend = el('div', { class: 'cal-legend row' }, el('span', { class: 'small faint' }, `${r.count} ${r.count === 1 ? 'entry' : 'entries'} · date property “${r.fields?.date}”${r.mapping_version ? ` · mapping v${r.mapping_version}` : ' · no mapping saved yet, using the obvious properties'} · shown in ${Intl.DateTimeFormat().resolvedOptions().timeZone}`),
+        const legend = el('div', { class: 'cal-legend row' },
+          el('span', { class: 'small muted' }, `${events.length} ${events.length === 1 ? 'entry' : 'entries'} · ${Intl.DateTimeFormat().resolvedOptions().timeZone}`),
+          el('span', { class: 'small faint dev-only' }, `Date field ${r.fields?.date || 'unknown'} · ${r.mapping_version ? 'mapping v' + r.mapping_version : 'inferred mapping'}`),
           ...legendTypes.map((t) => el('span', { class: `cal-type ${typeClass(t)}` }, t)));
         if (calState.view === 'month') {
           const grid = el('div', { class: 'cal-grid' }, ...['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d) => el('div', { class: 'cal-dow' }, d)));
@@ -894,7 +957,7 @@
         const table = el('table', { class: 'table' }, el('thead', {}, el('tr', {}, ...['Title', 'Start', 'End', 'All day', 'Status', 'Type', 'Relations', 'External IDs'].map((h) => el('th', {}, h)))));
         const body = el('tbody');
         for (const p of pages) { const i = p.interpreted || {}; body.appendChild(el('tr', {}, el('td', {}, i.title || p.title), el('td', { class: 'mono' }, i.date_start || ''), el('td', { class: 'mono' }, i.date_end || ''), el('td', {}, i.all_day ? 'yes' : 'no'), el('td', {}, i.status || ''), el('td', {}, i.type || ''), el('td', { class: 'mono small' }, `${(i.project_ids || []).length} project · ${(i.class_ids || []).length} class`), el('td', { class: 'mono small' }, Object.entries(i.external_ids || {}).map(([k, v]) => `${k}=${v}`).join(' ')))); }
-        table.appendChild(body); return el('div', { class: 'stack-sm' }, el('p', { class: 'small muted' }, 'Read-only interpretation of real pages under the active mapping. Nothing is written.'), table);
+        table.appendChild(body); return el('div', { class: 'stack-sm' }, el('p', { class: 'small muted' }, 'Preview of the active mapping'), el('div', { class: 'table-scroll', tabindex: 0 }, table));
       });
     }
 
@@ -904,10 +967,11 @@
       load(rowsBox, async () => {
         const r = await api('/notion/calendar/items?limit=50'); const items = r.results || [];
         if (!items.length) return emptyState('No pages returned', 'The data source may be empty or filtered.');
-        const table = el('table', { class: 'table' }, el('thead', {}, el('tr', {}, el('th', {}, 'Title'), el('th', {}, 'Properties'), el('th', {}, 'Edited'))));
-        const body = el('tbody');
-        for (const p of items.slice(0, 50)) { const props = Object.entries(p.properties || {}).filter(([, v]) => v !== null && v !== '' && !(Array.isArray(v) && !v.length)); body.appendChild(el('tr', {}, el('td', {}, el('a', { href: p.url || '#', target: '_blank', rel: 'noopener' }, p.title || 'Untitled')), el('td', {}, el('div', { class: 'row' }, ...props.slice(0, 6).map(([k, v]) => el('span', { class: 'chip' }, `${k} `, el('b', {}, typeof v === 'object' ? JSON.stringify(v).slice(0, 40) : String(v).slice(0, 40)))))), el('td', { class: 'small faint' }, fmtTime(p.last_edited_time)))); }
-        table.appendChild(body); return el('div', { class: 'stack-sm' }, el('p', { class: 'small faint' }, `${r.count ?? items.length} pages read through the data source query endpoint with pagination.`), table);
+        return el('div', { class: 'stack-sm' }, ...items.map(p =>
+          el('details', { class: 'disclosure' },
+            el('summary', {}, p.title || 'Untitled row'),
+            p.url ? el('a', { href: p.url, target: '_blank', rel: 'noopener' }, 'Open in Notion') : null,
+            jsonBox(p))));
       });
     }
     refreshStatus(false);
@@ -917,7 +981,7 @@
   // FILES & AGENT
   // =====================================================================
   route('files', async ({ view, inspector, setTitle, setInspectorTitle }) => {
-    setTitle('Files & Agent'); setInspectorTitle('Grant model'); $('#viewCrumb').textContent = 'Scoped tools with receipts';
+    setTitle('Files & access'); setInspectorTitle('File access details'); $('#viewCrumb').textContent = 'Sandbox files and shared folders';
     inspector.append(el('p', { class: 'small muted' }, 'PODA Sandbox has its own file access. External files and folders use grants. A file grant covers that file alone. Edit mode also creates and edits files with hash-validated patches and backups. Temporary grants expire automatically. Execution is a separate flag.'),
       el('p', { class: 'small faint' }, 'Revoking a grant removes the capability from the ledger immediately. Every write produces a receipt; a failed write never produces a success receipt.'));
     const grantsBox = el('div'); const toolsBox = el('div'); const receiptsBox = el('div'); const proposalsBox = el('div');
@@ -936,14 +1000,14 @@
         window.podaDesktop ? el('div', { class: 'row' }, choose('file', 'Choose file…'), choose('directory', 'Choose folder…')) : null,
         el('div', { class: 'help' }, 'Choose an existing file or folder on the computer running PODA. A file grant does not include its parent folder.')),
       el('div', { class: 'grid-3 grant-grid' },
-        el('div', { class: 'field' }, el('label', { class: 'label', for: 'g-mode' }, 'Mode'), el('select', { class: 'input', id: 'g-mode', name: 'mode' }, el('option', { value: 'read' }, 'Read only'), el('option', { value: 'edit' }, 'Persistent edit'), el('option', { value: 'temp' }, 'One-task temporary edit'))),
+        el('div', { class: 'field' }, el('label', { class: 'label', for: 'g-mode' }, 'Mode'), el('select', { class: 'input', id: 'g-mode', name: 'mode' }, el('option', { value: 'read' }, 'Read only'), el('option', { value: 'edit' }, 'Persistent edit'), el('option', { value: 'temp' }, 'Temporary edit'))),
         el('div', { class: 'field' }, el('label', { class: 'label', for: 'g-label' }, 'Label'), el('input', { class: 'input', id: 'g-label', name: 'label', placeholder: 'optional' })),
-        el('div', { class: 'field' }, el('label', { class: 'label', for: 'g-ttl' }, 'Temp TTL (minutes)'), el('input', { class: 'input', id: 'g-ttl', name: 'ttl_minutes', type: 'number', min: 5, value: 60 }))),
+        el('div', { class: 'field' }, el('label', { class: 'label', for: 'g-ttl' }, 'Expires after (minutes)'), el('input', { class: 'input', id: 'g-ttl', name: 'ttl_minutes', type: 'number', min: 5, value: 60 }))),
       el('label', { class: 'check' }, el('input', { type: 'checkbox', name: 'allow_execute' }), 'Allow running Python inside this folder (edit or temp mode only)'),
       el('div', { class: 'row' }, el('button', { class: 'btn btn-primary', type: 'submit' }, 'Grant access')));
     form.addEventListener('submit', async (e) => {
       e.preventDefault(); const fd = new FormData(form);
-      try { await api('/agent/grants', { method: 'POST', body: { root_path: fd.get('root_path'), mode: fd.get('mode'), label: fd.get('label') || null, allow_execute: fd.get('allow_execute') === 'on', ttl_minutes: +fd.get('ttl_minutes') || null } }); form.reset(); toast('Access granted. Ledger updated.', 'ok'); refresh(); }
+      try { await api('/agent/grants', { method: 'POST', body: { root_path: fd.get('root_path'), mode: fd.get('mode'), label: fd.get('label') || null, allow_execute: fd.get('allow_execute') === 'on', ttl_minutes: +fd.get('ttl_minutes') || null } }); form.reset(); syncGrantMode(); toast('Access granted.', 'ok'); refresh(); }
       catch (err) { toast(errorDetail(err).message, 'danger'); }
     });
     const sandboxBox = el('div');
@@ -981,8 +1045,8 @@
         el('div', { class: 'row' }, upload, uploadButton), sandboxBox),
       el('div', { class: 'grid-main-side' }, section('File and path grants', 'scoped access to your files', grantsBox), section('Grant access', null, form)),
       el('div', { class: 'grid-2' }, section('Tool registry', 'what the agent can call', toolsBox), section('Pending proposals', 'awaiting your approval', proposalsBox)),
-      section('Action receipts', 'the only evidence of a completed side effect', receiptsBox),
-      softwarePanel()));
+      section('Action history', null, receiptsBox),
+      el('a', { class: 'btn text-link', href: '#/addons' }, 'Find program tools and skills in Add-ons')));
 
     async function refresh() {
       await Promise.all([
@@ -1029,6 +1093,18 @@
   });
 
 
+  route('addons', ({ view, inspector, setTitle, setInspectorTitle }) => {
+    setTitle('Add-ons'); setInspectorTitle('Add-on details');
+    $('#viewCrumb').textContent = 'Program tools and skill instructions';
+    const skills = el('div', { id: 'saved-skills', class: 'stack' });
+    const refreshSkills = window.PODAPace.mountSkills(skills);
+    view.append(el('div', { class: 'screen stack' },
+      el('header', { class: 'page-intro' }, el('h2', {}, 'Add tools and skills'),
+        el('p', {}, 'Install a program tool to let PODA use an app, or save a skill to guide how it works.')),
+      softwarePanel(refreshSkills), skills));
+    inspector.append(el('p', { class: 'muted' }, 'Program tools run under your computer account. Each tool has a separate enable switch, and changes still require your approval.'));
+  });
+
   // ---------- Software skills (CLI-Anything) ----------
   function splitArgs(text) {
     const out = []; let cur = ''; let q = null;
@@ -1041,13 +1117,46 @@
     if (cur) out.push(cur);
     return out;
   }
-  function softwarePanel() {
+  function softwarePanel(refreshSkills) {
     const catalogBox = el('div'); const detailBox = el('div'); const receiptsBox = el('div'); const sourcesBox = el('div');
+    const settings = el('div', { class: 'stack-sm' });
     const wrap = el('div', { class: 'stack' },
-      el('div', { class: 'grid-main-side' }, section('Software skills (CLI-Anything)', 'drive other programs through agent harnesses, with grants and receipts', catalogBox),
-        el('div', { class: 'stack' }, section('Selected harness', null, detailBox), section('Catalog sources', 'local checkouts of the CLI-Anything repo', sourcesBox))),
-      section('Software receipts', 'installs and runs', receiptsBox));
+      section('Program add-ons', null, settings),
+      el('div', { class: 'addon-grid' }, section('Catalog', null, catalogBox), section('Add-on details', null, detailBox)),
+      el('details', { class: 'card disclosure dev-only' }, el('summary', {}, 'Catalog sources and activity'),
+        el('div', { class: 'disclosure-body stack' }, sourcesBox, receiptsBox)));
     let selected = null;
+    let executionAllowed = false;
+    let filterText = '';
+    function drawSettings() {
+      const toggle = el('button', { class: 'btn', type: 'button', 'aria-pressed': String(executionAllowed) },
+        executionAllowed ? 'Turn off program add-ons' : 'Allow trusted program add-ons');
+      toggle.onclick = async () => {
+        const enable = !executionAllowed;
+        if (enable && !(await confirmDialog({ title: 'Allow trusted program add-ons?',
+          body: 'Program tools run as your computer user and can access what your account can access. Install and enable only tools you trust. PODA will still ask before running commands that make changes.', confirmLabel: 'Allow add-ons' }))) return;
+        toggle.disabled = true;
+        try {
+          const result = await api('/software/execution', { method: 'PUT', body: { enabled: enable, confirm: enable } });
+          executionAllowed = result.execution_allowed;
+          toast(executionAllowed ? 'Program add-ons allowed.' : 'Program add-ons turned off.', 'ok');
+          await refreshCatalog();
+          if (selected) await showDetail(selected);
+        } catch (err) { toast(errorDetail(err).message, 'danger'); }
+        finally { toggle.disabled = false; }
+      };
+      settings.replaceChildren(el('div', { class: 'row-between' },
+        el('p', { class: 'muted' }, executionAllowed ? 'You can install and enable individual program tools.' : 'Turn this on to install and use program tools. Skill instructions are always available.'), toggle));
+    }
+    async function downloadCatalog(button) {
+      button.disabled = true; button.textContent = 'Downloading catalog…';
+      try {
+        await api('/software/catalog/download', { method: 'POST', body: { confirm: true } });
+        toast('Add-on catalog downloaded.', 'ok');
+        await refreshCatalog();
+      } catch (err) { toast(errorDetail(err).message, 'danger'); }
+      finally { button.disabled = false; button.textContent = 'Get add-on catalog'; }
+    }
     const outcomePill = (o) => pill(o, o === 'succeeded' ? 'ok' : o === 'blocked' ? 'warn' : o === 'running' ? 'accent' : 'danger');
     async function runForm(name, h) {
       const input = el('input', { class: 'input mono', placeholder: '--help   or   info   or   project export --out out.svg' });
@@ -1072,17 +1181,42 @@
       selected = name; detailBox.innerHTML = ''; detailBox.appendChild(skeleton(4));
       try {
         const h = await api(`/software/${encodeURIComponent(name)}`);
+        if (selected !== name) return;
         detailBox.innerHTML = '';
         const toggles = el('div', { class: 'row' },
-          el('label', { class: 'check' }, el('input', { type: 'checkbox', checked: !!h.enabled, onchange: (e) => setGrant(name, e.target.checked, h.allow_mutating) }), 'Enabled'),
-          el('label', { class: 'check' }, el('input', { type: 'checkbox', checked: !!h.allow_mutating, onchange: (e) => setGrant(name, h.enabled || e.target.checked, e.target.checked) }), 'Allow mutating commands'));
+          el('label', { class: 'check' }, el('input', { type: 'checkbox', checked: !!h.enabled, disabled: !executionAllowed, onchange: (e) => setGrant(name, e.target.checked, h.allow_mutating) }), 'Use with PODA'),
+          el('label', { class: 'check' }, el('input', { type: 'checkbox', checked: !!h.allow_mutating, disabled: !executionAllowed, onchange: (e) => setGrant(name, h.enabled || e.target.checked, e.target.checked) }), 'Allow commands that make changes'));
         const actions = el('div', { class: 'row' });
-        if (!h.installed) actions.append(el('button', { class: 'btn btn-sm btn-primary', onclick: () => installHarness(h) }, h.local_harness ? 'Install (local checkout)' : 'Install (downloads)'));
-        else actions.append(el('button', { class: 'btn btn-sm btn-danger', onclick: () => uninstallHarness(h) }, 'Uninstall'));
+        if (!h.installed && h.install_cmd && ['pip', null].includes(h.package_manager || null)) {
+          actions.append(el('button', { class: 'btn btn-sm btn-primary', type: 'button',
+            onclick: (event) => installHarness(h, event.currentTarget) }, 'Install program tool'));
+        } else if (h.installed) {
+          actions.append(el('button', { class: 'btn btn-sm', type: 'button', onclick: () => uninstallHarness(h) }, 'Uninstall'));
+        } else {
+          actions.append(el('p', { class: 'small muted' }, 'Install this program tool from its publisher.'));
+        }
+        if (h.remote_skill || h.skill_path) {
+          const save = el('button', { class: 'btn btn-sm', type: 'button' }, 'Save skill instructions');
+          save.onclick = async () => {
+            save.disabled = true;
+            try {
+              await api('/software/' + encodeURIComponent(name) + '/save-skill', { method: 'POST', body: { confirm: true } });
+              toast('Skill saved. Turn it on under Saved skill instructions.', 'ok');
+              refreshSkills();
+              document.getElementById('saved-skills').scrollIntoView({ block: 'start' });
+            } catch (err) { toast(errorDetail(err).message, 'danger'); }
+            finally { save.disabled = false; }
+          };
+          actions.append(save);
+        }
         const skill = el('details', { class: 'skill-drawer' }, el('summary', {}, 'View skill (SKILL.md)'), el('pre', { class: 'json skill-md' }, h.skill_md || '(no SKILL.md available)'));
-        detailBox.append(el('div', { class: 'row' }, el('strong', {}, h.display_name || h.name), pill(h.installed ? 'installed' : 'not installed', h.installed ? 'ok' : 'warn'), ...(h.enabled ? [pill('enabled', 'accent')] : []), el('span', { class: 'chip' }, h.category || 'other')),
+        detailBox.append(el('div', { class: 'stack-sm' }, el('div', { class: 'row' }, el('strong', {}, h.display_name || h.name), pill(h.installed ? 'installed' : 'not installed', h.installed ? 'ok' : 'warn'), ...(h.enabled ? [pill('enabled', 'accent')] : []), el('span', { class: 'chip' }, h.category || 'other')),
           el('p', { class: 'small muted' }, h.description || ''), ...(h.requires ? [el('p', { class: 'small faint' }, 'Requires: ' + h.requires)] : []),
-          el('div', { class: 'small faint mono' }, h.executable || h.entry_point), toggles, actions, skill, h.installed ? await runForm(name, h) : el('p', { class: 'small faint' }, 'Install the harness to run it.'));
+          el('div', { class: 'small faint mono dev-only' }, h.executable || h.entry_point), actions,
+          h.installed ? toggles : null,
+          h.skill_md ? skill : null,
+          h.installed && h.enabled && executionAllowed ? el('details', { class: 'disclosure dev-only' },
+            el('summary', {}, 'Run a command'), await runForm(name, h)) : null));
       } catch (err) { detailBox.innerHTML = ''; detailBox.appendChild(errorNode(err)); }
     }
     async function setGrant(name, enabled, allowMutating) {
@@ -1090,34 +1224,53 @@
       catch (err) { toast(errorDetail(err).message, 'danger'); }
       refreshCatalog(); showDetail(name);
     }
-    async function installHarness(h) {
-      const remote = !h.local_harness;
-      const ok = await confirmDialog({ title: `Install ${h.display_name || h.name}?`, body: remote ? 'No local checkout exists: this downloads from GitHub/PyPI into PODA\'s separate software venv (logged in the egress audit).' : `Installs ${h.local_harness} into PODA's separate software venv (data/software-venv). Dependencies may be fetched from PyPI if not cached.`, confirmLabel: 'Install' });
-      if (!ok) return;
-      detailBox.appendChild(el('p', { class: 'small muted' }, 'Installing… (bounded output will appear here)'));
+    async function installHarness(h, button) {
+      if (!executionAllowed) {
+        toast('Allow trusted program add-ons above to install this tool.', 'warn');
+        settings.scrollIntoView({ block: 'center' });
+        return;
+      }
+      if (!(await confirmDialog({ title: 'Install ' + (h.display_name || h.name) + '?',
+        body: 'PODA may download this tool and its dependencies from GitHub and PyPI into a separate local environment.',
+        confirmLabel: 'Install' }))) return;
+      button.disabled = true; button.textContent = 'Installing…';
       try {
-        const r = await api(`/software/${encodeURIComponent(h.name)}/install`, { method: 'POST', body: { confirm: true, allow_network: remote } });
-        toast(r.ok ? `Installed ${h.name}` : `Install failed for ${h.name}`, r.ok ? 'ok' : 'danger');
-        detailBox.append(el('pre', { class: 'json' }, (r.output || '').slice(-4000)));
-      } catch (err) { toast(errorDetail(err).message, 'danger'); detailBox.appendChild(errorNode(err)); return; }
-      refreshCatalog(); showDetail(h.name); refreshReceipts();
+        const path = '/software/' + encodeURIComponent(h.name);
+        const result = await api(path + '/install', { method: 'POST', body: { confirm: true, allow_network: true } });
+        if (!result.ok) {
+          detailBox.append(el('div', { class: 'notice notice-danger', role: 'alert' }, 'Installation failed. Check the program requirements and try again.',
+            el('details', { class: 'dev-only' }, el('summary', {}, 'Install log'), el('pre', { class: 'json' }, (result.output || '').slice(-4000)))));
+          return;
+        }
+        toast('Installed ' + (h.display_name || h.name) + '. Switch on Use with PODA to enable it.', 'ok');
+        await refreshCatalog();
+        await showDetail(h.name);
+        refreshReceipts();
+      } catch (err) { detailBox.append(errorNode(err)); }
+      finally { button.disabled = false; button.textContent = 'Install program tool'; }
     }
     async function uninstallHarness(h) {
       if (!(await confirmDialog({ title: `Uninstall ${h.name}?`, body: 'Removes it from PODA\'s software venv.', confirmLabel: 'Uninstall', danger: true }))) return;
-      try { await api(`/software/${encodeURIComponent(h.name)}/uninstall`, { method: 'POST', body: { confirm: true } }); toast(`Uninstalled ${h.name}`, 'ok'); } catch (err) { toast(errorDetail(err).message, 'danger'); }
+      try { const r = await api(`/software/${encodeURIComponent(h.name)}/uninstall`, { method: 'POST', body: { confirm: true } }); if (r.ok) toast(`Uninstalled ${h.name}`, 'ok'); else toast('Uninstall did not finish.', 'danger'); } catch (err) { toast(errorDetail(err).message, 'danger'); }
       refreshCatalog(); showDetail(h.name); refreshReceipts();
     }
     async function refreshCatalog() {
       await load(catalogBox, async () => {
         const r = await api('/software');
         const all = Object.values(r.groups || {}).flat();
-        const head = el('div', { class: 'row' }, pill(`${r.count} in catalog`, 'accent'), pill(`${r.installed.length} installed`, r.installed.length ? 'ok' : 'warn'), pill(`${r.usable.length} usable`, r.usable.length ? 'ok' : 'warn'),
-          el('span', { class: 'small faint' }, r.capability?.detail || ''));
-        if (!all.length) return el('div', { class: 'stack-sm' }, head, emptyState('No harnesses found', 'Point the catalog at a CLI-Anything checkout below.'));
-        const filter = el('input', { class: 'input', placeholder: 'Filter by name, category, description…' });
+        executionAllowed = !!r.execution_allowed;
+        drawSettings();
+        const catalog = el('button', { class: 'btn btn-sm', type: 'button', onclick: (e) => downloadCatalog(e.currentTarget) }, 'Get add-on catalog');
+        const head = el('div', { class: 'row-between' },
+          el('span', { class: 'muted small' }, all.length ? all.length + ' available · ' + r.installed.length + ' installed' : 'Browse tools from CLI-Anything'),
+          catalog);
+        if (!all.length) return el('div', { class: 'stack-sm' }, head,
+          emptyState('No add-ons downloaded', 'Get the catalog to see which program tools and skills are available.'));
+        const filter = el('input', { class: 'input', value: filterText, placeholder: 'Search add-ons', 'aria-label': 'Search add-ons' });
         const list = el('div', { class: 'sw-list' });
         const render = () => {
-          const q = filter.value.trim().toLowerCase();
+          filterText = filter.value;
+          const q = filterText.trim().toLowerCase();
           list.innerHTML = '';
           all.filter((h) => !q || [h.name, h.display_name, h.category, h.description].join(' ').toLowerCase().includes(q)).slice(0, 120).forEach((h) => {
             list.appendChild(el('button', { class: 'sw-row' + (selected === h.name ? ' active' : ''), onclick: () => { showDetail(h.name); render(); } },
@@ -1148,7 +1301,7 @@
       });
     }
     refreshCatalog(); refreshReceipts(); refreshSources();
-    detailBox.appendChild(emptyState('Select a harness', 'Pick a program from the catalog to install, enable, read its skill, or run a command.'));
+    detailBox.appendChild(emptyState('Choose an add-on', 'Select a program to see what it does and how to use it.'));
     return wrap;
   }
 
@@ -1207,7 +1360,7 @@
       const before = el('input', { class: 'input', type: 'date', 'aria-label': 'Delete messages before' });
       retentionBox.append(el('div', { class: 'field' }, el('label', { class: 'label' }, 'Delete chat messages and their linked memories created before'), before, el('div', { class: 'help' }, 'Removes the source messages and the visible memory nodes that mirror them. Durable memories you committed by hand are kept.')),
         el('div', { class: 'row' },
-          el('button', { class: 'btn btn-danger', onclick: async () => { if (!before.value) return; if (!(await confirmDialog({ title: `Delete messages before ${before.value}?`, body: 'This cannot be undone except from a backup.', confirmLabel: 'Delete', danger: true }))) return; try { const r = await api('/privacy/retention', { method: 'POST', body: { delete_messages_before: before.value } }); toast(`Removed ${r.removed?.messages_and_linked_memories ?? 0} messages`, 'ok'); refresh(); } catch (err) { toast(errorDetail(err).message, 'danger'); } } }, 'Delete old messages'),
+          el('button', { class: 'btn btn-danger', onclick: async () => { if (!before.value) return toast('Choose a date first.', 'warn'); if (!(await confirmDialog({ title: `Delete messages before ${before.value}?`, body: 'This cannot be undone except from a backup.', confirmLabel: 'Delete', danger: true }))) return; try { const r = await api('/privacy/retention', { method: 'POST', body: { delete_messages_before: before.value } }); toast(`Removed ${r.removed?.messages_and_linked_memories ?? 0} messages`, 'ok'); refresh(); } catch (err) { toast(errorDetail(err).message, 'danger'); } } }, 'Delete old messages'),
           el('button', { class: 'btn', onclick: async () => { try { await api('/privacy/retention', { method: 'POST', body: { delete_egress_log: true } }); toast('Egress log cleared', 'ok'); refresh(); } catch (err) { toast(errorDetail(err).message, 'danger'); } } }, 'Clear network log')));
     }
     refresh();
@@ -1217,10 +1370,10 @@
   // SYSTEM
   // =====================================================================
   route('system', async ({ view, inspector, setTitle, setInspectorTitle }) => {
-    setTitle('System'); setInspectorTitle('Build'); $('#viewCrumb').textContent = 'Hardware, models, ledger';
+    setTitle('System'); setInspectorTitle('System details'); $('#viewCrumb').textContent = 'Models and this computer';
     const hwBox = el('div'); const modelsBox = el('div'); const benchBox = el('div'); const ledgerBox = el('div'); const managerBox = el('div');
-    view.appendChild(el('div', { class: 'screen stack' }, section('This Mac', 'probed at request time', hwBox), section('Model installer and profile selection', 'local Ollama', managerBox), section('Model profiles', 'selected only from installed models', modelsBox), section('Benchmarks', 'measured on this hardware', benchBox), section('Capability ledger', 'live and persisted', ledgerBox)));
-    try { const b = await api('/system/build'); const st = await api('/system/startup').catch(() => null); inspector.append(kv([['Version', b.version], ['Build ID', el('span', { class: 'mono' }, b.build_id)], ['Memory viewer', b.memory_viewer], ['Database', el('span', { class: 'mono small' }, b.db_path)], ['Port', b.port]]), st ? el('details', { class: 'thought-panel' }, el('summary', {}, 'Startup report'), el('pre', {}, JSON.stringify(st, null, 2))) : null); } catch (err) { inspector.appendChild(errorNode(err)); }
+    view.appendChild(el('div', { class: 'screen stack' }, section('This computer', null, hwBox), section('Model installer and profile selection', 'local Ollama', managerBox), section('Model profiles', 'selected only from installed models', modelsBox), section('Benchmarks', 'measured on this hardware', benchBox), section('Capability ledger', 'live and persisted', ledgerBox)));
+    try { const b = await api('/system/build'); const st = await api('/system/startup').catch(() => null); inspector.append(kv([['Version', b.version], ['Build ID', el('span', { class: 'mono' }, b.build_id)], ['Memory viewer', b.memory_viewer], ['Database', el('span', { class: 'mono small' }, b.db_path)], ['Port', b.port]]), st ? el('details', { class: 'thought-panel dev-only' }, el('summary', {}, 'Startup report'), el('pre', {}, JSON.stringify(st, null, 2))) : null); } catch (err) { inspector.appendChild(errorNode(err)); }
     load(hwBox, async () => {
       const h = await api('/system/hardware');
       return el('div', { class: 'stack-sm' }, el('div', { class: 'stats' }, ...[[h.chip || 'unknown', 'chip'], [`${h.unified_memory_gb ?? h.ram_total_gb} GB`, h.unified_memory_gb == null ? 'physical RAM' : 'unified memory'], [h.gpu_memory_dedicated_gb==null ? 'shared / unavailable' : h.gpu_memory_dedicated_gb+' GB','dedicated VRAM'], [`${h.disk_free_gb} GB`, 'disk free'], [h.gpu || h.metal || 'unavailable', 'graphics'], [h.ollama?.version || (h.ollama?.reachable ? 'reachable' : 'unreachable'), 'ollama']].map(([v, k]) => el('div', { class: 'stat' }, el('span', { class: 'v' }, v), el('span', { class: 'k' }, k)))),
@@ -1235,7 +1388,7 @@
         return el('div', { class: 'stack' }, el('div', { class: 'row' },
           el('span', { class: 'chip' }, 'installed ', el('b', {}, (m.installed || []).join(', ') || 'none')),
           el('span', { class: 'chip' }, 'embedding ', el('b', {}, m.embedding+' '+(m.embedding_installed?'':'(missing)'))),
-          el('span', { class: 'small muted' }, 'Compare all local model families and their quantizations above.')),profiles);
+          el('span', { class: 'small muted' }, 'Compare all local model families and their quantizations above.')), el('div', { class: 'table-scroll', tabindex: 0 }, profiles));
       });
     }
     async function drawBench() {

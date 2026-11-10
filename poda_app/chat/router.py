@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
-from ..runtime import config, ollama, models, capability
+from ..runtime import config, ollama, models, capability, skill_library
 from ..scheduling import evidence as scheduling
 from ..runtime.db import connect, one, rows
 from ..memory import store, retrieval, summaries
@@ -512,6 +512,10 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                                  "; ".join(s["summary"] for s in planned["steps"]) + ". Briefly tell the user what will happen once approved. Do NOT claim any of it is done.\n")
         system = build_system_prompt(should_recall_memory(task_message, req.use_memory), task_message, snapshot, recalled, notion_block,
                                      receipts_block=receipts_block + tool_results_block + proposal_note, tools_block=tools_block(snapshot), session_id=None if ephemeral else session_id, exclude_message_id=user_message_id)
+        skill_notes = await asyncio.to_thread(skill_library.hint_for_task, task_message,
+                                              categories=orchestrator.workflow_categories(task_message))
+        if skill_notes:
+            system += "\n" + skill_notes
         system += daily_context
         if schedule_report:
             system += (preflight_mail + "\nFor the requested email review, daily calendar and project overview, use the verified data. "

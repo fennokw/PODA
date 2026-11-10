@@ -71,16 +71,17 @@
   function errorNode(err) {
     const d = errorDetail(err);
     return el('div', { class: 'notice notice-danger', role: 'alert' },
-      d.code ? el('div', { class: 'mono small faint' }, d.code) : null,
+      d.code ? el('div', { class: 'mono small faint dev-only' }, d.code) : null,
       el('div', {}, d.message),
-      d.remedy ? el('div', { class: 'small muted', style: { marginTop: '4px' } }, d.remedy) : null);
+      d.remedy ? el('div', { class: 'small muted' }, d.remedy) : null,
+      d.extra ? el('details', { class: 'dev-only' }, el('summary', {}, 'Raw error'), el('pre', { class: 'json' }, JSON.stringify(d.extra, null, 2))) : null);
   }
 
   // ---------- Toasts / dialogs ----------
   function toast(message, kind = '', ttl = 4200) {
     const host = $('#toasts') || document.body.appendChild(el('div', { id: 'toasts', class: 'toasts', 'aria-live': 'polite' }));
     const t = el('div', { class: `toast ${kind ? 'toast-' + kind : ''}`, role: 'status' }, message);
-    host.appendChild(t);
+    host.replaceChildren(t);
     setTimeout(() => { t.style.opacity = '0'; t.style.transition = 'opacity 200ms'; setTimeout(() => t.remove(), 220); }, ttl);
     return t;
   }
@@ -136,20 +137,30 @@
   // ---------- Router ----------
   const routes = new Map();
   let current = null;
+  let renderVersion = 0;
   function route(name, render) { routes.set(name, render); }
   function currentRoute() { return (location.hash.replace(/^#\/?/, '') || 'ask').split('?')[0]; }
   async function renderRoute() {
+    const version = ++renderVersion;
     const name = currentRoute();
     const fn = routes.get(name) || routes.get('ask');
     const view = $('#view');
     $$('.nav-item').forEach((b) => b.setAttribute('aria-current', b.dataset.route === name ? 'page' : 'false'));
     if (current?.teardown) { try { current.teardown(); } catch { /* ignore */ } }
-    view.innerHTML = '';
+    current = null;
+    view.replaceChildren();
+    view.scrollTop = 0;
+    document.dispatchEvent(new Event('poda:navigation'));
     const inspector = $('#inspectorBody'); inspector.innerHTML = '';
     $('#inspectorTitle').textContent = 'Inspector';
     const ctx = { view, inspector, setTitle: (t) => { $('#viewTitle').textContent = t; }, setInspectorTitle: (t) => { $('#inspectorTitle').textContent = t; } };
-    current = (await fn(ctx)) || {};
-    view.scrollTop = 0;
+    try {
+      const rendered = (await fn(ctx)) || {};
+      if (version === renderVersion) current = rendered;
+      else rendered.teardown?.();
+    } catch (err) {
+      if (version === renderVersion) view.append(errorNode(err));
+    }
   }
   function navigate(name) { location.hash = `#/${name}`; }
 

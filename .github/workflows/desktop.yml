@@ -47,6 +47,12 @@ jobs:
             exit 1
           }
           ditto -c -k --sequesterRsrc --keepParent "$bundle" ../dist/PODA-macOS-arm64.zip
+      - name: Verify managed Hindsight memory on macOS
+        env:
+          PODA_TEST_NATIVE_HINDSIGHT: '1'
+        run: |
+          runtime="$(find "$RUNNER_TEMP/poda-mac-smoke/desktop-runtime" -name .ready -print -quit)"
+          "${runtime%/.ready}/bin/python" -m pytest -q tests/test_managed_addons.py -k native_hindsight
       - uses: actions/upload-artifact@v6
         with:
           name: PODA-macOS-arm64
