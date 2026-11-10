@@ -44,6 +44,7 @@ SCHEMA = {
     "Due Date / Event Date": {"id": "d1", "type": "date", "date": {}},
     "Status": {"id": "s1", "type": "status", "status": {"options": [{"name": "Not started"}, {"name": "Done"}], "groups": []}},
     "Type": {"id": "t1", "type": "select", "select": {"options": [{"name": "Assignment"}, {"name": "Event"}]}},
+    "Commitment": {"id": "commit", "type": "select", "select": {"options": [{"name": "Maybe"}]}},
     "Project Domain": {"id": "r1", "type": "relation", "relation": {"data_source_id": REL_OK}},
     "Class": {"id": "r2", "type": "relation", "relation": {"data_source_id": REL_BAD}},
     "Canvas Assignment ID": {"id": "c1", "type": "rich_text", "rich_text": {}},
@@ -106,6 +107,9 @@ class FakeNotion:
         page = make_page(pid, title, date.get("start"), date.get("end"))
         if date:
             page["properties"]["Due Date / Event Date"]["date"]["time_zone"] = date.get("time_zone")
+        for name in ("Commitment", "Type"):
+            if prop := payload["properties"].get(name):
+                page["properties"][name] = {"type": "select", **prop}
         self.pages[pid] = page
         self.created.append(pid)
         return FakeResponse(200, page)
@@ -523,5 +527,11 @@ def test_chat_calendar_create_works_with_insert_only_and_checks_readback(fake):
     assert not availability["notion_calendar_update"]["available"]
     start = (datetime.now(timezone.utc) + timedelta(days=1)).replace(microsecond=0)
     end = start + timedelta(hours=1)
-    result = automation.create_calendar_event("Office hours", start.isoformat(), end.isoformat())
+    result = automation.create_calendar_event("Office hours", start.isoformat(), end.isoformat(), commitment="Maybe")
     assert result["ok"] and result["result"]["verified"]
+    assert result["result"]["commitment"] == "Maybe"
+    assert result["result"]["type"] == "Event"
+    page_id = result["result"]["page_id"]
+    assert fake.pages[page_id]["properties"]["Commitment"]["select"]["name"] == "Maybe"
+    assert automation.create_calendar_event("Office hours", start.isoformat(), commitment="Maybe")["result"]["duplicate"]
+    assert not automation.create_calendar_event("Invalid category", start.isoformat(), commitment="Invalid")["ok"]

@@ -5,7 +5,7 @@ from datetime import timezone
 import json
 import sys
 
-from .models import MailError, address_hash, mask_address, split_sender
+from .models import MailError, address_hash, mask_address, original_sent_timestamp, split_sender
 
 REMEDY = "Open classic Outlook for Windows and sign in to a mail profile."
 MAIL_ITEM = 43
@@ -75,11 +75,15 @@ def _sender(item):
     return f"{item.SenderName or ''} <{address}>" if address else ""
 
 
-def _row(item):
+def _row(item, *, include_sent=False):
     date = _optional(lambda: item.ReceivedTime, None)
+    sent = _optional(lambda: item.SentOn, None) if include_sent else None
+    headers = _optional(lambda: item.PropertyAccessor.GetProperty(MAPI + "0x007D001F"), "") if include_sent else ""
+    sent_at, known = original_sent_timestamp(headers, sent.astimezone(timezone.utc).isoformat() if sent else None)
     return {
         "native_id": item.EntryID, "subject": str(item.Subject or ""), "sender": _sender(item),
         "date": date.astimezone(timezone.utc).isoformat() if date else None,
+        "sent_at": sent_at, "sender_timezone_known": known,
         "read": not item.UnRead, "flagged": item.FlagStatus == 2,
         "message_id": _optional(lambda: item.PropertyAccessor.GetProperty(MAPI + "0x1035001F"), None),
     }
@@ -196,7 +200,7 @@ def dispatch(namespace, operation, args):
         recipients = [(r.Type, _optional(lambda: _smtp(r.AddressEntry))) for r in _items(item.Recipients)]
         attachments = [{"name": item.Attachments.Item(i).FileName, "size": item.Attachments.Item(i).Size}
                        for i in range(1, min(item.Attachments.Count, 30) + 1)]
-        return {**_row(item), "body": str(item.Body or "")[:args["max_chars"]], "reply_to": reply,
+        return {**_row(item, include_sent=True), "body": str(item.Body or "")[:args["max_chars"]], "reply_to": reply,
                 "to": [addr for kind, addr in recipients if kind == 1],
                 "cc": [addr for kind, addr in recipients if kind == 2], "attachments": attachments}
     if operation == "set_flags":

@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 from typing import Any
 
 from . import mapping
 from .client import NotionClient, NotionError
 from .service import normalize_page, query_pages
 
+_create_lock = Lock()
 
-def create_calendar_event(title: str, start: str, end: str = "", notes: str = "") -> dict[str, Any]:
+
+def create_calendar_event(title: str, start: str, end: str = "", notes: str = "", commitment: str = "") -> dict[str, Any]:
     try:
         cfg = mapping.require_write("insert")
         client = NotionClient()
@@ -21,26 +24,46 @@ def create_calendar_event(title: str, start: str, end: str = "", notes: str = ""
             raise ValueError("Use a future, timezone-aware start within 90 days")
         if end:
             ending = datetime.fromisoformat(end.replace("Z", "+00:00"))
-            if ending.tzinfo is None or ending <= dt or ending - dt > timedelta(hours=12):
+            if ending.tzinfo is None or not timedelta(0) < ending - dt <= timedelta(hours=12):
                 raise ValueError("Event end must follow start by at most 12 hours")
         event = {"title":title.strip(), "start":start, "end":end or None, "notes":notes}
-        props = mapping.build_properties(active["mapping"], schema, event)
-        # Always check destination immediately before the write.
-        # Limit duplicate detection to the relevant calendar DAY; scanning
-        # hundreds of unrelated pages for every creation can saturate Notion
-        # and make the UI appear frozen when many meetings are inserted.
-        existing = query_pages(limit=1000, filter_obj={
-            "property":active["mapping"]["date"],
-            "date":{"equals":dt.date().isoformat()}
-        }, client=client, data_source_id=cfg["data_source_id"])
-        duplicates = mapping.find_duplicates(event, active["mapping"], existing)
-        if duplicates:
-            return {"ok": True, "result":{"created":False,"duplicate":True,"matches":duplicates[:3]},
-                    "verification":"duplicate found; no write"}
-        payload = {"parent":{"type":"data_source_id","data_source_id":cfg["data_source_id"]},"properties":props}
-        created = client.create_page(payload)
         names = active["mapping"]
+        type_field = schema.get(names.get("type"), {})
+        type_kind = type_field.get("type")
+        event_type = next((option["name"] for option in (type_field.get(type_kind) or {}).get("options", [])
+                           if option.get("name", "").casefold() == "event"), None)
+        if commitment and event_type:
+            event["type"] = event_type
+        props = mapping.build_properties(names, schema, event)
+        if commitment:
+            field = schema.get("Commitment", {})
+            options = (field.get("select") or {}).get("options", [])
+            choice = next((option["name"] for option in options
+                           if option.get("name", "").casefold() == commitment.casefold()), None)
+            if field.get("type") != "select" or not choice:
+                raise ValueError(f"The connected Notion calendar has no Commitment option named {commitment}.")
+            props["Commitment"] = {"select": {"name": choice}}
+            event["commitment"] = choice
+        # Always check destination immediately before the write.
+        # Check the event-local and UTC dates under a shared lock so concurrent
+        # automations cannot both insert the same title and start.
+        first_day, last_day = sorted((dt.date(), dt.astimezone(timezone.utc).date()))
+        with _create_lock:
+            existing = query_pages(limit=1000, filter_obj={"and": [
+                {"property": names["date"], "date": {"on_or_after": first_day.isoformat()}},
+                {"property": names["date"], "date": {"on_or_before": last_day.isoformat()}},
+            ]}, client=client, data_source_id=cfg["data_source_id"])
+            duplicates = mapping.find_duplicates(event, names, existing, exact_start=True)
+            if duplicates:
+                return {"ok": True, "result":{"created":False,"duplicate":True,"matches":duplicates[:3]},
+                        "verification":"duplicate found; no write"}
+            payload = {"parent":{"type":"data_source_id","data_source_id":cfg["data_source_id"]},"properties":props}
+            created = client.create_page(payload)
         expected = {name: props[name] for name in (names["title"], names["date"])}
+        if "type" in event:
+            expected[names["type"]] = props[names["type"]]
+        if commitment:
+            expected["Commitment"] = props["Commitment"]
         verification_error = None
         try:
             reread = normalize_page(mapping.page_in_source(client, created["id"], cfg["data_source_id"]))
@@ -48,7 +71,7 @@ def create_calendar_event(title: str, start: str, end: str = "", notes: str = ""
         except NotionError as exc:
             verified = False
             verification_error = exc.message
-        return {"ok":verified,"result":{"created":True,"verified":verified,"page_id":created["id"],"url":created.get("url")},
+        return {"ok":verified,"result":{"created":True,"verified":verified,"page_id":created["id"],"url":created.get("url"),**event},
                 "error":None if verified else verification_error or "Created but re-read did not match",
                 "verification":"re-read-after-write" if verified else "unverified"}
     except (ValueError, NotionError, KeyError) as exc:

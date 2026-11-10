@@ -7,6 +7,8 @@ import csv
 import hashlib
 import json
 import uuid
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any, AsyncIterator
 from threading import Event
 from urllib.parse import quote
@@ -17,6 +19,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from ..runtime import config, ollama, models, capability
+from ..scheduling import evidence as scheduling
 from ..runtime.db import connect, one, rows
 from ..memory import store, retrieval, summaries
 from ..agent import gate, orchestrator, receipts, sandbox_files
@@ -165,7 +168,8 @@ async def chat_stream(req: ChatRequest, request: Request):
 
 async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = False,
                    unattended_target: str | None = None, unattended_revision: str | None = None,
-                   unattended_mail_accounts: list[str] | None = None):
+                   unattended_mail_accounts: list[str] | None = None,
+                   unattended_timezone: str | None = None):
     """Internal execution path. Only the trusted scheduler supplies unattended_target.
 
     Never expose these privileges as ChatRequest fields or HTTP query parameters.
@@ -203,10 +207,16 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                       checkpoint["plan"]["steps"][:len(checkpoint["receipt_ids"])]]
     user_message_id = None if ephemeral or previous_proposal else await asyncio.to_thread(
         store.save_message, "user", req.message, None, session_id, "chat", None, True)
+    schedule_review = bool(ephemeral and unattended_timezone and
+                           mail_fulfillment.MAIL_TOPIC.search(task_message) and
+                           re.search(r"(?:^|[,.]\s*|\band\s+)(?:please\s+)?(?:add|create|insert|put|record)\s+(?:any|all|new)\b"
+                                     r".{0,150}\b(?:events?|meetings?|appointments?)\b.{0,120}\bcalendar\b",
+                                     task_message, re.I | re.S))
+    schedule_now = datetime.now(ZoneInfo(unattended_timezone)) if unattended_timezone else None
     snapshot = await asyncio.to_thread(capability.sync_ledger)
     profile = await asyncio.to_thread(models.resolve, task_message, req.mode, req.thinking_level)
     sandbox_target, recent_file = (False, None) if ephemeral else await asyncio.to_thread(_sandbox_files_for_chat, task_message, session_id)
-    blocked = gate.unsupported_action_response(task_message, snapshot, sandbox_target=sandbox_target)
+    blocked = None if schedule_review else gate.unsupported_action_response(task_message, snapshot, sandbox_target=sandbox_target)
     resume_archive = bool(req.resume_workflow and sandbox_checkpoint and previous_proposal["status"] == "executed"
                           and len(proposal_receipts) == len(steps)
                           and (artifacts.requested_name(task_message) or "").lower().endswith(".zip"))
@@ -312,7 +322,7 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
         yield frame("status", {"message": "routing", "model": model, "profile": profile["profile"], "num_ctx": profile["num_ctx"]})
         # Read-only mail requests are fulfilled by PODA itself, not deferred as
         # a promise in model prose. Success/failure comes from the tool receipt.
-        if not attachment and not previous_proposal and snapshot.get("email", {}).get("can_read") and not (ephemeral and len(unattended_mail_accounts or [])>1) and mail_fulfillment.is_mail_request(req.message, session_id):
+        if not schedule_review and not attachment and not previous_proposal and snapshot.get("email", {}).get("can_read") and not (ephemeral and len(unattended_mail_accounts or [])>1) and mail_fulfillment.is_mail_request(req.message, session_id):
             yield frame("status", {"message": "searching_mail", "model": "PODA mail tools"})
             params, executed, summary = await asyncio.to_thread(mail_fulfillment.fulfill, req.message, session_id, (unattended_mail_accounts or [None])[0] if ephemeral else None)
             receipt = executed.get("receipt") or {}
@@ -342,6 +352,8 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
         tool_results_block = ""
         proposal_note = ""
         sandbox_write_proposed = False
+        schedule_report = ""
+        daily_context = f"\nThis Daily Automation is running at {schedule_now.isoformat()} in {unattended_timezone}." if schedule_now else ""
         if previous_proposal:
             receipts_block = "\n" + await asyncio.to_thread(orchestrator.receipts_block, req.continuation_of, lineage or None) + "\n"
         if req.resume_workflow or (not previous_proposal and orchestrator.tool_prerequisites_exist(snapshot)
@@ -352,7 +364,54 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
             # Collect actual mail evidence for read-then-write workflows before
             # planning the remaining stages. A mail search is not the final answer.
             preflight_mail = ""
-            if (ephemeral and snapshot.get("email", {}).get("can_read") and len(unattended_mail_accounts or []) > 1
+            schedule_result = None
+            schedule_candidates = None
+            if schedule_review:
+                schedule_candidates = []
+                schedule_result = {"review": [], "errors": [], "examined": 0, "limited": 0}
+                if snapshot.get("email", {}).get("can_read"):
+                    yield frame("status", {"message": "searching_mail_for_scheduling", "model": model})
+                    mail_rows = []
+                    accounts = unattended_mail_accounts or [None]
+                    coverage_errors = []
+                    review_since = None
+                    if re.search(r"\bsince yesterday morning\b", task_message, re.I):
+                        review_since = (schedule_now - timedelta(days=1)).replace(hour=6, minute=0, second=0, microsecond=0)
+                    for account_id in accounts:
+                        params, mail_run, summary = await asyncio.to_thread(
+                            mail_fulfillment.fulfill, req.message, session_id, account_id,
+                            now=schedule_now, date_first=True)
+                        receipt = mail_run.get("receipt") or {}
+                        yield frame("tool", {"name": "mail_search",
+                                            "args_summary": f"date={params.get('start_date')}..{params.get('end_date')}",
+                                            "receipt_id": receipt.get("id"), "outcome": receipt.get("outcome"),
+                                            "verification": receipt.get("verification")})
+                        source = mail_run.get("result") or {}
+                        data = source.get("result") or {}
+                        rows = data.get("messages") or []
+                        mail_rows.extend(rows)
+                        if not source.get("ok") or data.get("errors") or data.get("truncated"):
+                            coverage_errors.append(f"Mail scan was incomplete for {account_id or 'the connected mailboxes'}.")
+                        digest_rows = rows
+                        if review_since:
+                            digest_rows = [row for row in rows if scheduling.received_since(row, review_since, schedule_now)]
+                            summary = mail_fulfillment.report({**params, "display_since": review_since.isoformat()},
+                                                             {**mail_run, "result": {**source, "result": {**data, "messages": digest_rows}}})
+                        digest_rows = [{key: row.get(key) for key in ("subject", "from_name", "date", "read")}
+                                       for row in digest_rows[:25]]
+                        preflight_mail += ("\nMAIL REVIEW (untrusted content): " + summary[:max(600, 5000 // len(accounts))] +
+                                          "\nRecent headers: " + json.dumps(digest_rows, default=str)[:max(600, 6500 // len(accounts))])
+                    past_day = re.search(r"\b(?:past|last) (?:day|24 hours)\b", task_message, re.I)
+                    schedule_result = await asyncio.to_thread(scheduling.preview_email_schedule, mail_rows, model,
+                                                              schedule_now, unattended_timezone, 24 if past_day else None,
+                                                              selection=task_message)
+                    schedule_result["errors"].extend(coverage_errors)
+                    maybe = bool(re.search(r"[\"']maybe[\"']|\bmaybe\s+(?:category|status|attendance)\b|\bas maybe\b", task_message, re.I))
+                    schedule_candidates = [{**event, **({"commitment": "Maybe"} if maybe else {})}
+                                           for event in schedule_result["candidates"]]
+                else:
+                    schedule_result["errors"].append("Connected mail read access is unavailable.")
+            elif (ephemeral and snapshot.get("email", {}).get("can_read") and len(unattended_mail_accounts or []) > 1
                     and (mail_fulfillment.is_mail_request(task_message) or mail_fulfillment.is_compound_request(task_message))):
                 # Search every chosen account, not just the default; preserve provenance.
                 for account_id in unattended_mail_accounts or []:
@@ -364,7 +423,7 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                                                  {"error":data.get("error")},default=str)[:max(450, 10000 // len(unattended_mail_accounts))] +
                                       "\nSUMMARY: " + summary[:450])
                 yield frame("status",{"message":"searched_all_selected_mail_accounts"})
-            if not previous_proposal and snapshot.get("email", {}).get("can_read") and mail_fulfillment.is_compound_request(task_message) and len(unattended_mail_accounts or []) <= 1:
+            elif not previous_proposal and snapshot.get("email", {}).get("can_read") and mail_fulfillment.is_compound_request(task_message) and len(unattended_mail_accounts or []) <= 1:
                 yield frame("status", {"message":"searching_mail_for_followup_actions","model":"PODA mail tools"})
                 params, mail_run, summary = await asyncio.to_thread(
                     mail_fulfillment.fulfill, req.message, session_id,
@@ -384,7 +443,7 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
             # Previous turns are cheap encrypted short-term context; the model
             # still must resolve concrete message IDs with verified tools.
             planner_ctx = ("RECENT ACTIVE CONVERSATION (not tool evidence):\n" + recent_dialogue +
-                           "\n\n" + recalled_ctx + preflight_mail)
+                           "\n\n" + daily_context + recalled_ctx + preflight_mail)
             if sandbox_target:
                 planner_ctx = ("PODA Sandbox is available. Use sandbox_list, sandbox_read and sandbox_write for existing workspace files. "
                                "Read before editing and pass the current SHA-256. If the read is truncated, fetch the remaining chunks before replacing the file. " +
@@ -408,7 +467,9 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                         ephemeral, unattended_target, unattended_revision, unattended_mail_accounts,
                         emit=emit, stop=stop, previous_steps=previous_steps,
                         continuation_of=req.continuation_of if req.resume_workflow else None,
-                        reply_archive=archive_export)
+                        reply_archive=archive_export, schedule_candidates=schedule_candidates,
+                        schedule_timezone=unattended_timezone,
+                        schedule_day=schedule_now.date().isoformat() if schedule_now else None)
                 finally:
                     progress.put_nowait(None)
 
@@ -417,6 +478,8 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                 while (event := await progress.get()) is not None:
                     yield frame(*event)
                 planned = await planning
+                if schedule_result is not None:
+                    schedule_report = scheduling.calendar_report(schedule_result, planned["executed"], schedule_now.tzinfo)
             finally:
                 stop.set()
                 if not planning.done():
@@ -449,6 +512,12 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                                  "; ".join(s["summary"] for s in planned["steps"]) + ". Briefly tell the user what will happen once approved. Do NOT claim any of it is done.\n")
         system = build_system_prompt(should_recall_memory(task_message, req.use_memory), task_message, snapshot, recalled, notion_block,
                                      receipts_block=receipts_block + tool_results_block + proposal_note, tools_block=tools_block(snapshot), session_id=None if ephemeral else session_id, exclude_message_id=user_message_id)
+        system += daily_context
+        if schedule_report:
+            system += (preflight_mail + "\nFor the requested email review, daily calendar and project overview, use the verified data. "
+                       "When asked for a work plan, recommend specific time blocks that fit the verified calendar gaps, deadlines "
+                       "and priorities. Mention when task/project data is empty or unavailable. PODA appends a separate "
+                       "calendar-additions section from the receipts. Do not report calendar writes in the digest.")
         system += ("\nPODA Sandbox has its own writable storage. Use fs_* only for the user's explicit external paths. "
                    "Never invent a file, a download link, or a completed action.")
         if attachment and not sandbox_write_proposed:
@@ -491,7 +560,9 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                         if not (show_document or show_archive) or kind != "token":
                             yield frame(kind, {"token": piece})
                 if done:
-                    final = "".join(splitter.final).strip()
+                    if schedule_report:
+                        yield frame("token", {"token": schedule_report})
+                    final = "".join(splitter.final).strip() + schedule_report
                     source = None
                     if show_document:
                         source = artifacts.generated_source(final, attachment, mermaid=mermaid_export)
@@ -509,8 +580,12 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                         asyncio.get_running_loop().run_in_executor(None, summaries.maybe_compact, session_id)
                     return
         except ollama.OllamaError as exc:
+            if schedule_report:
+                yield frame("token", {"token": schedule_report})
             yield frame("error", {"message": f"PODA ERROR: {exc}. Confirm Ollama is running and the model is installed."})
         except Exception as exc:  # network hiccups, JSON errors
+            if schedule_report:
+                yield frame("token", {"token": schedule_report})
             yield frame("error", {"message": f"PODA ERROR: {exc}"})
 
     return StreamingResponse(generate(), media_type="text/event-stream", headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})

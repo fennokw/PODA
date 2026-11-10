@@ -96,7 +96,7 @@ def _row(account: str, mailbox: str, r: dict[str, Any], account_id: str) -> dict
         "account_id": account_id, "mailbox": mailbox,
         "subject": r.get("subject") or "(no subject)",
         "from_name": name or mask_address(addr), "from_address_masked": mask_address(addr),
-        "to_masked": [], "date": r.get("date"), "read": bool(r.get("read")), "flagged": bool(r.get("flagged")),
+        "to_masked": [], "date": r.get("date"), "sent_at": r.get("sent_at"), "sender_timezone_known": r.get("sender_timezone_known", False), "read": bool(r.get("read")), "flagged": bool(r.get("flagged")),
         "snippet": "", "has_attachments": None, "message_id": r.get("message_id"), "native_id": r.get("native_id"),
     }
 

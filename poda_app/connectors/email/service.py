@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from zoneinfo import ZoneInfo
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -319,11 +320,12 @@ def _date_bound(value: str | None, name: str) -> date | None:
         raise MailError("validation", f"{name} must be YYYY-MM-DD", status=400) from exc
 
 
-def _in_range(row: dict[str, Any], start: date | None, end: date | None) -> bool:
+def _in_range(row: dict[str, Any], start: date | None, end: date | None, zone: ZoneInfo | None = None) -> bool:
     if not start and not end:
         return True
     try:
-        received = datetime.fromisoformat(str(row.get("date") or "").replace("Z", "+00:00")).date()
+        stamp = datetime.fromisoformat(str(row.get("date") or "").replace("Z", "+00:00"))
+        received = (stamp.astimezone(zone) if zone and stamp.tzinfo else stamp).date()
     except ValueError:
         return False
     return (start is None or received >= start) and (end is None or received <= end)
@@ -341,13 +343,14 @@ def _score(row: dict[str, Any], terms: list[str], content: str = "") -> int:
 
 def search(query: str = "", account_id: str | None = None, limit: int = 50,
            start_date: str | None = None, end_date: str | None = None,
-           related_terms: list[str] | None = None, include_body: bool = False) -> dict[str, Any]:
+           related_terms: list[str] | None = None, include_body: bool = False, date_timezone: str = "") -> dict[str, Any]:
     """Search date-bounded mail across connected accounts, then rank candidates by relevance.
 
     Keyword variants are OR alternatives, not AND requirements. Date-only requests scan
     recent headers without a keyword filter, allowing 'summarize last week's emails'.
     A bounded header scan is explicit in the response; never claim exhaustive coverage.
     """
+    zone = ZoneInfo(date_timezone) if date_timezone else None
     begin = _date_bound(start_date, "start_date")
     end = _date_bound(end_date, "end_date")
     if begin and end and begin > end:
@@ -383,7 +386,7 @@ def search(query: str = "", account_id: str | None = None, limit: int = 50,
                             chunk = gmail_imap.list_messages(acct["address"], acct["id"], mb, limit=100, query=term)
                         truncated |= bool(chunk.get("truncated"))
                         scanned += len(chunk.get("messages", []))
-                        results.extend(r for r in chunk.get("messages", []) if _in_range(r, begin, end))
+                        results.extend(r for r in chunk.get("messages", []) if _in_range(r, begin, end, zone))
                     except MailError as exc:
                         errors.append(f"{acct['account_name']} / {mb}: {exc.message}")
                 # Always examine recent headers when a date range is specified, or when
@@ -403,11 +406,11 @@ def search(query: str = "", account_id: str | None = None, limit: int = 50,
                             break
                         messages = chunk.get("messages", [])
                         scanned += len(messages)
-                        results.extend(r for r in messages if _in_range(r, begin, end))
+                        results.extend(r for r in messages if _in_range(r, begin, end, zone))
                         offset += len(messages)
                         if not messages or len(messages) < 100 or offset >= int(chunk.get("total") or 0):
                             break
-                        if begin and all((r.get("date") and not _in_range(r, begin, None)) for r in messages):
+                        if begin and all((r.get("date") and not _in_range(r, begin, None, zone)) for r in messages):
                             break
                     else:
                         truncated = True
@@ -424,12 +427,15 @@ def search(query: str = "", account_id: str | None = None, limit: int = 50,
         dedup.append(r)
     dedup.sort(key=lambda r: r.get("date") or "", reverse=True)
     body_count = 0
-    if terms and include_body:
+    if include_body:
         # Fetch only bounded candidates, preserving no-write read permissions.
         for row in dedup[:min(len(dedup), 30)]:
             try:
                 full = read_message(row.get("account_id"), row["id"])
-                row["snippet"] = (full.get("body_text") or "")[:1200]
+                body = full.get("body_text") or ""
+                row.update(snippet=body[:2500 if not terms else 1200], sent_at=full.get("sent_at"),
+                           sender_timezone_known=full.get("sender_timezone_known", False),
+                           body_read=True, body_truncated=len(body) > (2500 if not terms else 1200))
                 body_count += 1
             except MailError:
                 pass
