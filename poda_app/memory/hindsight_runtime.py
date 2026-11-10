@@ -1,12 +1,14 @@
 """Manage PODA's local Hindsight sidecar and its private derived index."""
 from __future__ import annotations
 
+import json
 import os
 import re
 import secrets
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from threading import Event, RLock
@@ -29,6 +31,7 @@ _url: str | None = None
 _token: str | None = None
 _phase = "idle"
 _last_error: str | None = None
+_windows_db_env: dict[str, str] | None = None
 
 
 def _bin(name: str) -> Path:
@@ -114,10 +117,9 @@ def install_and_start() -> None:
 
 
 def _prepare_windows_database() -> None:
-    database = _ROOT / "database"
-    if database.resolve() != database.absolute():
+    if _ROOT.resolve() != _ROOT.absolute():
         raise RuntimeError("The Hindsight database folder must be inside PODA's local data folder.")
-    database.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
     system_tools = Path(os.environ["SystemRoot"]) / "System32"
     try:
         identity = subprocess.check_output(
@@ -131,11 +133,52 @@ def _prepare_windows_database() -> None:
         # administrator-group grant alone does not let it prepare the data.
         grant = f"*{sid[1].decode('ascii')}:(OI)(CI)F"
         subprocess.run(
-            [str(system_tools / "icacls.exe"), str(database), "/grant:r", grant],
+            [str(system_tools / "icacls.exe"), str(_ROOT), "/grant:r", grant],
             check=True, capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         raise RuntimeError("PODA could not prepare permissions for its Hindsight database folder.") from exc
+
+
+def _pg0_binary() -> Path:
+    return _RUNTIME / "Lib" / "site-packages" / "pg0" / "bin" / "pg0.exe"
+
+
+def _available_port() -> int:
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return listener.getsockname()[1]
+
+
+def _start_windows_database(env: dict[str, str], password: str) -> str:
+    global _windows_db_env
+    pg0 = str(_pg0_binary())
+    env = {**_environment(), "PG0_HOME": env["PG0_HOME"], "PG0_INSTALLATION_DIR": env["PG0_INSTALLATION_DIR"]}
+    _windows_db_env = env
+    flags = subprocess.CREATE_NO_WINDOW
+    try:
+        status = subprocess.run([pg0, "info", "--name", "poda", "-o", "json"],
+                                env=env, capture_output=True, timeout=10, creationflags=flags)
+        current = json.loads(status.stdout) if status.returncode == 0 and status.stdout else {}
+        port = current.get("port") if current.get("running") else None
+        if not isinstance(port, int) or not 0 < port <= 65535:
+            port = _available_port()
+            # Avoid pipes here because PostgreSQL can inherit their handles.
+            with tempfile.TemporaryFile() as error:
+                started = subprocess.run(
+                    [pg0, "start", "--name", "poda", "--username", "hindsight", "--password", password,
+                     "--database", "hindsight", "--port", str(port), "-c", "listen_addresses=127.0.0.1"],
+                    env=env, stdout=subprocess.DEVNULL, stderr=error, timeout=90, creationflags=flags,
+                )
+                if started.returncode:
+                    error.seek(0)
+                    details = error.read(2000).decode("utf-8", "replace").replace(password, "[redacted]")
+                    with _LOG.open("a", encoding="utf-8") as log:
+                        log.write(details)
+                    raise RuntimeError("PODA could not start the Windows Hindsight database. Open setup details and retry.")
+    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("PODA could not start the Windows Hindsight database. Open setup details and retry.") from exc
+    return f"postgresql://hindsight:{password}@127.0.0.1:{port}/hindsight"
 
 
 def start(model_config: tuple[str, str, str] | None = None) -> None:
@@ -173,13 +216,13 @@ def start(model_config: tuple[str, str, str] | None = None) -> None:
                # The startup banner uses Unicode even when stdout is redirected on Windows.
                "PYTHONIOENCODING": "utf-8",
                "HF_HUB_OFFLINE": "1", "OTEL_SDK_DISABLED": "true", "LITELLM_LOCAL_MODEL_COST_MAP": "True"}
-        with socket.socket() as listener:
-            listener.bind(("127.0.0.1", 0))
-            port = listener.getsockname()[1]
-        base_url = f"http://127.0.0.1:{port}"
         try:
-            if config.WINDOWS and not (_ROOT / ".initialized").exists():
-                _prepare_windows_database()
+            if config.WINDOWS:
+                if not (_ROOT / ".initialized").exists():
+                    _prepare_windows_database()
+                env["HINDSIGHT_API_DATABASE_URL"] = _start_windows_database(env, password)
+            port = _available_port()
+            base_url = f"http://127.0.0.1:{port}"
             with _LOG.open("a", encoding="utf-8") as log:
                 _process = subprocess.Popen([str(_bin("hindsight-api")), "--host", "127.0.0.1", "--port", str(port),
                                              "--log-level", "warning", "--no-access-log"],
@@ -209,7 +252,7 @@ def start(model_config: tuple[str, str, str] | None = None) -> None:
 
 
 def stop() -> None:
-    global _process, _url, _token, _phase
+    global _process, _url, _token, _phase, _windows_db_env
     _CANCEL.set()
     with _LOCK:
         process, _process = _process, None
@@ -221,13 +264,12 @@ def stop() -> None:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=3)
-        if process and config.WINDOWS:
-            # Windows process termination cannot run the sidecar's shutdown hook.
+        db_env, _windows_db_env = _windows_db_env, None
+        if db_env is not None:
             try:
-                subprocess.run([str(_bin("python")), "-c", "from pg0 import Pg0; Pg0(name='poda').stop()"],
-                               env={**_environment(), "PG0_HOME": str(_ROOT / "database"),
-                                    "PG0_INSTALLATION_DIR": str(_ROOT / "postgres")},
-                               capture_output=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
+                subprocess.run([str(_pg0_binary()), "stop", "--name", "poda"], env=db_env,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
             except (OSError, subprocess.TimeoutExpired):
                 pass
 
