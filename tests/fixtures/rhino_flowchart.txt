@@ -1,0 +1,60 @@
+flowchart TD
+    %% Styles
+    classDef rhino fill:#f9f,stroke:#333,stroke-width:2px;
+    classDef gh fill:#ff9,stroke:#333,stroke-width:2px;
+    classDef math fill:#bbf,stroke:#333,stroke-width:2px;
+    classDef output fill:#bfb,stroke:#333,stroke-width:2px;
+    Start([Start: Define Beam Geometry]):::rhino
+    subgraph Geometry_Definition ["1. Define Beam Geometry"]
+        direction TB
+        G1[Create Base Profile (2D Curve)]:::math
+        G2[Create Beam Length (Line/Tube)]:::math
+        G3[Join Profile & Length]:::rhino
+    end
+    subgraph Import ["2. Import to Grasshopper"]
+        direction TB
+        I1[Open Grasshopper]:::gh
+        I2[Import Rhino File (.3dm)]:::gh
+        I3[Verify Geometry Integrity]:::math
+    end
+    subgraph CrossSection ["3. Define Cross Section"]
+        direction TB
+        C1[Select Profile Curve]:::gh
+        C2[Define Extrusion Direction]:::math
+        C3[Set Extrusion Length]:::math
+    end
+    subgraph Extrusion ["4. Perform Extrusion"]
+        direction TB
+        E1[Use 'Extrude' Component]:::gh
+        E2[Input Profile & Direction]:::gh
+        E3[Input Length]:::gh
+        E4[Generate 3D Solid]:::output
+    end
+    subgraph Cleanup ["5. Cleanup & Export"]
+        direction TB
+        K1[Remove Temporary Geometry]:::rhino
+        K2[Check for Overlaps/Intersections]:::math
+        K3[Export as .3dm or .obj]:::rhino
+    end
+    Start --> G1
+    G1 --> G2
+    G2 --> G3
+    G3 --> I1
+    I1 --> I2
+    I2 --> I3
+    I3 --> C1
+    C1 --> C2
+    C2 --> C3
+    C3 --> E1
+    E1 --> E2
+    E2 --> E3
+    E3 --> E4
+    E4 --> K1
+    K1 --> K2
+    K2 --> K3
+    K3 --> End([End: 3D Beam Model])
+    class G1,G2,G3 rhino;
+    class I1,I2,I3 gh;
+    class C1,C2,C3 gh;
+    class E1,E2,E3,E4 gh;
+    class K1,K2,K3 rhino;

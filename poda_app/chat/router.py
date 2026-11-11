@@ -606,7 +606,9 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
         system += ("\nPODA Sandbox has its own writable storage. Use fs_* only for the user's explicit external paths. "
                    "Never invent a file, a download link, or a completed action.")
         system += ("\n" r"For visual chat output, use a fenced mermaid block for diagrams and a fenced svg block "
-                   r"for simple vector illustrations. Label fenced code with its language. "
+                   r"for simple vector illustrations. In Mermaid flowcharts, put all node labels in double quotes, "
+                   'including labels with parentheses, punctuation, or slashes (for example A["Profile (2D)"]). '
+                   r"Do not include HTML or click directives. Label fenced code with its language. "
                    r"Use \( ... \) for inline math and put \[ and \] on separate lines around display math.")
         if attachment and not sandbox_write_proposed:
             language = "mermaid" if mermaid_export else artifacts.source_language(attachment)
