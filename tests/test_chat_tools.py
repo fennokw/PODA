@@ -507,3 +507,15 @@ def test_broad_access_runs_available_mutation_and_turns_off(client, monkeypatch,
         assert not any(event == 'proposal' for event, _ in events)
     finally:
         set_setting('broad_access_enabled', 'false')
+
+
+def test_top_five_inbox_request_finishes_with_results(client, monkeypatch):
+    from poda_app.chat import router as chat_router, mail_fulfillment as mail
+    monkeypatch.setattr(chat_router.models, 'resolve', lambda *a, **k: {'model': 'test', 'profile': 'balanced', 'num_ctx': 8192, 'options': {}})
+    monkeypatch.setattr(chat_router.capability, 'sync_ledger', lambda: {'email': {'can_read': True}})
+    monkeypatch.setattr(mail, 'fulfill', lambda *a, **k: ({'start_date': '2026-11-08', 'end_date': '2026-11-11'}, {'receipt': {'id': 'mail-proof', 'outcome': 'succeeded', 'verification': 'two accounts'}, 'result': {'ok': True}}, '1. **Actual deadline** — submit the form.'))
+    response = client.post('/chat/stream', json={'message': 'Give me the top 5 most important things in my inbox from the past 3 days from all of my emails.', 'use_memory': False})
+    events = _events(response.text)
+    assert any(kind == 'tool' and data['name'] == 'mail_search' and data['receipt_id'] == 'mail-proof' for kind, data in events)
+    assert 'Actual deadline' in ''.join(data['token'] for kind, data in events if kind == 'token')
+    assert dict(events)['done']['model'] == 'mail-report'

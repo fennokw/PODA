@@ -148,7 +148,7 @@
     const frame = el('iframe', { title: 'Diagram renderer', sandbox: 'allow-scripts', class: 'chat-render-frame',
       'aria-hidden': 'true', tabindex: -1 });
     // The opaque frame has its own CSP and cannot read application DOM or storage.
-    frame.src = '/static/chat-diagram-frame.html';
+    frame.src = '/static/chat-diagram-frame.html?v=0.9.10';
     const ready = new Promise((resolve, reject) => {
       function finish(error) {
         window.removeEventListener('message', onReady);
@@ -173,7 +173,9 @@
   }
 
   async function renderDiagram(source) {
-    const frame = await (diagramFrame ||= startDiagramFrame());
+    let frame;
+    try { frame = await (diagramFrame ||= startDiagramFrame()); }
+    catch (error) { diagramFrame = null; throw error; }
     return new Promise((resolve, reject) => {
       const id = ++diagramSequence;
       const finish = (svg) => {
@@ -285,6 +287,28 @@
       await showImage(node, new Blob([svg], { type: 'image/svg+xml' }),
         title || (type === 'mermaid' ? 'Mermaid diagram. View source for the diagram text.' : 'Generated SVG image'),
         Number.isFinite(width) ? width : 0);
+      if (type === 'mermaid' && node.isConnected) {
+        const actions = el('div', { class: 'row chat-diagram-actions' });
+        const error = el('span', { class: 'small muted', role: 'status' });
+        const download = el('button', { type: 'button', class: 'btn btn-sm', onclick: async () => {
+          download.disabled = true;
+          try {
+            const png = await svgPNG(svg), url = URL.createObjectURL(png);
+            const link = el('a', { href: url, download: 'diagram.png' });
+            document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 60000);
+          } catch (err) { error.textContent = `Image export failed: ${err.message}`; }
+          finally { download.disabled = false; }
+        } }, 'Download image');
+        const copy = el('button', { type: 'button', class: 'btn btn-sm', onclick: async () => {
+          try {
+            if (!navigator.clipboard?.write || !window.ClipboardItem) throw new Error('Clipboard image copying is unavailable');
+            await navigator.clipboard.write([new ClipboardItem({ 'image/png': svgPNG(svg) })]);
+            error.textContent = 'Image copied.';
+          } catch (err) { error.textContent = `${err.message}. Use Download image instead.`; }
+        } }, 'Copy image');
+        actions.append(download, copy, error);
+        node.querySelector('.chat-visual-image').after(actions);
+      }
     } catch {
       const status = node.querySelector('.chat-visual-status');
       if (status) status.textContent = type === 'image' ? 'Image preview unavailable.' :
@@ -317,7 +341,10 @@
   }
 
   async function diagramPNG(source) {
-    const svg = await renderDiagram(source);
+    return svgPNG(await renderDiagram(source));
+  }
+
+  async function svgPNG(svg) {
     const documentSVG = new DOMParser().parseFromString(svg, 'image/svg+xml').documentElement;
     if (documentSVG.localName !== 'svg' || documentSVG.querySelector('parsererror')) throw new Error('Invalid rendered diagram.');
     const view = (documentSVG.getAttribute('viewBox') || '').trim().split(/[ ,]+/).map(Number);

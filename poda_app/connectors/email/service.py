@@ -343,7 +343,9 @@ def _score(row: dict[str, Any], terms: list[str], content: str = "") -> int:
 
 def search(query: str = "", account_id: str | None = None, limit: int = 50,
            start_date: str | None = None, end_date: str | None = None,
-           related_terms: list[str] | None = None, include_body: bool = False, date_timezone: str = "") -> dict[str, Any]:
+           related_terms: list[str] | None = None, include_body: bool = False, date_timezone: str = "",
+           inbox_only: bool = False, prioritize: bool = False,
+           received_after: str = "", received_before: str = "") -> dict[str, Any]:
     """Search date-bounded mail across connected accounts, then rank candidates by relevance.
 
     Keyword variants are OR alternatives, not AND requirements. Date-only requests scan
@@ -355,6 +357,13 @@ def search(query: str = "", account_id: str | None = None, limit: int = 50,
     end = _date_bound(end_date, "end_date")
     if begin and end and begin > end:
         raise MailError("validation", "start_date must not be after end_date", status=400)
+    try:
+        after = datetime.fromisoformat(received_after) if received_after else None
+        before = datetime.fromisoformat(received_before) if received_before else None
+        if (after and after.tzinfo is None) or (before and before.tzinfo is None) or (after and before and after > before):
+            raise ValueError("timezone or range")
+    except ValueError as exc:
+        raise MailError("validation", "The rolling mail window requires valid timezone-aware timestamps.", status=400) from exc
     limit = max(1, min(int(limit), 100))
     terms = list(dict.fromkeys([str(t).strip() for t in [query, *(related_terms or [])]
                                if isinstance(t, str) and t.strip()]))[:8]
@@ -364,18 +373,36 @@ def search(query: str = "", account_id: str | None = None, limit: int = 50,
     errors: list[str] = []
     scanned = 0
     truncated = False
+    undated_ids: set[tuple[str, str]] = set()
+
+    def collect(items: list[dict[str, Any]]) -> None:
+        for row in items:
+            if after or before:
+                try:
+                    stamp = datetime.fromisoformat(str(row.get("date") or "").replace("Z", "+00:00"))
+                    if stamp.tzinfo is None:
+                        raise ValueError("missing timezone")
+                except (ValueError, TypeError):
+                    undated_ids.add((str(row.get("account_id") or ""), str(row.get("message_id") or row.get("id") or "")))
+                    continue
+            if _in_range(row, begin, end, zone):
+                results.append(row)
+
     for acct in accounts:
         try:
             _require_read(acct)
             if acct["provider"] == NATIVE_PROVIDER:
-                names = [m["name"] for m in native_mail.mailboxes(acct["account_name"])]
                 targets = ["INBOX"]
-                try:
-                    targets.append(native_mail.archive_target(acct.get("provider_type"), names))
-                except MailError:
-                    pass
+                if not inbox_only:
+                    names = [m["name"] for m in native_mail.mailboxes(acct["account_name"])]
+                    try:
+                        targets.append(native_mail.archive_target(acct.get("provider_type"), names))
+                    except MailError:
+                        pass
             else:
                 targets = ["INBOX", "[Gmail]/All Mail"]
+            if inbox_only:
+                targets = ["INBOX"]
             for mb in dict.fromkeys(targets):
                 # Provider-side literal search for each related phrase.
                 for term in terms:
@@ -386,7 +413,7 @@ def search(query: str = "", account_id: str | None = None, limit: int = 50,
                             chunk = gmail_imap.list_messages(acct["address"], acct["id"], mb, limit=100, query=term)
                         truncated |= bool(chunk.get("truncated"))
                         scanned += len(chunk.get("messages", []))
-                        results.extend(r for r in chunk.get("messages", []) if _in_range(r, begin, end, zone))
+                        collect(chunk.get("messages", []))
                     except MailError as exc:
                         errors.append(f"{acct['account_name']} / {mb}: {exc.message}")
                 # Always examine recent headers when a date range is specified, or when
@@ -406,7 +433,7 @@ def search(query: str = "", account_id: str | None = None, limit: int = 50,
                             break
                         messages = chunk.get("messages", [])
                         scanned += len(messages)
-                        results.extend(r for r in messages if _in_range(r, begin, end, zone))
+                        collect(messages)
                         offset += len(messages)
                         if not messages or len(messages) < 100 or offset >= int(chunk.get("total") or 0):
                             break
@@ -417,15 +444,38 @@ def search(query: str = "", account_id: str | None = None, limit: int = 50,
             _touch(acct["id"])
         except MailError as exc:
             errors.append(f"{acct['account_name']}: {exc.message}")
+    labels = {acct["id"]: acct.get("address_masked") or acct.get("account_name") or "Connected account" for acct in accounts}
     seen, dedup = set(), []
     for r in results:
+        r["account_label"] = labels.get(r.get("account_id"), "Connected account")
         # RFC Message-ID may be identical across distinct connected accounts.
         key = (r.get("account_id"), r.get("message_id") or r["id"])
         if key in seen:
             continue
         seen.add(key)
         dedup.append(r)
-    dedup.sort(key=lambda r: r.get("date") or "", reverse=True)
+    excluded_undated = len(undated_ids)
+    if after or before:
+        window = []
+        for row in dedup:
+            try:
+                stamp = datetime.fromisoformat(str(row.get("date") or "").replace("Z", "+00:00"))
+                if stamp.tzinfo is None:
+                    excluded_undated += 1
+                elif (after is None or stamp >= after) and (before is None or stamp <= before):
+                    window.append(row)
+            except (ValueError, TypeError):
+                excluded_undated += 1
+        dedup = window
+    def attention(row: dict[str, Any]) -> int:
+        text = " ".join(str(row.get(k) or "") for k in ("subject", "from_name", "snippet")).lower()
+        score = 4 if row.get("flagged") else 0
+        score += 1 if not row.get("read", True) else 0
+        score += 5 if any(word in text for word in ("action required", "deadline", "due date", "urgent", "response required", "please reply", "approval")) else 0
+        score += 2 if any(word in text for word in ("meeting", "assignment", "invoice", "interview", "schedule")) else 0
+        score -= 3 if any(word in text for word in ("newsletter", "unsubscribe", "promotion")) else 0
+        return score
+    dedup.sort(key=lambda r: (attention(r) if prioritize else 0, r.get("date") or ""), reverse=True)
     body_count = 0
     if include_body:
         # Fetch only bounded candidates, preserving no-write read permissions.
@@ -446,7 +496,8 @@ def search(query: str = "", account_id: str | None = None, limit: int = 50,
     return {"query": query, "related_terms": terms[1:], "start_date": start_date,
             "end_date": end_date, "messages": dedup[:limit], "errors": errors,
             "scanned_headers": scanned, "read_bodies": body_count,
-            "truncated": truncated or len(dedup) > limit, "matched_candidates": len(dedup)}
+            "truncated": truncated or len(dedup) > limit, "matched_candidates": len(dedup),
+            "excluded_undated": excluded_undated}
 
 
 # ----------------------------------------------------------------------------- receipted actions

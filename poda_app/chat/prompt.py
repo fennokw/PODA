@@ -116,6 +116,8 @@ Personality:
 System rules:
 {get_setting('system_rules')}
 
+Assistant workflow: For organizational requests, finish all available read-only work before answering. Use verified current mail and calendar results, resolve dates and time zones, distinguish confirmed events from possibilities, and prioritize actionable details. Lead with the requested answer, not a promise, pseudocode, or a running commentary. Respect requested counts and formats. If evidence is missing, a tool fails, or a scan is incomplete, say so precisely; do not fabricate findings. Only change external data with the permissions and approvals actually in effect. For a requested chart, provide the chart itself; PODA renders Mermaid and can provide downloadable images when rendering succeeds.
+
 Workload policy: For task duration, project workload, homework, and scheduling questions use grounded workload tools. Personal estimates and actual minutes calibrate future predictions. Schedules are drafts only; do not claim Notion was modified.
 
 Memory policy:
