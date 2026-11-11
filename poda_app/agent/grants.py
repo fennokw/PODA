@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
 from ..runtime import config
-from ..runtime.db import connect, now_iso, rows, one
+from ..runtime.db import connect, now_iso, rows, one, get_setting, set_setting
 from . import sandbox
 
 MODES = {"read", "edit", "temp"}
@@ -37,12 +37,20 @@ def _active_filter() -> str:
     return "revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)"
 
 
+def broad_access_enabled() -> bool:
+    return get_setting("broad_access_enabled", "false") == "true"
+
+
 def list_grants(include_inactive: bool = False) -> list[dict[str, Any]]:
     conn = connect()
     try:
         if include_inactive:
             return rows(conn, "SELECT * FROM fs_grants ORDER BY created_at DESC")
-        return rows(conn, f"SELECT * FROM fs_grants WHERE {_active_filter()} ORDER BY created_at DESC", (now_iso(),))
+        result = rows(conn, f"SELECT * FROM fs_grants WHERE {_active_filter()} ORDER BY created_at DESC", (now_iso(),))
+        if broad_access_enabled():
+            roots = [f"{letter}:\\" for letter in "ABCDEFGHIJKLMNOPQRSTUVWXYZ" if Path(f"{letter}:\\").is_dir()] if config.WINDOWS else ["/"]
+            result += [{"id": "broad-access:" + (root[0] if config.WINDOWS else "all"), "root_path": root, "mode": "edit", "label": "Broad access (OS permissions apply)", "created_at": "", "expires_at": None, "revoked_at": None, "allow_execute": 1, "target_kind": "directory"} for root in roots]
+        return result
     finally:
         conn.close()
 
@@ -104,6 +112,10 @@ def add_grant(root_path: str, mode: str, label: str | None = None, allow_execute
 
 
 def revoke_grant(grant_id: str) -> bool:
+    if grant_id.startswith("broad-access:"):
+        was_enabled = broad_access_enabled()
+        set_setting("broad_access_enabled", "false")
+        return was_enabled
     conn = connect()
     try:
         cur = conn.execute("UPDATE fs_grants SET revoked_at=? WHERE id=? AND revoked_at IS NULL", (now_iso(), grant_id))

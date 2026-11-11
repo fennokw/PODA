@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from ..runtime import config
 from ..runtime.db import connect, encryption_status, export_plaintext_copy, set_setting, rows, now_iso
-from ..agent.grants import list_grants
+from ..agent.grants import list_grants, broad_access_enabled
 from ..connectors.notion import state as notion_state
 from . import egress
 from .crypto import create_encrypted_backup, list_backups, restore_encrypted_backup
@@ -33,6 +33,7 @@ def privacy_status() -> dict[str, Any]:
         "counts": counts,
         "connections": {"notion": notion_state.capability()},
         "file_grants": list_grants(),
+        "broad_access": broad_access_enabled(),
         "egress": egress.egress_summary(),
         "backups": list_backups(),
         "threat_model": {
@@ -47,6 +48,19 @@ def privacy_status() -> dict[str, Any]:
 @router.get("/privacy/egress")
 def privacy_egress(limit: int = 100) -> dict[str, Any]:
     return {"recent": egress.recent_egress(limit), "summary": egress.egress_summary()}
+
+
+class BroadAccessRequest(BaseModel):
+    enabled: bool
+    confirm: bool = False
+
+
+@router.post("/privacy/broad-access")
+def broad_access(req: BroadAccessRequest) -> dict[str, Any]:
+    if req.enabled and not req.confirm:
+        raise HTTPException(400, "Confirm broad access before turning it on.")
+    set_setting("broad_access_enabled", "true" if req.enabled else "false")
+    return {"enabled": req.enabled, "limitations": "Runs as the current operating-system user; operating-system privacy permissions, connected-account scopes, offline mode, and add-on settings still apply. Running actions are not stopped by disabling this setting."}
 
 
 class OfflineRequest(BaseModel):

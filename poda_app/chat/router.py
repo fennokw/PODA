@@ -14,7 +14,7 @@ from threading import Event
 from urllib.parse import quote
 import re
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -99,6 +99,26 @@ class ThinkSplitter:
                 self.buffer = self.buffer[start + len("<think>"):]
                 self.think = True
         return out
+
+
+def _diagram_photo_request(message: str) -> bool:
+    return bool(re.search(r"\b(?:save|export|download|make|create|give|convert|copy)\b", message, re.I)
+                and re.search(r"\b(?:photo|picture|image|png)\b", message, re.I)
+                and bool(re.search(r"\b(?:it|this|that|chart|diagram|flowchart|above|previous)\b", message, re.I))
+                and not re.search(r"\b(?:generate|draw|illustrate)\s+(?:a|an|the|me)\b", message, re.I))
+
+
+def _recent_diagram(session_id: str) -> str | None:
+    conn = connect()
+    try:
+        records = rows(conn, "SELECT content FROM messages WHERE session_id=? AND role='assistant' ORDER BY rowid DESC LIMIT 30", (session_id,))
+    finally:
+        conn.close()
+    for record in records:
+        matches = re.findall(r"(?:^|\n)[ \t]*```mermaid[ \t]*\n(.*?)\n[ \t]*```", record["content"], re.I | re.S)
+        if matches:
+            return matches[-1].strip()[:32000]
+    return None
 
 
 def _recent_sandbox_file(session_id: str) -> str | None:
@@ -293,6 +313,14 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
 
     async def generate() -> AsyncIterator[str]:
         yield frame("session", {"session_id": session_id, "user_message_id": user_message_id, "build_id": config.BUILD_ID})
+        if not ephemeral and not previous_proposal and req.session_id and not input_files and _diagram_photo_request(req.message):
+            diagram = await asyncio.to_thread(_recent_diagram, session_id)
+            if diagram:
+                content = "Preparing a PNG of your previous diagram. You can download or copy the image below.\n\n```mermaid\n" + diagram + "\n```"
+                download = await save_response(content, "diagram-image")
+                yield frame("token", {"token": content})
+                yield frame("done", {"model": "diagram-image", "profile": "visual", "download": download, "diagram_image": diagram})
+                return
         if blocked:
             yield frame("status", {"message": "capability_action_gate", "model": "PODA capability ledger"})
             yield frame("token", {"token": blocked})
@@ -726,6 +754,43 @@ def session_messages(session_id: str, limit: int = 100) -> dict[str, Any]:
             record["download"] = {"message_id": record["id"], "filename": sandbox_file or artifacts.saved_filename(metadata),
                                   "sandbox_file": sandbox_file, "error": metadata.get("attachment_error") if isinstance(metadata, dict) else None}
     return {"messages": records, "workflows": workflows}
+
+
+@router.post("/chat/session/{session_id}/messages/{message_id}/diagram-image")
+def save_diagram_image(session_id: str, message_id: str, file: UploadFile):
+    from io import BytesIO
+    from PIL import Image, UnidentifiedImageError
+    conn = connect()
+    try:
+        record = one(conn, "SELECT content, metadata_json FROM messages WHERE id=? AND session_id=? AND role='assistant' AND model='diagram-image'", (message_id, session_id))
+        if not record:
+            raise HTTPException(404, "Diagram response not found.")
+        data = file.file.read(sandbox_files.MAX_BYTES + 1)
+        if len(data) > sandbox_files.MAX_BYTES:
+            raise HTTPException(413, "Diagram image exceeds 16 MiB.")
+        try:
+            with Image.open(BytesIO(data)) as image:
+                if image.format != "PNG" or image.width * image.height > 20_000_000:
+                    raise ValueError("Invalid PNG dimensions or format")
+                image.verify()
+        except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError) as exc:
+            raise HTTPException(400, "The diagram image is not a valid PNG.") from exc
+        metadata = json.loads(record["metadata_json"] or "{}")
+        if metadata.get("sandbox_file"):
+            return {"filename": metadata["sandbox_file"]}
+        receipt = receipts.open_receipt("sandbox_write", "diagram.png", {"path": "diagram.png", "source": "rendered diagram"}, approved=True, session_id=session_id)
+        try:
+            saved = sandbox_files.save("diagram.png", data, unique=True)
+        except (OSError, ValueError) as exc:
+            receipts.close_receipt(receipt, "failed", error=str(exc))
+            raise HTTPException(500, "Could not save the diagram image in PODA Sandbox.") from exc
+        receipts.close_receipt(receipt, "succeeded", "Read back the exact saved PNG bytes.", detail=json.dumps(saved))
+        metadata["sandbox_file"] = saved["filename"]
+        conn.execute("UPDATE messages SET metadata_json=? WHERE id=? AND session_id=?", (json.dumps(metadata), message_id, session_id))
+        conn.commit()
+        return saved
+    finally:
+        conn.close()
 
 
 @router.get("/chat/session/{session_id}/messages/{message_id}/download")
