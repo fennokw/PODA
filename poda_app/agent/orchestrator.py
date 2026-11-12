@@ -121,6 +121,10 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
     specs = tools.model_tool_specs(snapshot)
     if allowed_tools is not None:
         specs = [spec for spec in specs if spec["function"]["name"] in allowed_tools]
+    # Daily message delivery happens once, after the final response, through the
+    # scheduler's explicit scoped grant. The model cannot send early or duplicate it.
+    if unattended_target:
+        specs = [spec for spec in specs if spec["function"]["name"] != "messages_send"]
     verified_mail_flow = unattended and schedule_candidates is not None
     if verified_mail_flow:
         specs = [spec for spec in specs if spec["function"]["name"] != "notion_calendar_create"]
@@ -258,6 +262,10 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
                 out["flagged"].append({"name":"workflow", "reason":"safety budget exhausted; additional requested work remains incomplete"})
                 break
             name = call["name"]
+            if unattended_target and name == "messages_send":
+                out["flagged"].append({"name": name, "reason": "Scheduled message delivery runs after the final response"})
+                tool_results_for_model.append({"role": "tool", "content": "The scheduler sends the completed update to the approved conversation."})
+                continue
             if allowed_tools is not None and name not in allowed_tools:
                 out["flagged"].append({"name": name, "reason": "Tool is outside this remote channel's authorized scope"})
                 tool_results_for_model.append({"role": "tool", "content": json.dumps({"error": "Tool is not authorized for this channel"})})

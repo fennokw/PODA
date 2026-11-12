@@ -202,3 +202,88 @@ def test_command_key_is_redacted_from_agent_reads(client, monkeypatch):
         assert service.read('apple', 'chat-a')[0]['text'] == '/poda [private key] create a meeting'
     finally:
         set_setting(service._KEY, '{}')
+
+
+def test_daily_message_scope_revocation_and_final_delivery(client, monkeypatch):
+    from poda_app.daily_updates import permissions, service as daily
+    from poda_app.runtime.db import connect, one
+    set_setting(service._KEY, json.dumps({'apple': {'chats': ['chat-a'], 'write': True}}))
+    monkeypatch.setattr(service, 'list_chats', lambda provider: [{'id': 'chat-a', 'name': 'Private'}])
+    sent = []
+    monkeypatch.setattr(service, 'send', lambda p, c, t: (sent.append((p, c, t)) or {'submitted': True, 'verified': False}))
+    grant = {'tool': 'messages_send', 'scope': {'provider': 'apple', 'conversation_id': 'chat-a'}}
+    payload = {'title': 'Morning update', 'prompt': 'Summarize the day', 'times': ['08:00'], 'timezone': 'UTC', 'permissions': [grant]}
+    created = client.post('/daily-updates', json=payload)
+    assert created.status_code == 200, created.text
+    task = created.json()['schedule']
+    run_id = 'synthetic-delivery'
+    db = connect()
+    daily.ensure_tables(db)
+    db.execute("INSERT INTO daily_prompt_runs (id,prompt_id,slot_key,scheduled_for,status) VALUES (?,?,?,?,?)", (run_id, task['id'], 'manual:synthetic', '2026-11-12', 'running'))
+    db.commit(); db.close()
+    try:
+        args = {'provider': 'apple', 'conversation_id': 'chat-a', 'text': 'hello'}
+        assert permissions.authorize(task['id'], task['updated_at'], 'messages_send', args)[0]
+        assert not permissions.authorize(task['id'], task['updated_at'], 'messages_send', {**args, 'conversation_id': 'other'})[0]
+        assert not permissions.authorize(task['id'], 'old-revision', 'messages_send', args)[0]
+        daily._deliver_update(run_id, task, 'A verified completed result.')
+        assert len(sent) == 1 and 'A verified completed result.' in sent[0][2]
+        db=connect(); row=one(db, 'SELECT * FROM daily_prompt_runs WHERE id=?', (run_id,)); db.close()
+        assert row['message_delivery_status'] == 'submitted'
+        set_setting(service._KEY, '{}')
+        daily._deliver_update(run_id, task, 'Do not send')
+        assert len(sent) == 1
+        db=connect(); row=one(db, 'SELECT * FROM daily_prompt_runs WHERE id=?', (run_id,)); db.close()
+        assert row['message_delivery_status'] == 'failed'
+    finally:
+        client.delete('/daily-updates/'+task['id'])
+        set_setting(service._KEY, '{}')
+
+
+def test_daily_delivery_caps_messages_and_reports_truncation(client, monkeypatch):
+    from poda_app.daily_updates import permissions, service as daily
+    set_setting(service._KEY, json.dumps({'groupme': {'chats': ['42'], 'write': True}}))
+    monkeypatch.setattr(permissions, 'authorize', lambda *a: (True, 'approved'))
+    sent=[]
+    statuses=[]
+    monkeypatch.setattr(daily, '_message_delivery_status', lambda *args: statuses.append(args))
+    monkeypatch.setattr(service, 'send', lambda p,c,t: (sent.append(t) or {'verified': True}))
+    task={'id':'daily','updated_at':'revision','title':'Long update','permissions_json':json.dumps([{'tool':'messages_send','scope':{'provider':'groupme','conversation_id':'42'}}])}
+    try:
+        daily._deliver_update('run', task, 'long content ' * 1000)
+        assert len(sent) == 5 and all(len(s) <= 1000 for s in sent)
+        assert 'shortened' in sent[-1] and statuses[-1][1] == 'sent'
+    finally:
+        set_setting(service._KEY, '{}')
+
+
+def test_daily_only_delivers_after_completed_stream(client, monkeypatch):
+    import asyncio
+    from poda_app.daily_updates import service as daily
+    from poda_app.chat import router as chat_router
+    from poda_app.runtime.db import connect
+    output = []
+    monkeypatch.setattr(daily, '_deliver_update', lambda run, task, text: output.append(text))
+    monkeypatch.setattr(daily, '_notify', lambda *args: False)
+    frames = []
+    async def fake_run(*args, **kwargs):
+        class Response:
+            async def body_iterator(self):
+                for frame in frames:
+                    yield frame
+        result=Response()
+        result.body_iterator=result.body_iterator()
+        return result
+    monkeypatch.setattr(chat_router, 'run_chat', fake_run)
+    task={'id':'synthetic-task','title':'Test','prompt':'test','timezone':'UTC','updated_at':'rev','mail_account_ids_json':'[]'}
+    db=connect();daily.ensure_tables(db)
+    for run in ('finished', 'interrupted'):
+        db.execute("INSERT INTO daily_prompt_runs (id,prompt_id,slot_key,scheduled_for,status) VALUES (?,?,?,?,?)",(run,task['id'],run,'2026-11-12','queued'))
+    db.commit();db.close()
+    frames.extend(['event: token\ndata: {"token":"final result"}\n\n', 'event: done\ndata: {}\n\n'])
+    asyncio.run(daily.execute('finished',task))
+    assert output == ['final result']
+    frames.pop()
+    asyncio.run(daily.execute('interrupted',task))
+    assert output == ['final result']
+    assert next(r for r in daily.history(300) if r['id']=='interrupted')['status'] == 'failed'
