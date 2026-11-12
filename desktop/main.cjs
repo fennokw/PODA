@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, dialog, ipcMain, session, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, session, shell, powerSaveBlocker } = require('electron');
 const { spawn } = require('node:child_process');
 const { randomBytes, createHash } = require('node:crypto');
 const { existsSync, readFileSync, mkdirSync, createWriteStream } = require('node:fs');
@@ -17,6 +17,7 @@ let backend;
 let window;
 let origin;
 let closing = false;
+let wakeLock;
 
 function runtimePath() {
   const version = createHash('sha256').update(readFileSync(path.join(source, 'requirements.txt'))).digest('hex').slice(0, 16);
@@ -105,6 +106,13 @@ function openWindow() {
   return window.loadURL(origin);
 }
 
+ipcMain.handle('poda:shutdown', async event => {
+  if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame ||
+      !origin || !URL.canParse(event.senderFrame.url) || new URL(event.senderFrame.url).origin !== origin) return false;
+  app.quit();
+  return true;
+});
+
 ipcMain.handle('poda:choose-grant-path', async (event, kind) => {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame ||
       !origin || !URL.canParse(event.senderFrame.url) || new URL(event.senderFrame.url).origin !== origin ||
@@ -169,6 +177,7 @@ async function start() {
     dialog.showErrorBox('PODA stopped', `The local server exited. See ${path.join(data, 'logs', 'desktop-server.log')}.`);
     app.quit();
   });
+  if (process.platform === 'darwin') wakeLock = powerSaveBlocker.start('prevent-app-suspension');
   await openWindow();
 }
 
@@ -184,6 +193,7 @@ if (!app.requestSingleInstanceLock()) {
   // On macOS the app remains alive after closing its window for Daily Automation.
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
   app.on('before-quit', event => {
+    if (wakeLock !== undefined && powerSaveBlocker.isStarted(wakeLock)) powerSaveBlocker.stop(wakeLock);
     if (closing || !backend?.pid || backend.exitCode !== null || backend.signalCode) return;
     event.preventDefault();
     closing = true;

@@ -12,6 +12,7 @@ import os
 import platform
 import re
 import subprocess
+import textwrap
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -40,6 +41,8 @@ def ensure_tables(conn):
         status TEXT NOT NULL, response TEXT NOT NULL DEFAULT '', error TEXT,
         notified INTEGER NOT NULL DEFAULT 0,
         UNIQUE(prompt_id, slot_key))""")
+    add_column(conn, "daily_prompt_runs", "message_delivery_status", "TEXT NOT NULL DEFAULT 'not_requested'")
+    add_column(conn, "daily_prompt_runs", "message_delivery_detail", "TEXT")
     add_column(conn, "daily_prompts", "calendar_write_target", "TEXT")
     add_column(conn, "daily_prompts", "permissions_json", "TEXT NOT NULL DEFAULT '[]'")
     add_column(conn, "daily_prompts", "mail_account_id", "TEXT")
@@ -234,6 +237,58 @@ finally { $icon.Dispose() }
         return False
 
 
+def _message_delivery_status(run_id: str, status: str, detail: str = '') -> None:
+    db = connect()
+    try:
+        ensure_tables(db)
+        db.execute("UPDATE daily_prompt_runs SET message_delivery_status=?, message_delivery_detail=? WHERE id=?",
+                   (status, detail[:500] or None, run_id))
+        db.commit()
+    finally:
+        db.close()
+
+
+def _deliver_update(run_id: str, task: dict[str, Any], output: str) -> None:
+    """Deliver the final generated response once; never silently retry an uncertain send."""
+    from .permissions import authorize
+    from ..connectors.messaging import service as messaging
+    try:
+        grants = json.loads(task.get('permissions_json') or '[]')
+        targets = [g.get('scope') or {} for g in grants if g.get('tool') == 'messages_send']
+        if not targets:
+            return
+        if len(targets) != 1:
+            _message_delivery_status(run_id, 'failed', 'Expected one authorized message destination.')
+            return
+        scope = targets[0]
+        provider, conversation_id = scope.get('provider', ''), scope.get('conversation_id', '')
+        text = f"PODA daily update: {task['title']}\n\n{output}"
+        chunks = textwrap.wrap(text, width=900, replace_whitespace=False, drop_whitespace=True,
+                               break_long_words=True, break_on_hyphens=False) or []
+        if len(chunks) > 5:
+            chunks = chunks[:5]
+            chunks[-1] = chunks[-1][:820] + '\n\n[Update shortened. Open PODA for the complete result.]'
+        _message_delivery_status(run_id, 'sending', 'Delivery started; it will not be automatically retried.')
+        submitted = 0
+        unverified = False
+        for index, chunk in enumerate(chunks):
+            content = (f'({index + 1}/{len(chunks)})\n' if len(chunks) > 1 else '') + chunk
+            args = {'provider': provider, 'conversation_id': conversation_id, 'text': content}
+            allowed, reason = authorize(task['id'], task['updated_at'], 'messages_send', args)
+            if not allowed:
+                _message_delivery_status(run_id, 'failed', f'Stopped after {submitted} of {len(chunks)} messages: {reason}')
+                return
+            result = messaging.send(provider, conversation_id, content)
+            submitted += 1
+            unverified = unverified or not result.get('verified', False)
+        state = 'submitted' if unverified else 'sent'
+        detail = (f'{submitted} message(s) submitted to Messages.app; delivery not independently verified.' if unverified
+                  else f'{submitted} message(s) accepted by GroupMe.')
+        _message_delivery_status(run_id, state, detail)
+    except Exception:
+        _message_delivery_status(run_id, 'failed', 'Message delivery failed or could not be verified. Check the selected conversation before retrying.')
+
+
 async def execute(run_id:str,task:dict[str,Any]):
     from ..chat.router import run_chat, ChatRequest
     class BackgroundRequest:
@@ -246,6 +301,7 @@ async def execute(run_id:str,task:dict[str,Any]):
     mark(run_id,"running")
     captured=[]
     error=None
+    got_done=False
     session_id="daily-"+run_id
     try:
         # The same chat tools and model are used, but messages never enter
@@ -259,7 +315,7 @@ async def execute(run_id:str,task:dict[str,Any]):
                               unattended_mail_accounts=json.loads(task.get("mail_account_ids_json") or "[]") or
                                      ([task["mail_account_id"]] if task.get("mail_account_id") else []))
         async def collect():
-            nonlocal error
+            nonlocal error, got_done
             async for frame in result.body_iterator:
                 if isinstance(frame,bytes): frame=frame.decode("utf-8","replace")
                 kind=None;payload={}
@@ -270,13 +326,16 @@ async def execute(run_id:str,task:dict[str,Any]):
                         except (ValueError,TypeError): pass
                 if kind=="token": captured.append(str(payload.get("token") or ""))
                 if kind=="error": error=str(payload.get("message") or "Generation failed")
+                if kind=="done": got_done=True
                 if kind=="proposal":
                     captured.append("\n\n[An action needs approval in the interactive chat and was NOT performed.]")
         await asyncio.wait_for(collect(),timeout=900)
         output="".join(captured).strip()
         if error: mark(run_id,"failed",output,error)
+        elif not got_done: mark(run_id,"failed",output,"The response ended before completion; no message was sent")
         elif not output: mark(run_id,"failed","","No response was generated")
         else:
+            await asyncio.to_thread(_deliver_update, run_id, task, output)
             success=await asyncio.to_thread(_notify,task["title"],output[:190])
             mark(run_id,"completed",output,notified=success)
     except asyncio.CancelledError:

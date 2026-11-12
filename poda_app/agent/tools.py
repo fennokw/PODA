@@ -155,6 +155,8 @@ def _load_extensions() -> None:
         register_extension(getattr(email_tools, "TOOLS", {}), getattr(email_tools, "NEEDS", {}))
     except Exception:
         pass
+    from ..connectors.messaging import tools as messaging_tools
+    register_extension(messaging_tools.TOOLS, messaging_tools.NEEDS)
     from ..workload import tools as workload_tools
     register_extension(workload_tools.TOOLS)
     from ..project_manager import tools as project_tools

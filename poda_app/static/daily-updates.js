@@ -30,11 +30,12 @@
       const enabled=el('input',{type:'checkbox',checked:true});
       const permissionArea=el('div',{class:'stack-sm'});
       const configuredPermissions=[];
-      let permissionCatalog=[],mailAccounts=[];
+      let permissionCatalog=[],mailAccounts=[],messageConversations=[];
       try {
         const grants=await api('/daily-updates/permissions/catalog');
         permissionCatalog=grants.permissions||[];
         mailAccounts=grants.mail_accounts||[];
+        messageConversations=grants.messaging_conversations||[];
       } catch(e) { permissionArea.append(note(errorDetail(e).message)); }
       const selectedAccounts=new Set();
       const mailAccountArea=el('div',{class:'stack-sm'});
@@ -51,6 +52,30 @@
         permissionArea.replaceChildren(el('h4',{},'What can this automation change?'),
           note('Choose the changes PODA may make while you’re away. Reading emails and calendar entries does not need an extra approval.'));
         for(const entry of permissionCatalog){
+          if(entry.tool==='messages_send'){
+            const grant=configuredPermissions.find(p=>p.tool==='messages_send');
+            const enabledGrant=el('input',{type:'checkbox',checked:!!grant,disabled:!entry.available && !grant});
+            const choice=el('select',{class:'input','aria-label':'Daily update message destination'},el('option',{value:''},'Choose a conversation'));
+            for(const [index,c] of messageConversations.entries()){
+              const option=el('option',{value:String(index)},`${c.provider==='apple'?'Apple Messages':'GroupMe'} · ${c.name}`);
+              choice.append(option);
+              if(grant?.scope?.provider===c.provider && grant?.scope?.conversation_id===c.id)choice.value=String(index);
+            }
+            const syncMessage=()=>{
+              const index=configuredPermissions.findIndex(g=>g.tool==='messages_send');
+              if(index>=0)configuredPermissions.splice(index,1);
+              if(enabledGrant.checked){
+                const c=choice.value===''?null:messageConversations[Number(choice.value)];
+                configuredPermissions.push({tool:'messages_send',scope:{provider:c?.provider||'',conversation_id:c?.id||''}});
+              }
+            };
+            enabledGrant.onchange=syncMessage;choice.onchange=syncMessage;
+            permissionArea.append(el('div',{class:'stack-sm'},el('strong',{},entry.label),
+              el('label',{class:'check'},enabledGrant,'Send the completed update'),choice,
+              note('Each completed run sends its response to this conversation. Participants and the provider can see it; long updates may be shortened. Set up conversation sending in Messages first.'),
+              !entry.available?note(entry.reason):null));
+            continue;
+          }
           const isMail=entry.tool.startsWith('mail_');
           const grants=configuredPermissions.filter(p=>p.tool===entry.tool);
           const section=el('div',{class:'stack-sm'},el('strong',{},entry.label));
@@ -101,6 +126,8 @@
         permissionArea,save);
       form.onsubmit=async e=>{
         e.preventDefault();save.disabled=true;
+        const messageGrant=configuredPermissions.find(g=>g.tool==='messages_send');
+        if(messageGrant && !(await confirmDialog({title:'Send daily updates by message?',body:'Every completed run will send its update to the selected conversation. Everyone in that conversation and the provider can see its contents.',confirmLabel:'Save automation'}))){save.disabled=false;return;}
         const payload={title:title.value,prompt:prompt.value,times:times.value.split(',').map(x=>x.trim()).filter(Boolean),
                        timezone:tz.value.trim(),enabled:enabled.checked,
                        permissions:configuredPermissions,mail_account_ids:Array.from(selectedAccounts)};
@@ -155,6 +182,7 @@
         details.append(el('div',{class:'daily-result-body'},r.response?
           el('div',{class:'markdown'},el('div',{html:md.render(r.response)})):
           r.error?el('div',{class:'stack-sm'},note('The run could not finish.'),el('pre',{class:'json dev-only'},r.error)):note('Still processing…'),
+          r.message_delivery_status && r.message_delivery_status!=='not_requested'?note('Message delivery: '+r.message_delivery_status+(r.message_delivery_detail?' · '+r.message_delivery_detail:'')):null,
           el('p',{class:'small muted dev-only'},r.notified?'Desktop notification requested':'Notification not confirmed')));
         history.append(details);
       }

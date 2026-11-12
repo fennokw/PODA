@@ -23,6 +23,7 @@ PERMISSION_SPECS = {
     "mail_move": ("Move mail to a folder", {"account_id": "Connected mail account", "mailbox": "Exact destination mailbox"}),
     "mail_draft": ("Save draft emails", {"account_id": "Connected mail account", "recipient": "Exact recipient email address"}),
     "mail_send": ("Send emails", {"account_id": "Connected mail account", "recipient": "Exact recipient email address"}),
+    "messages_send": ("Send the completed update by message", {"provider": "Provider", "conversation_id": "Exact conversation"}),
     "fs_write": ("Create files within folder", {"directory": "Absolute granted folder path"}),
     "fs_edit": ("Edit files within folder", {"directory": "Absolute granted folder path"}),
     "fs_move": ("Move files within folder", {"directory": "Absolute granted folder path"}),
@@ -43,7 +44,7 @@ def catalog() -> list[dict[str, Any]]:
          "fields": [{"name": k, "label": v} for k, v in fields.items()],
          "available": bool(available.get(key, {}).get("available")),
          "reason": available.get(key, {}).get("reason", "Tool unavailable"),
-         "high_risk": key in {"mail_send", "run_python", "notion_calendar_archive"}}
+         "high_risk": key in {"mail_send", "messages_send", "run_python", "notion_calendar_archive"}}
         for key, (label, fields) in PERMISSION_SPECS.items()
         if key in tools.TOOLS and tools.TOOLS[key]["mutating"]
     ]
@@ -86,6 +87,12 @@ def prepare(grants: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if not cfg.get("data_source_id") or not cfg.get(needed) or not state.token_present():
                 raise ValueError("Verify the required Notion write permission before authorizing this task")
             scope["data_source_id"] = cfg["data_source_id"]
+        if tool == "messages_send":
+            from ..connectors.messaging import service as messaging
+            if scope["provider"] not in {"apple", "groupme"} or not messaging.allowed(scope["provider"], scope["conversation_id"], "write"):
+                raise ValueError("Enable sending for this exact conversation in Messages first")
+            if scope["conversation_id"] not in {c["id"] for c in messaging.list_chats(scope["provider"])}:
+                raise ValueError("Choose a currently available messaging conversation")
         if tool.startswith("mail_"):
             from ..connectors.email import state as email_state
             accounts = {a["id"]:a for a in email_state.list_accounts()}
@@ -118,6 +125,8 @@ def prepare(grants: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if canonical not in seen:
             verified.append({"tool": tool, "scope": scope})
             seen.add(canonical)
+    if sum(1 for grant in verified if grant["tool"] == "messages_send") > 1:
+        raise ValueError("Choose one message delivery conversation per automation")
     return verified
 
 
@@ -149,6 +158,11 @@ def _matches(permission: dict[str, Any], tool: str, args: dict[str, Any]) -> boo
             return False
         if tool in {"mail_mark","mail_move","mail_draft"} and not acct.get("allow_modify"):
             return False
+    if tool == "messages_send":
+        from ..connectors.messaging import service as messaging
+        return bool(args.get("provider") == scope.get("provider") and
+                    args.get("conversation_id") == scope.get("conversation_id") and
+                    messaging.allowed(scope.get("provider", ""), scope.get("conversation_id", ""), "write"))
     if tool == "mail_mark":
         return args.get("account_id") == scope.get("account_id") and args.get("action") == scope.get("action")
     if tool == "mail_move":

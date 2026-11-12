@@ -53,7 +53,7 @@
     if (map[e.key]) { e.preventDefault(); if (map[e.key] === 'memory') window.location.assign('/memory-viewer'); else navigate(map[e.key]); }
   });
 
-  const screens = [['ask', 'Chat', '1'], ['personalize', 'Personalize', '9'], ['projects', 'Projects', '3'], ['notion', 'Calendar', '4'], ['mail', 'Mail', '5'], ['files', 'Files & access', '6'], ['addons', 'Add-ons', ''], ['privacy', 'Privacy', '7'], ['daily', 'Daily Automation', '0'], ['system', 'System', '8']];
+  const screens = [['ask', 'Chat', '1'], ['personalize', 'Personalize', '9'], ['projects', 'Projects', '3'], ['notion', 'Calendar', '4'], ['mail', 'Mail', '5'], ['messages', 'Messages', ''], ['files', 'Files & access', '6'], ['addons', 'Add-ons', ''], ['privacy', 'Privacy', '7'], ['daily', 'Daily Automation', '0'], ['system', 'System', '8']];
   for (const [name, label, key] of screens) registerCommand({ label: `Go to ${label}`, kind: 'Screen', key, keywords: name === 'mail' ? 'email inbox gmail apple mail' : '', run: () => navigate(name) });
   registerCommand({ label: 'Open memory viewer', kind: 'Screen', key: '2', keywords: 'open3d 3d second brain', run: () => window.location.assign('/memory-viewer') });
   registerCommand({ label: 'Check capabilities', kind: 'Action', keywords: 'ledger status', run: async () => { const c = await api('/capabilities'); toast(`llama.cpp ${c.inference?.reachable ? 'reachable' : 'unreachable'} · Notion ${c.notion?.status || 'DISCONNECTED'} · ${c.filesystem?.granted_roots?.length || 0} path grants`); navigate('system'); } });
@@ -1527,6 +1527,106 @@
   }
 
   // =====================================================================
+  // Messages connections and remote requests
+  route('messages', async ({ view, inspector, setTitle, setInspectorTitle }) => {
+    setTitle('Messages'); setInspectorTitle('How access works'); $('#viewCrumb').textContent = 'Conversations and remote commands';
+    inspector.replaceChildren(el('p', { class: 'small muted' }, 'Apple Messages stays on this Mac. GroupMe data passes through GroupMe. Access is limited to the selected conversations. A Mac cannot run while shut down or actually asleep.'));
+    const box = el('div', { class: 'stack' });
+    view.append(el('div', { class: 'screen stack' }, box));
+    async function refresh() {
+      const state = await api('/messaging/status');
+      box.replaceChildren();
+      for (const provider of ['apple', 'groupme']) {
+        const saved = state.access[provider] || { chats: [], read: false, write: false };
+        const items = el('div', { class: 'stack-sm' }, el('p', { class: 'small muted' }, provider === 'apple' ? 'Grant PODA Full Disk Access to read Messages, and macOS Automation permission to send. Messages must be signed in on this Mac.' : 'Connect a GroupMe developer token. GroupMe receives and stores messages on its servers. The first 100 groups are shown.'));
+        const list = el('div', { class: 'stack-sm' });
+        const read = el('input', { type: 'checkbox', checked: !!saved.read });
+        const write = el('input', { type: 'checkbox', checked: !!saved.write });
+        const token = el('input', { class: 'input', type: 'password', placeholder: 'GroupMe access token', autocomplete: 'off' });
+        if (provider === 'groupme') items.append(el('div', { class: 'row' }, token,
+          el('button', { class: 'btn', onclick: async () => { try { await api('/messaging/groupme/connect', { method: 'POST', body: { token: token.value } }); token.value = ''; toast('GroupMe connected.', 'ok'); refresh(); } catch (e) { toast(errorDetail(e).message, 'danger'); } } }, state.groupme_connected ? 'Replace token' : 'Connect'),
+          state.groupme_connected ? el('button', { class: 'btn btn-danger', onclick: async () => { await api('/messaging/groupme/connect', { method: 'DELETE' }); refresh(); } }, 'Disconnect') : null));
+        items.append(el('button', { class: 'btn', onclick: async () => {
+          try {
+            const data = await api(`/messaging/${provider}/conversations`);
+            list.replaceChildren(...data.conversations.map(c => el('label', { class: 'check' },
+              el('input', { type: 'checkbox', value: c.id, checked: saved.chats.includes(c.id) }),
+              el('span', {}, `${c.name}${c.participants ? ' · ' + c.participants : ''}`))));
+            if (!data.conversations.length) list.replaceChildren(el('p', { class: 'small muted' }, 'No conversations found.'));
+          } catch (e) { list.replaceChildren(errorNode(e)); }
+        } }, 'Load conversations'), list,
+        el('div', { class: 'row' }, el('label', { class: 'check' }, read, 'Allow reading'), el('label', { class: 'check' }, write, 'Allow sending')),
+        el('button', { class: 'btn btn-primary', onclick: async () => {
+          const selected = [...list.querySelectorAll('input:checked')].map(x => x.value);
+          if (!list.querySelector('input') && (read.checked || write.checked)) { toast('Load and choose conversations first.', 'warn'); return; }
+          try { await api(`/messaging/${provider}/access`, { method: 'PUT', body: { chats: selected, read: read.checked, write: write.checked } }); toast('Conversation permissions saved.', 'ok'); refresh(); } catch (e) { toast(errorDetail(e).message, 'danger'); }
+        } }, 'Save access'));
+        box.append(section(provider === 'apple' ? 'Apple Messages' : 'GroupMe', saved.chats.length + ' conversations selected', items));
+      }
+      const remoteState = state.remote || {};
+      const remoteBox = el('div', { class: 'stack-sm' },
+        el('p', { class: 'small muted' }, 'Send from another device signed into the same Apple or GroupMe account: /poda KEY your request. Only new messages in the selected conversation are accepted. Group members can see the key and responses; GroupMe also processes them on its servers. The key is stored in the macOS Keychain.'));
+      const chat = el('select', { class: 'input', 'aria-label': 'Remote command conversation' }, el('option', { value: '' }, 'Choose a conversation'));
+      for (const provider of ['apple', 'groupme']) {
+        const grant = state.access[provider];
+        if (!grant?.read || !grant?.write || !grant.chats?.length) continue;
+        try {
+          const data = await api(`/messaging/${provider}/conversations`);
+          for (const c of data.conversations.filter(c => grant.chats.includes(c.id) && (provider !== 'apple' || String(c.service || '').toLowerCase() === 'imessage')))
+            chat.append(el('option', { value: `${provider}|${c.id}`, selected: provider === remoteState.provider && c.id === remoteState.chat_id }, `${provider === 'apple' ? 'iMessage' : 'GroupMe'} · ${c.name}`));
+        } catch { /* The provider may be unavailable or not authorized yet. */ }
+      }
+      const secret = el('input', { class: 'input', type: 'text', autocomplete: 'off', spellcheck: 'false', placeholder: 'Private command key: 20 or more letters and numbers' });
+      const calendar = el('input', { type: 'checkbox', checked: !!remoteState.calendar_create });
+      remoteBox.append(chat, secret, el('label', { class: 'check' }, calendar, 'Allow creating events in the currently connected Notion calendar'),
+        el('p', { class: 'small muted' }, 'Remote execution currently supports calendar requests. Other account and operating-system permissions remain in effect. Commands older than 10 minutes are skipped; interrupted commands are not replayed.'),
+        el('div', { class: 'row' }, el('button', { class: 'btn btn-primary', onclick: async () => {
+          if (!(await confirmDialog({ title: 'Enable remote commands?', body: 'Anyone who can send as your selected account and knows this key can request enabled actions. Group members can see the key and responses. PODA will process new requests on this Mac.', confirmLabel: 'Enable remote commands', danger: true }))) return;
+          try { const split = chat.value.indexOf('|'); const provider = chat.value.slice(0, split); const chatId = chat.value.slice(split + 1); await api('/messaging/remote/config', { method: 'PUT', body: { enabled: true, provider, chat_id: chatId, secret: secret.value, calendar_create: calendar.checked, confirm: true } }); secret.value = ''; toast('Remote commands enabled.', 'ok'); refresh(); } catch (e) { toast(errorDetail(e).message, 'danger'); }
+        } }, remoteState.enabled ? 'Update remote access' : 'Enable remote access'),
+        remoteState.enabled ? el('button', { class: 'btn btn-danger', onclick: async () => { await api('/messaging/remote/config', { method: 'PUT', body: { enabled: false } }); toast('Remote commands off.', 'ok'); refresh(); } }, 'Turn off') : null));
+      box.append(section('Remote commands', remoteState.enabled ? 'On' : 'Off', remoteBox));
+      const notifyState = state.notifications || {};
+      const notifyChat = el('select', { class: 'input', 'aria-label': 'Notification conversation' }, el('option', { value: '' }, 'Choose a conversation'));
+      for (const provider of ['apple', 'groupme']) {
+        const grant = state.access[provider];
+        if (!grant?.write || !grant.chats?.length) continue;
+        try {
+          const data = await api(`/messaging/${provider}/conversations`);
+          for (const c of data.conversations.filter(c => grant.chats.includes(c.id)))
+            notifyChat.append(el('option', { value: `${provider}|${c.id}`, selected: provider === notifyState.provider && c.id === notifyState.chat_id }, `${provider === 'apple' ? 'Messages' : 'GroupMe'} · ${c.name}`));
+        } catch { /* Provider may be unavailable. */ }
+      }
+      const notifyCoding = el('input', { type: 'checkbox', checked: !!notifyState.coding });
+      const notifyReminders = el('input', { type: 'checkbox', checked: !!notifyState.reminders });
+      const notifyMinutes = el('input', { class: 'input', type: 'number', min: '1', max: '180', value: String(notifyState.minutes || 10), 'aria-label': 'Minutes before event' });
+      const notifyZone = el('input', { class: 'input', value: notifyState.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'America/New_York', 'aria-label': 'Calendar time zone' });
+      const notificationBox = el('div', { class: 'stack-sm' },
+        el('p', { class: 'small muted' }, 'Choose where PODA sends alerts. Everyone in the selected conversation can read them. Calendar reminders use the connected Notion calendar; all-day events and deadlines are excluded. PODA must be running and online.'),
+        notifyChat, el('label', { class: 'check' }, notifyCoding, 'Coding response finished'),
+        el('label', { class: 'check' }, notifyReminders, 'Upcoming calendar events'),
+        el('label', { class: 'small muted' }, 'Minutes before each event (1–180)', notifyMinutes),
+        el('label', { class: 'small muted' }, 'Calendar time zone (IANA)', notifyZone),
+        el('p', { class: 'small muted' }, 'A coding alert means the response finished generating; open PODA to verify the work. Reminders are best effort and are not sent late after downtime.'),
+        el('div', { class: 'row' }, el('button', { class: 'btn btn-primary', onclick: async () => {
+          const split = notifyChat.value.indexOf('|');
+          if (split < 0) { toast('Choose a notification conversation.', 'warn'); return; }
+          if (!(await confirmDialog({ title: 'Enable message notifications?', body: 'PODA will send the selected notifications to this conversation. All participants and the messaging provider can see them.', confirmLabel: 'Enable notifications' }))) return;
+          try { await api('/messaging/notifications/config', { method: 'PUT', body: { enabled: true, provider: notifyChat.value.slice(0, split), chat_id: notifyChat.value.slice(split + 1), coding: notifyCoding.checked, reminders: notifyReminders.checked, minutes: Number(notifyMinutes.value), timezone: notifyZone.value } }); toast('Notifications saved.', 'ok'); refresh(); } catch (e) { toast(errorDetail(e).message, 'danger'); }
+        } }, 'Save notifications'), notifyState.enabled ? el('button', { class: 'btn btn-danger', onclick: async () => {
+          await api('/messaging/notifications/config', { method: 'PUT', body: { enabled: false } }); toast('Notifications off.', 'ok'); refresh();
+        } }, 'Turn off') : null));
+      box.append(section('Text notifications', notifyState.enabled ? 'On' : 'Off', notificationBox));
+      const background = el('div', { class: 'stack-sm' }, el('p', { class: 'small muted' }, 'While PODA is running, it keeps the Mac from automatically entering idle sleep while allowing the display to turn off. Closing the PODA window keeps it running. Manual sleep, a closed laptop lid, shutdown, loss of power or network connectivity can stop remote work.'));
+      if (window.podaDesktop?.shutdown) background.append(el('button', { class: 'btn btn-danger', onclick: async () => {
+        if (await confirmDialog({ title: 'Shut down PODA?', body: 'Remote commands and scheduled work will stop until you reopen PODA.', confirmLabel: 'Shut down', danger: true })) await window.podaDesktop.shutdown();
+      } }, 'Shut down PODA'));
+      box.append(section('Background operation', null, background));
+      box.append(section('Other messaging apps', null, el('p', { class: 'small muted' }, state.supported.whatsapp + ' ' + state.supported.instagram)));
+    }
+    try { await refresh(); } catch (e) { box.replaceChildren(errorNode(e)); }
+  });
+
   // PRIVACY
   // =====================================================================
   route('privacy', async ({ view, inspector, setTitle, setInspectorTitle }) => {

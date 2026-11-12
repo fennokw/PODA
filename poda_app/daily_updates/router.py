@@ -33,7 +33,18 @@ def _save(data:DailyPrompt,id:str|None=None):
 def permission_catalog():
     from .permissions import catalog
     from ..connectors.email import state as email_state
-    return {"permissions":catalog(),
+    from ..connectors.messaging import service as messaging
+    conversations = []
+    for provider in ('apple', 'groupme'):
+        if not (messaging.config().get(provider) or {}).get('write'):
+            continue
+        try:
+            conversations.extend({'provider': provider, 'id': row['id'], 'name': row['name']}
+                                 for row in messaging.list_chats(provider)
+                                 if messaging.allowed(provider, row['id'], 'write'))
+        except (RuntimeError, OSError, ValueError):
+            pass
+    return {"permissions":catalog(), "messaging_conversations": conversations,
             "mail_accounts":[email_state.public_account(a) for a in email_state.list_accounts()]}
 
 @router.get("")

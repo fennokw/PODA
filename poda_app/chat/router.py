@@ -711,6 +711,9 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                         yield frame("token", {"token": download["error"] or _ARCHIVE_READY})
                     yield frame("done", {"model": model, "download": download, "profile": profile["profile"], "eval_count": chunk.get("eval_count"), "eval_duration_ms": round((chunk.get("eval_duration") or 0) / 1e6),
                                        "prompt_eval_count": chunk.get("prompt_eval_count"), "speculation": chunk.get("speculation")})
+                    if not ephemeral and profile.get("profile") in {"fast_coding", "deep_coding"} and chunk.get("done_reason") != "length":
+                        from ..connectors.messaging.notifications import coding_finished
+                        asyncio.get_running_loop().run_in_executor(None, coding_finished)
                     if not ephemeral:
                         asyncio.get_running_loop().run_in_executor(None, summaries.maybe_compact, session_id)
                     return
