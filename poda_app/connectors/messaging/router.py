@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from ...security import keychain
-from . import remote, service, notifications
+from . import remote, service, notifications, chat_commands
 
 router = APIRouter(prefix='/messaging', tags=['messaging'])
 
@@ -14,6 +14,7 @@ class Access(BaseModel):
     chats: list[str] = Field(default_factory=list)
     read: bool = False
     write: bool = False
+    all_chats: bool = False
 
 
 class Token(BaseModel):
@@ -27,6 +28,31 @@ class Remote(BaseModel):
     secret: str = ''
     calendar_create: bool = False
     confirm: bool = False
+
+
+class Monitor(BaseModel):
+    enabled: bool = True
+    provider: str = 'apple'
+    chat_id: str
+    prefix: str = '/PODA'
+    senders: list[str] = Field(default_factory=lambda: ['self'])
+    calendar: bool = False
+    agenda: bool = True
+    coding_root: str = ''
+    confirm: bool = False
+
+
+@router.get('/monitors/config')
+def monitors():
+    return {'monitors': list(chat_commands.config().values())}
+
+
+@router.put('/monitors/config')
+def monitor_config(body: Monitor):
+    try:
+        return chat_commands.save(body.provider, body.chat_id, body.enabled, body.prefix, body.senders, body.calendar, body.coding_root, body.confirm, body.agenda)
+    except (ValueError, RuntimeError, OSError, PermissionError) as exc:
+        raise HTTPException(409, str(exc)) from exc
 
 
 class Notifications(BaseModel):
@@ -60,9 +86,9 @@ def status():
 
 
 @router.get('/{provider}/conversations')
-def conversations(provider: str):
+def conversations(provider: str, query: str = "", limit: int = 10000):
     try:
-        return {'conversations': service.list_chats(provider)}
+        return {'conversations': service.list_chats(provider, query=query[:200], limit=max(1,min(limit,10000)))}
     except (ValueError, RuntimeError, OSError) as exc:
         raise HTTPException(409, str(exc)) from exc
 
@@ -70,7 +96,7 @@ def conversations(provider: str):
 @router.put('/{provider}/access')
 def access(provider: str, body: Access):
     try:
-        return service.set_access(provider, body.chats, read=body.read, write=body.write)
+        return service.set_access(provider, body.chats, read=body.read, write=body.write, all_chats=body.all_chats)
     except (ValueError, RuntimeError, OSError) as exc:
         raise HTTPException(409, str(exc)) from exc
 

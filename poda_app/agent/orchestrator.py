@@ -116,7 +116,8 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
          previous_steps: list[dict] | None = None, continuation_of: str | None = None,
          reply_archive: bool = False, schedule_candidates: list[dict] | None = None,
          schedule_timezone: str | None = None, schedule_day: str | None = None,
-         allowed_tools: set[str] | None = None, unattended_authorizer: Callable[[str, dict], tuple[bool, str]] | None = None) -> dict[str, Any]:
+         allowed_tools: set[str] | None = None, unattended_authorizer: Callable[[str, dict], tuple[bool, str]] | None = None,
+         tool_guard: Callable[[str, dict], tuple[bool, str]] | None = None) -> dict[str, Any]:
     """Return {needs_tools, steps, rationale, executed:[{step, receipt, result}], flagged:[...], proposal_id|None}."""
     specs = tools.model_tool_specs(snapshot)
     if allowed_tools is not None:
@@ -283,6 +284,12 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
                 out["flagged"].append({"name": name, "reason": str(exc)})
                 tool_results_for_model.append({"role": "tool", "content": json.dumps({"error": str(exc)})})
                 continue
+            if tool_guard is not None:
+                permitted, reason = tool_guard(name, args)
+                if not permitted:
+                    out["flagged"].append({"name": name, "reason": reason})
+                    tool_results_for_model.append({"role": "tool", "content": json.dumps({"error": reason})})
+                    continue
             if unattended and schedule_timezone and name == "notion_agenda":
                 args["timezone_name"] = schedule_timezone
                 if schedule_day and args.get("day", "").strip().lower() == "today":

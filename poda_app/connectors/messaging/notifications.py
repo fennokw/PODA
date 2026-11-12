@@ -43,7 +43,7 @@ def _send(cfg, message):
     # Recheck the live settings in case the user disabled notifications while work was running.
     if config() != cfg:
         return False
-    service.send(cfg['provider'], cfg['chat_id'], message[:1000])
+    service.send(cfg['provider'], cfg['chat_id'], ('[PODA]: ' + message)[:1000])
     return True
 
 

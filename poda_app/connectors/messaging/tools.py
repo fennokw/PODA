@@ -6,7 +6,7 @@ from . import service
 
 
 def _available(action: str) -> bool:
-    return any(item.get(action) and item.get('chats') for item in service.config().values() if isinstance(item, dict))
+    return any(item.get(action) and (item.get('all_chats') or item.get('chats')) for item in service.config().values() if isinstance(item, dict))
 
 
 def conversations(provider: str) -> dict:
@@ -28,7 +28,8 @@ def list_messages(provider: str, conversation_id: str, limit: int = 20) -> dict:
 
 def send_message(provider: str, conversation_id: str, text: str) -> dict:
     try:
-        result = service.send(provider, conversation_id, text)
+        message = text if text.startswith('[PODA]:') else '[PODA]: ' + text
+        result = service.send(provider, conversation_id, message)
         return {'ok': True, 'result': result, 'error': None, 'verification': result.get('note') or 'Provider returned a message ID.'}
     except (ValueError, RuntimeError, PermissionError, OSError) as exc:
         return {'ok': False, 'result': None, 'error': str(exc), 'verification': 'Delivery not confirmed.'}

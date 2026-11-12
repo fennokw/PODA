@@ -7,6 +7,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+import time
 from urllib.parse import quote
 
 from .typedstream_reader import try_parse_attributed_body
@@ -35,7 +36,7 @@ def chats(limit: int = 100) -> list[dict]:
               (SELECT group_concat(h.id, ', ') FROM chat_handle_join ch JOIN handle h ON h.ROWID=ch.handle_id WHERE ch.chat_id=c.ROWID) AS participants,
               (SELECT count(*) FROM chat_handle_join ch WHERE ch.chat_id=c.ROWID) AS participant_count,
               (SELECT max(j.message_id) FROM chat_message_join j WHERE j.chat_id=c.ROWID) AS last_message
-              FROM chat c WHERE c.guid IS NOT NULL ORDER BY last_message DESC LIMIT ?''', (max(1, min(limit, 200)),)).fetchall()
+              FROM chat c WHERE c.guid IS NOT NULL ORDER BY last_message DESC LIMIT ?''', (max(1, min(limit, 10000)),)).fetchall()
         return [dict(row) for row in rows]
 
 
@@ -89,3 +90,31 @@ def send(chat_guid: str, text: str) -> None:
         raise RuntimeError('Messages.app could not send the message.') from exc
     if result.returncode:
         raise RuntimeError('Messages.app did not confirm sending. Check Messages sign-in and macOS Automation permission.')
+
+
+_CONTACT_CACHE: tuple[float, dict[str, str]] = (0.0, {})
+
+
+def contact_names() -> dict[str, str]:
+    """Ask Contacts.app for names; denial leaves message numbers usable."""
+    global _CONTACT_CACHE
+    if sys.platform != 'darwin':
+        return {}
+    if time.monotonic() - _CONTACT_CACHE[0] < 60:
+        return _CONTACT_CACHE[1]
+    script = r'''const contacts = Application('Contacts');
+const out = {};
+for (const person of contacts.people()) {
+  const name = person.name();
+  for (const p of person.phones()) { out[p.value()] = name; }
+  for (const e of person.emails()) { out[e.value()] = name; }
+}
+JSON.stringify(out);'''
+    try:
+        import json
+        result = subprocess.run(['/usr/bin/osascript', '-l', 'JavaScript', '-e', script], capture_output=True, text=True, timeout=30)
+        names = json.loads(result.stdout) if result.returncode == 0 else {}
+        _CONTACT_CACHE = (time.monotonic(), names if isinstance(names, dict) else {})
+        return _CONTACT_CACHE[1]
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {}
