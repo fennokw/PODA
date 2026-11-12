@@ -54,6 +54,7 @@ NOTION_KEYCHAIN_ACCOUNT = "primary"
 EGRESS_ALLOWLIST = {
     "addon_catalog": {"raw.githubusercontent.com"},
     "notion": {"api.notion.com"},
+    "groupme": {"api.groupme.com"},
 }
 
 _SOURCE_GLOBS = ("poda_app/**/*.py", "poda_app/static/**/*", "*.cmd", "*.ps1", "requirements.txt")

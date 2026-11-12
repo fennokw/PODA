@@ -104,6 +104,8 @@ def _previous_search(session_id: str | None) -> dict[str, Any]:
 
 
 def is_mail_request(message: str, session_id: str | None = None) -> bool:
+    if re.search(r"\b(?:iMessage|text messages?|texts?|GroupMe|WhatsApp|Instagram)\b", message, re.I) and not re.search(r"\b(?:e-?mails?|inbox|mailbox)\b", message, re.I):
+        return False
     if MAIL_ACTION.search(message) or is_compound_request(message):
         return False  # existing proposal/approval workflow owns write requests
     if MAIL_TOPIC.search(message) and MAIL_SEARCH.search(message):

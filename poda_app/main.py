@@ -35,6 +35,9 @@ from .daily_updates.router import router as daily_updates_router
 from .daily_updates import service as daily_service
 from .runtime.skill_library import router as skills_router
 from .memory.hindsight_bridge import router as hindsight_router, background_sync
+from .connectors.messaging.router import router as messaging_router
+from .connectors.messaging.remote import scheduler as messaging_scheduler
+from .connectors.messaging.notifications import scheduler as notification_scheduler
 
 STARTUP_REPORT: dict = {}
 
@@ -60,14 +63,18 @@ async def lifespan(app: FastAPI):
     print(f"[PODA] v{config.VERSION} build {config.BUILD_ID} data={config.DATA_DIR} encryption={STARTUP_REPORT.get('encryption_status', {}).get('database_encrypted_on_disk')}")
     runner = asyncio.create_task(daily_service.scheduler(), name='poda-daily-scheduler')
     memory_runner = asyncio.create_task(background_sync(),name='poda-hindsight-sync')
+    message_runner = asyncio.create_task(messaging_scheduler(),name='poda-messaging-scheduler')
+    notification_runner = asyncio.create_task(notification_scheduler(), name='poda-notification-scheduler')
     capability_runner = asyncio.create_task(asyncio.to_thread(refresh_startup_capabilities), name="poda-startup-capabilities")
     try:
         yield
     finally:
         runner.cancel()
         memory_runner.cancel()
+        message_runner.cancel()
+        notification_runner.cancel()
         capability_runner.cancel()
-        for running in (runner, memory_runner, capability_runner):
+        for running in (runner, memory_runner, message_runner, notification_runner, capability_runner):
             try: await running
             except asyncio.CancelledError: pass
         await asyncio.to_thread(inference.shutdown)
@@ -76,7 +83,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=config.APP_NAME, version=config.VERSION, lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.middleware("http")(security_middleware)
 
-for r in (runtime_router, memory_router, chat_router, chat_runs_router, agent_router, sandbox_router, planner_router, pace_router, workload_router, privacy_router, notion_router, email_router, software_router, imports_router, project_manager_router, model_manager_router, daily_updates_router, skills_router, hindsight_router, knowledge_router):
+for r in (runtime_router, memory_router, chat_router, chat_runs_router, agent_router, sandbox_router, planner_router, pace_router, workload_router, privacy_router, notion_router, email_router, software_router, imports_router, project_manager_router, model_manager_router, daily_updates_router, skills_router, hindsight_router, knowledge_router, messaging_router):
     app.include_router(r)
 
 

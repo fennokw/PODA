@@ -1,0 +1,13 @@
+# Messaging and remote requests
+
+Messaging and notifications are opt-in. In Messages, select conversations PODA may access and allow reading and/or sending. On macOS, grant Full Disk Access to PODA or its runtime, approve Messages Automation, and sign into Messages. Sending is submitted to Messages.app; delivery is not independently verified. GroupMe connects using a developer access token in Keychain and uses its API for groups (the first 100 are listed). GroupMe sees messages. WhatsApp and Instagram are not connected.
+
+To enable remote requests, grant reading and sending for the chosen iMessage conversation or GroupMe group. Under Remote commands choose it, set a random key of 20 or more letters, digits, underscores or hyphens, choose whether to allow calendar creation, and confirm. From another device signed into the same account, send `/poda YOUR_KEY add a meeting tomorrow at 3pm`. PODA accepts only messages sent by that account in that conversation bearing the key. The key and response are visible to conversation participants and, on GroupMe, the service provider. Use a private conversation; rotate exposed keys. The key is saved in Keychain and redacted from normal message reads.
+
+Remote requests currently support the Notion agenda and, if explicitly enabled, at most one event creation per message in the configured writable Notion calendar. Include an explicit date and time. Interrupted or older-than-ten-minutes requests are not replayed. Revoke remote access or the conversation grant to stop processing.
+
+Under Text notifications choose an allowed sending conversation, coding-response alerts and/or timed Notion event reminders, lead time and IANA time zone. Coding alerts mean a response finished generating, not that work is verified. Reminders exclude all-day entries and deadlines, are best effort, and are not replayed after downtime. Event titles are visible to conversation participants and the provider. Notifications can be disabled independently.
+
+While the Mac desktop app is open it prevents automatic idle system sleep while allowing the display to sleep. Closing its window leaves it running; Shut down PODA stops background work. A powered-off, manually sleeping, disconnected, or closed-lid Mac cannot reliably run PODA or send messages. Keep the computer powered, connected and awake.
+
+Test macOS permissions, Messages.app scripting and end-to-end behavior on the actual Mac and connected accounts before relying on these features. Synthetic automated tests do not verify real-world delivery.
