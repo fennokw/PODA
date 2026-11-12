@@ -262,7 +262,7 @@ def _deliver_update(run_id: str, task: dict[str, Any], output: str) -> None:
             return
         scope = targets[0]
         provider, conversation_id = scope.get('provider', ''), scope.get('conversation_id', '')
-        text = f"PODA daily update: {task['title']}\n\n{output}"
+        text = f"Daily update: {task['title']}\n\n{output}"
         chunks = textwrap.wrap(text, width=900, replace_whitespace=False, drop_whitespace=True,
                                break_long_words=True, break_on_hyphens=False) or []
         if len(chunks) > 5:
@@ -272,7 +272,7 @@ def _deliver_update(run_id: str, task: dict[str, Any], output: str) -> None:
         submitted = 0
         unverified = False
         for index, chunk in enumerate(chunks):
-            content = (f'({index + 1}/{len(chunks)})\n' if len(chunks) > 1 else '') + chunk
+            content = '[PODA]: ' + (f'({index + 1}/{len(chunks)})\n' if len(chunks) > 1 else '') + chunk
             args = {'provider': provider, 'conversation_id': conversation_id, 'text': content}
             allowed, reason = authorize(task['id'], task['updated_at'], 'messages_send', args)
             if not allowed:

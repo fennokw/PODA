@@ -205,7 +205,7 @@ def poll_once() -> int:
         response = _answer(command, cfg)
         current = config()
         if current.get('enabled') and current.get('revision') == cfg.get('revision') and service.allowed(provider, cfg['chat_id'], 'write'):
-            service.send(provider, cfg['chat_id'], response[:1000] if provider == 'groupme' else response)
+            service.send(provider, cfg['chat_id'], ('[PODA]: ' + response)[:1000 if provider == 'groupme' else 4000])
             handled += 1
     return handled
 
@@ -215,6 +215,8 @@ async def scheduler() -> None:
         try:
             if config().get('enabled'):
                 await asyncio.to_thread(poll_once)
+            from . import chat_commands
+            await asyncio.to_thread(chat_commands.poll_once)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

@@ -21,14 +21,14 @@ def config() -> dict:
         return {}
 
 
-def set_access(provider: str, chats: list[str], *, read: bool, write: bool) -> dict:
-    if provider not in {'apple', 'groupme'} or len(chats) > 50 or any(not isinstance(x, str) or not x or len(x) > 300 for x in chats):
-        raise ValueError('Choose up to 50 valid conversations.')
-    available = {row['id'] for row in list_chats(provider)} if read or write else set(chats)
+def set_access(provider: str, chats: list[str], *, read: bool, write: bool, all_chats: bool = False) -> dict:
+    if provider not in {'apple', 'groupme'} or len(chats) > 500 or any(not isinstance(x, str) or not x or len(x) > 300 for x in chats):
+        raise ValueError('Choose up to 500 valid conversations.')
+    available = {row['id'] for row in list_chats(provider)} if (read or write) and not all_chats else set(chats)
     if not set(chats).issubset(available):
         raise ValueError('Choose conversations from the current provider list.')
     data = config()
-    data[provider] = {'chats': sorted(set(chats)), 'read': bool(read), 'write': bool(write)}
+    data[provider] = {'chats': sorted(set(chats)), 'read': bool(read), 'write': bool(write), 'all_chats': bool(all_chats)}
     set_setting(_KEY, json.dumps(data))
     return data[provider]
 
@@ -47,28 +47,53 @@ def _groupme_request(method: str, path: str, payload: dict | None = None) -> Any
     return response.json().get('response') or {}
 
 
-def list_chats(provider: str) -> list[dict]:
+def normalize_identity(value: str) -> str:
+    value = str(value or '').strip().casefold()
+    if '@' in value:
+        return value
+    digits = re.sub(r'\D', '', value)
+    if len(digits) == 10:
+        digits = '1' + digits
+    return '+' + digits if 7 <= len(digits) <= 15 else value
+
+
+def list_chats(provider: str, query: str = '', limit: int = 10000) -> list[dict]:
     if provider == 'apple':
-        return [{'id': row['guid'], 'name': row.get('display_name') or row.get('participants') or row.get('chat_identifier') or 'Conversation',
-                 'service': row.get('service_name'), 'participants': row.get('participants') or '',
-                 'participant_count': row.get('participant_count', 0)} for row in apple.chats()]
+        names = {normalize_identity(k): v for k, v in apple.contact_names().items()}
+        rows = []
+        for row in apple.chats(limit=10000):
+            participants = row.get('participants') or row.get('chat_identifier') or ''
+            resolved = ', '.join(names.get(normalize_identity(p), p) for p in participants.split(', ') if p)
+            name = row.get('display_name') or resolved or 'Conversation'
+            if query and query.casefold() not in (name + ' ' + participants).casefold():
+                continue
+            rows.append({'id': row['guid'], 'name': name, 'service': row.get('service_name'),
+                         'participants': participants, 'participant_count': row.get('participant_count', 0)})
+        return rows[:max(1, min(limit, 10000))]
     if provider == 'groupme':
         groups = _groupme_request('GET', 'groups?per_page=100&omit=memberships')
         return [{'id': str(row['id']), 'name': str(row.get('name') or 'Group')[:120], 'service': 'GroupMe'}
-                for row in groups if re.fullmatch(r'[0-9]+', str(row.get('id') or ''))]
+                for row in groups if re.fullmatch(r'[0-9]+', str(row.get('id') or '')) and (not query or query.casefold() in str(row.get('name') or '').casefold())][:max(1, min(limit, 10000))]
     raise ValueError('Unsupported messaging provider.')
 
 
 def allowed(provider: str, chat_id: str, action: str) -> bool:
     grant = config().get(provider) or {}
-    return bool(grant.get(action) and chat_id in (grant.get('chats') or []))
+    return bool(grant.get(action) and (grant.get('all_chats') or chat_id in (grant.get('chats') or [])))
 
 
 def _redact_key(items: list[dict]) -> list[dict]:
+    # Only the legacy remote mode embeds a secret after /poda. Natural prefix
+    # commands have no secret and must remain readable to the local assistant.
+    try:
+        from . import remote
+        secret = keychain.keychain_get(remote._SECRET_SERVICE, 'secret') if remote.config().get('enabled') else None
+    except Exception:
+        secret = None
     for item in items:
         text = item.get('text') or ''
         parts = text.split(None, 2)
-        if len(parts) >= 2 and parts[0].lower() == '/poda':
+        if secret and len(parts) >= 2 and parts[0].lower() == '/poda' and parts[1] == secret:
             item['text'] = '/poda [private key]' + (' ' + parts[2] if len(parts) == 3 else '')
     return items
 

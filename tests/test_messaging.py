@@ -84,7 +84,7 @@ def test_remote_pairing_scopes_replay_and_revocation(client, monkeypatch):
                        msg(103, f'/poda {secret} old', when=now-timedelta(minutes=11)),
                        msg(104, f'/poda {secret} valid'), msg(105, f'/poda {secret} sms', protocol='SMS')])
         assert remote.poll_once() == 1
-        assert answered == ['valid'] and sent == [('apple', 'chat-a', 'Verified response')]
+        assert answered == ['valid'] and sent == [('apple', 'chat-a', '[PODA]: Verified response')]
         assert remote.poll_once() == 0
         remote.configure(False)
         assert not remote._authorized(cfg, 'Add a meeting tomorrow at 5pm', 'notion_calendar_create', {})[0]
@@ -162,7 +162,7 @@ def test_groupme_remote_accepts_only_connected_account_once(client, monkeypatch)
     try:
         assert remote.configure(True, '42', secret, False, True, 'groupme')['enabled']
         assert remote.poll_once() == 1
-        assert answered == ['legitimate'] and sent == [('groupme', '42', 'Done')]
+        assert answered == ['legitimate'] and sent == [('groupme', '42', '[PODA]: Done')]
         assert remote.config()['cursor'] == '103'
     finally:
         set_setting(service._KEY, '{}'); set_setting(remote._SETTING, '{}')
@@ -198,6 +198,8 @@ def test_notification_reminders_and_coding_are_scoped_and_deduplicated(client, m
 def test_command_key_is_redacted_from_agent_reads(client, monkeypatch):
     set_setting(service._KEY, json.dumps({'apple': {'chats': ['chat-a'], 'read': True}}))
     monkeypatch.setattr(apple, 'messages', lambda *a, **kw: [{'text': '/poda secret-key create a meeting'}])
+    monkeypatch.setattr(remote, 'config', lambda: {'enabled': True})
+    monkeypatch.setattr(remote.keychain, 'keychain_get', lambda *args: 'secret-key')
     try:
         assert service.read('apple', 'chat-a')[0]['text'] == '/poda [private key] create a meeting'
     finally:
@@ -287,3 +289,86 @@ def test_daily_only_delivers_after_completed_stream(client, monkeypatch):
     asyncio.run(daily.execute('interrupted',task))
     assert output == ['final result']
     assert next(r for r in daily.history(300) if r['id']=='interrupted')['status'] == 'failed'
+
+
+def test_all_chat_grants_and_contact_search(client, monkeypatch):
+    from poda_app.connectors.messaging import tools as message_tools
+    monkeypatch.setattr(apple, 'contact_names', lambda: {'+1 (617) 555-0100': 'Alex Example'})
+    monkeypatch.setattr(apple, 'chats', lambda **kw: [{'guid':'iMessage;-;6175550100', 'participants':'+16175550100', 'service_name':'iMessage'}])
+    try:
+        service.set_access('apple', [], read=True, write=True, all_chats=True)
+        assert service.allowed('apple', 'any-chat', 'read') and message_tools._available('write')
+        assert service.list_chats('apple', query='Alex')[0]['name'] == 'Alex Example'
+        assert service.list_chats('apple', query='617')[0]['name'] == 'Alex Example'
+        service.set_access('apple', [], read=False, write=False)
+        assert not service.allowed('apple', 'any-chat', 'write')
+    finally:
+        set_setting(service._KEY, '{}')
+
+
+def test_monitored_chat_prefix_senders_cursor_and_reply(client, monkeypatch):
+    from poda_app.connectors.messaging import chat_commands as commands
+    set_setting(service._KEY, json.dumps({'apple': {'chats':['chat-a'], 'read':True, 'write':True}}))
+    set_setting(commands._KEY, '{}');set_setting(remote._SETTING, '{}')
+    monkeypatch.setattr(service, 'list_chats', lambda p: [{'id':'chat-a','service':'iMessage'}])
+    monkeypatch.setattr(commands.egress, 'offline_mode', lambda: False)
+    events=[]
+    monkeypatch.setattr(apple, 'messages', lambda chat, **kw: ([{'rowid':100}] if kw.get('newest') else [x for x in events if x['rowid'] > kw.get('after', 0)]))
+    answered=[];sent=[]
+    monkeypatch.setattr(commands, 'answer', lambda command,cfg: (answered.append(command) or 'Done'))
+    monkeypatch.setattr(service, 'send', lambda p,c,t: sent.append((p,c,t)))
+    try:
+        commands.save('apple','chat-a',True,prefix='/HELP',senders=['self','+1 (617) 555-0100'],confirm=True)
+        now=(datetime.now(timezone.utc)+timedelta(seconds=1)).isoformat()
+        def event(i,text,sender=None,mine=False):
+            return {'rowid':i,'text':text,'sender':sender,'is_from_me':mine,'text_available':True,'date':now}
+        events.extend([event(101,'hello',mine=True),event(102,'/HELP bad','+16175550101'),event(103,'/HELPful wrong',mine=True),
+                       event(104,'/help question','6175550100'),event(105,'/HELP mine',mine=True),event(106,'[PODA]: reply',mine=True)])
+        assert commands.poll_once()==2
+        assert answered==['question','mine']
+        assert all(text.startswith('[PODA]:') for _,_,text in sent)
+        assert commands.poll_once()==0
+        commands.save('apple','chat-a',False)
+        assert commands.poll_once()==0
+    finally:
+        set_setting(commands._KEY, '{}');set_setting(service._KEY, '{}')
+
+
+def test_remote_code_scope_blocks_other_folders(tmp_path, client, monkeypatch):
+    from poda_app.connectors.messaging import chat_commands as commands
+    from poda_app.agent import grants
+    project=tmp_path/'project';project.mkdir()
+    monkeypatch.setattr(commands, '_live', lambda cfg: True)
+    monkeypatch.setattr(grants, 'resolve', lambda path, mode: (path,{}))
+    cfg={'coding_root':str(project)}
+    assert commands._guard(cfg,'fs_read',{'path':str(project/'main.py')})[0]
+    assert not commands._guard(cfg,'fs_read',{'path':str(tmp_path/'outside.py')})[0]
+    assert not commands._guard({'coding_root':''},'fs_edit',{'path':str(project/'main.py')})[0]
+
+
+def test_send_as_user_has_poda_prefix(monkeypatch):
+    from poda_app.connectors.messaging import tools as msgtools
+    sent=[]
+    monkeypatch.setattr(service, 'send', lambda p,c,t: (sent.append(t) or {'submitted':True}))
+    assert msgtools.send_message('apple','chat-a','Hello')['ok']
+    assert msgtools.send_message('apple','chat-a','[PODA]: Already marked')['ok']
+    assert sent == ['[PODA]: Hello','[PODA]: Already marked']
+
+
+def test_chat_monitor_multiple_conversations_and_live_revoke(client, monkeypatch):
+    from poda_app.connectors.messaging import chat_commands as commands
+    set_setting(service._KEY,json.dumps({'apple':{'chats':['a','b'],'read':True,'write':True}}))
+    set_setting(commands._KEY,'{}');set_setting(remote._SETTING,'{}')
+    monkeypatch.setattr(service,'list_chats',lambda p:[{'id':'a'},{'id':'b'}])
+    monkeypatch.setattr(apple,'messages',lambda *a,**kw:[])
+    monkeypatch.setattr(commands.egress,'offline_mode',lambda:False)
+    try:
+        a=commands.save('apple','a',True,confirm=True)
+        b=commands.save('apple','b',True,prefix='/ASK',confirm=True)
+        assert len(commands.config()) == 2 and commands._live(a) and commands._live(b)
+        commands.save('apple','a',False)
+        assert not commands._live(a) and commands._live(b)
+        set_setting(service._KEY,'{}')
+        assert not commands._live(b)
+    finally:
+        set_setting(commands._KEY,'{}');set_setting(service._KEY,'{}')
