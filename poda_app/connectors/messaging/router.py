@@ -38,6 +38,8 @@ class Monitor(BaseModel):
     senders: list[str] = Field(default_factory=lambda: ['self'])
     calendar: bool = False
     agenda: bool = True
+    calendar_edit: bool = False
+    require_prefix: bool = True
     coding_root: str = ''
     confirm: bool = False
 
@@ -50,7 +52,7 @@ def monitors():
 @router.put('/monitors/config')
 def monitor_config(body: Monitor):
     try:
-        return chat_commands.save(body.provider, body.chat_id, body.enabled, body.prefix, body.senders, body.calendar, body.coding_root, body.confirm, body.agenda)
+        return chat_commands.save(body.provider, body.chat_id, body.enabled, body.prefix, body.senders, body.calendar, body.coding_root, body.confirm, body.agenda, body.require_prefix, body.calendar_edit)
     except (ValueError, RuntimeError, OSError, PermissionError) as exc:
         raise HTTPException(409, str(exc)) from exc
 

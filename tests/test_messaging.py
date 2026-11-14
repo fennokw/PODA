@@ -372,3 +372,70 @@ def test_chat_monitor_multiple_conversations_and_live_revoke(client, monkeypatch
         assert not commands._live(b)
     finally:
         set_setting(commands._KEY,'{}');set_setting(service._KEY,'{}')
+
+
+def test_prefix_optional_ignores_own_outputs():
+    from poda_app.connectors.messaging.chat_commands import extract_command
+    cfg={'prefix':'/PODA','require_prefix':False}
+    assert extract_command('Add an event tomorrow at 2pm',cfg)=='Add an event tomorrow at 2pm'
+    assert extract_command('/PODA Add event',cfg)=='Add event'
+    assert extract_command('[PODA]: Done',cfg) is None
+    assert extract_command('  [poda]: Reminder',cfg) is None
+    assert extract_command('ordinary chat',{'prefix':'/PODA'}) is None
+
+
+def test_remote_calendar_receipts_not_model_denials(monkeypatch):
+    from poda_app.connectors.messaging import chat_commands as commands
+    from poda_app.runtime import models, capability, inference
+    from poda_app.agent import orchestrator, tools
+    monkeypatch.setattr(models,'registry',lambda:{'profiles':{'balanced':{'model':'mock'}}})
+    monkeypatch.setattr(capability,'sync_ledger',lambda:{})
+    monkeypatch.setattr(tools,'availability',lambda snapshot:{'notion_calendar_create':{'available':True}})
+    def plan(*a,**kw):
+        assert kw['require_tool_attempt']
+        assert 'notion_calendar_create' in kw['execution_context']
+        return {'executed':[{'step':{'tool':'notion_calendar_create','args':{}},'result':{'ok':True,'result':{'created':True,'verified':True,'title':'Vocal lessons','start':'2026-11-20T14:00:00-05:00'}}}], 'flagged':[]}
+    monkeypatch.setattr(orchestrator,'plan',plan)
+    monkeypatch.setattr(inference,'chat',lambda *a,**k: (_ for _ in ()).throw(AssertionError('Receipt must not be rewritten by model')))
+    reply=commands.answer('Add vocal lessons next Friday at 2 PM',{'calendar':True})
+    assert 'Added: Vocal lessons' in reply
+
+
+def test_remote_calendar_edit_requires_separate_grant(monkeypatch):
+    from poda_app.connectors.messaging import chat_commands as commands
+    from poda_app.connectors.notion import state
+    monkeypatch.setattr(commands,'_live',lambda cfg:True)
+    monkeypatch.setattr(state,'capability',lambda:{'can_insert_content':True,'can_update_content':True,'mapping_active':True,'data_source_id':'source'})
+    cfg={'calendar':True,'data_source':'source'}
+    assert commands._guard(cfg,'notion_calendar_create',{})[0]
+    assert not commands._guard(cfg,'notion_calendar_update',{})[0]
+    assert commands._guard({**cfg,'calendar_edit':True},'notion_calendar_update',{})[0]
+
+
+def test_self_chat_mirror_claim(client):
+    from poda_app.connectors.messaging import chat_commands as commands
+    set_setting('messaging_recent_commands_v1','{}')
+    cfg={'provider':'apple','chat_id':'test-mirror'}
+    now=datetime.now(timezone.utc)
+    assert commands._claim_message(cfg,'hello',now)
+    assert not commands._claim_message(cfg,'hello',now+timedelta(seconds=1))
+    assert commands._claim_message(cfg,'hello',now+timedelta(seconds=15))
+
+
+def test_remote_planner_retries_refusal_and_executes_series(monkeypatch):
+    from poda_app.agent import orchestrator, tools
+    monkeypatch.setattr(tools,'model_tool_specs',lambda snapshot:[{'type':'function','function':{'name':'notion_calendar_create'}}])
+    monkeypatch.setattr(orchestrator,'_planner_models',lambda *a:['fake'])
+    responses=iter([{'message':{'content':'No calendar tool is available.'}},
+      {'message':{'tool_calls':[{'function':{'name':'notion_calendar_create','arguments':{'title':'Vocal lessons','start':date}}} for date in ['2026-11-20T14:00:00-05:00','2026-11-27T14:00:00-05:00']]}},
+      {'message':{'content':'Finished.'}}])
+    monkeypatch.setattr(orchestrator.inference,'chat',lambda *a,**kw:next(responses))
+    calls=[]
+    def execute(name,args,**kw):
+        calls.append(args['start'])
+        return {'receipt':{'id':str(len(calls)),'outcome':'succeeded'},'result':{'ok':True,'result':{'created':True,'verified':True}}}
+    monkeypatch.setattr(tools,'execute',execute)
+    result=orchestrator.plan('Add vocal lessons every Friday at 2pm through November',{},unattended=True,
+       allowed_tools={'notion_calendar_create'},unattended_authorizer=lambda *a:(True,'enabled'),
+       execution_context='Calendar creation is preauthorized.',require_tool_attempt=True)
+    assert len(calls)==2 and len(result['executed'])==2

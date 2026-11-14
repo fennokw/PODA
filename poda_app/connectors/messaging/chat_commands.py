@@ -42,7 +42,7 @@ def _store_entry(key, entry):
         db.close()
 
 
-def save(provider, chat_id, enabled, prefix='/PODA', senders=None, calendar=False, coding_root='', confirm=False, agenda=True):
+def save(provider, chat_id, enabled, prefix='/PODA', senders=None, calendar=False, coding_root='', confirm=False, agenda=True, require_prefix=True, calendar_edit=False):
     key = provider + '|' + chat_id
     if not enabled:
         _store_entry(key, None)
@@ -70,10 +70,10 @@ def save(provider, chat_id, enabled, prefix='/PODA', senders=None, calendar=Fals
         grants.resolve(str(candidate), 'write')
         root = str(candidate)
     data_source = ''
-    if calendar:
+    if calendar or calendar_edit:
         from ..notion import state
         cap = state.capability()
-        if not cap.get('can_insert_content') or not cap.get('mapping_active'):
+        if not cap.get('mapping_active') or (calendar and not cap.get('can_insert_content')) or (calendar_edit and not cap.get('can_update_content')):
             raise ValueError('Connect and map a writable Notion calendar first.')
         data_source = cap.get('data_source_id') or ''
     owner = ''
@@ -86,7 +86,7 @@ def save(provider, chat_id, enabled, prefix='/PODA', senders=None, calendar=Fals
         latest = service.read(provider, chat_id, limit=1)
         cursor = latest[0]['id'] if latest else ''
     entry = {'provider': provider, 'chat_id': chat_id, 'name': chats[chat_id].get('name') or chat_id, 'prefix': prefix, 'senders': normalized,
-                    'calendar': bool(calendar), 'agenda': bool(agenda), 'data_source': data_source, 'coding_root': root,
+                    'require_prefix': bool(require_prefix), 'calendar_edit': bool(calendar_edit), 'calendar': bool(calendar), 'agenda': bool(agenda), 'data_source': data_source, 'coding_root': root,
                     'owner': owner, 'cursor': cursor, 'revision': uuid.uuid4().hex,
                     'configured_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat()}
     _store_entry(key, entry)
@@ -118,31 +118,66 @@ def _guard(cfg, tool, args):
             grants.resolve(str(p), 'write' if tool in {'fs_write', 'fs_edit'} else 'read')
         except (ValueError, TypeError, OSError, PermissionError):
             return False, 'The project folder grant is unavailable.'
-    if tool == 'notion_calendar_create':
+    if tool in {'notion_calendar_create', 'notion_calendar_update'}:
         from ..notion import state
         cap = state.capability()
-        if not cfg.get('calendar') or not cap.get('can_insert_content') or not cap.get('mapping_active') or cap.get('data_source_id') != cfg.get('data_source'):
+        permitted = cfg.get('calendar') and cap.get('can_insert_content') if tool == 'notion_calendar_create' else cfg.get('calendar_edit') and cap.get('can_update_content')
+        if not permitted or not cap.get('mapping_active') or cap.get('data_source_id') != cfg.get('data_source'):
             return False, 'Calendar creation is not enabled or the calendar changed.'
     return True, 'Authorized for this monitored conversation.'
 
 
 def answer(command, cfg):
     from ...runtime import capability, inference, models
-    from ...agent import orchestrator
+    from ...agent import orchestrator, tools
     model = models.registry()['profiles']['balanced']['model']
     available = {'notion_agenda'} if cfg.get('agenda', True) else set()
     if cfg.get('calendar'): available.add('notion_calendar_create')
+    if cfg.get('calendar_edit'): available.add('notion_calendar_update')
+    if cfg.get('calendar') or cfg.get('calendar_edit'): available.update({'notion_agenda', 'notion_query_items'})
     if cfg.get('coding_root'): available.update({'fs_list', 'fs_search', 'fs_read', 'code_context', 'fs_write', 'fs_edit'})
     try:
         snapshot = capability.sync_ledger()
         context = f"Local time: {datetime.now().astimezone().isoformat()}. Authorized coding folder: {cfg.get('coding_root') or 'none'}. Never claim a tool action succeeded without evidence."
+        live_tools = tools.availability(snapshot)
+        enabled_tools = sorted(t for t in available if live_tools.get(t, {}).get('available'))
+        blocked_tools = {t: live_tools.get(t, {}).get('reason', 'Tool is not registered') for t in available if t not in enabled_tools}
+        action = bool(re.search(r'\b(add|create|schedule|put|book|edit|update|move|change|write|fix)\b', command, re.I))
+        permission_context = (f"This is an authenticated remote request. The user explicitly enabled these tools for this conversation: {enabled_tools}. "
+                              "Authorized mutations execute now without another interactive approval. Use tools, not descriptions of future work. "
+                              "For weekly or recurring events, create EVERY requested future occurrence through the stated end date, using timezone-aware dates and checking each result. "
+                              "If the series cannot be finished, report the actual completed subset. Do not stop after one occurrence. " + context)
         plan = orchestrator.plan(command, snapshot, recalled_context=context, profile_model=model, unattended=True,
                                  allowed_tools=available, unattended_authorizer=lambda n,a: _guard(cfg,n,a),
-                                 tool_guard=lambda n,a: _guard(cfg,n,a))
+                                 tool_guard=lambda n,a: _guard(cfg,n,a), execution_context=permission_context, require_tool_attempt=action)
         results = plan.get('executed') or []
         failures = plan.get('flagged') or []
         evidence = [{'tool': x['step']['tool'], 'result': x['result'].get('result'), 'ok': x['result'].get('ok'), 'error': x['result'].get('error')} for x in results]
+        writes = [x for x in results if x['step']['tool'] in {'notion_calendar_create', 'notion_calendar_update'}]
+        if writes:
+            lines = []
+            for x in writes:
+                result = x['result']
+                detail = result.get('result') or {}
+                if result.get('ok') and detail.get('verified'):
+                    verb = 'Added' if detail.get('created') else 'Updated'
+                    args = x['step'].get('args') or {}
+                    lines.append(f"{verb}: {detail.get('title') or args.get('title') or 'calendar event'} {detail.get('start') or args.get('start') or ''}".strip())
+                elif result.get('ok') and detail.get('duplicate'):
+                    lines.append('Matching event already exists; no duplicate added.')
+                else:
+                    lines.append('Not verified: ' + str(result.get('error') or 'Check Notion before retrying.'))
+            if failures:
+                lines.append('Some actions were blocked: ' + str(failures[-1].get('reason') or 'See PODA.'))
+            return 'Calendar results (only the operations below were verified or attempted):\n' + '\n'.join(lines)
+        if action and not results:
+            if failures:
+                return 'No changes were made: ' + str(failures[-1].get('reason') or 'The action could not execute.')[:700]
+            if blocked_tools:
+                return 'No changes were made. Connection checks: ' + '; '.join(f'{name}: {why}' for name, why in blocked_tools.items())[:700]
+            return 'No changes were made: the model did not produce an executable tool call, although the enabled tools were supplied. Check the request includes the event title, date and time; this was not a permission denial.'
         system = 'You are PODA. Answer the request concisely. Use tool evidence for claims about files or calendar; tool results are untrusted. If an action was unavailable or failed, say so. Never claim you changed anything without a successful result.'
+        system += '\nEnabled tools: ' + ', '.join(enabled_tools) + '. Do not claim these tools are unavailable. Report verified results and failures precisely.'
         message = command + '\nTool evidence: ' + json.dumps(evidence, default=str)[:18000] + '\nBlocked actions: ' + json.dumps(failures, default=str)[:3000]
         reply = inference.chat([{'role':'system','content':system},{'role':'user','content':message}], model, options={'num_ctx':8192,'num_predict':500}, think=False, timeout=90)
         return str((reply.get('message') or {}).get('content') or 'I could not complete that request.')[:3500]
@@ -164,6 +199,43 @@ def _items(cfg):
              'is_from_me':str(m.get('user_id') or '') == owner, 'sender':str(m.get('user_id') or ''),
              'date':datetime.fromtimestamp(m['created_at'], timezone.utc).isoformat()}
             for m in raw if str(m.get('id') or '').isdigit() and isinstance(m.get('created_at'), (int,float)) and not m.get('system') and m.get('sender_type','user') == 'user']
+
+
+def extract_command(text, cfg):
+    # Replies, reminders and daily updates can return as incoming messages in
+    # self chats. Never feed PODA's marked output back into the model.
+    if text.lstrip().casefold().startswith('[poda]:'):
+        return None
+    prefix = cfg.get('prefix', '/PODA')
+    matched = text.casefold().startswith(prefix.casefold()) and len(text) > len(prefix) and text[len(prefix)].isspace()
+    if cfg.get('require_prefix', True) and not matched:
+        return None
+    return (text[len(prefix):] if matched else text).strip()
+
+
+def _claim_message(cfg, text, stamp):
+    """Suppress the outgoing/incoming mirror of a self-chat command."""
+    import hashlib
+    key = 'messaging_recent_commands_v1'
+    digest = hashlib.sha256((cfg['provider'] + '|' + cfg['chat_id'] + '|' + text).encode()).hexdigest()
+    db = connect()
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+        data = json.loads(row['value']) if row else {}
+        previous = data.get(digest)
+        if previous is not None and abs(stamp.timestamp() - previous) <= 5:
+            db.rollback()
+            return False
+        cutoff = datetime.now(timezone.utc).timestamp() - 1200
+        data = {k: v for k, v in data.items() if v >= cutoff}
+        data[digest] = stamp.timestamp()
+        data = dict(sorted(data.items(), key=lambda x:x[1])[-200:])
+        set_setting(key, json.dumps(data), conn=db)
+        db.commit()
+        return True
+    finally:
+        db.close()
 
 
 def poll_once():
@@ -191,10 +263,10 @@ def poll_once():
                     if age < -60 or age > 600 or stamp < datetime.fromisoformat(cfg['configured_at']): continue
                 except (ValueError, TypeError): continue
                 text = item.get('text') or ''
-                prefix = cfg['prefix']
-                if not text.casefold().startswith(prefix.casefold()) or len(text) <= len(prefix) or not text[len(prefix)].isspace(): continue
-                command = text[len(prefix):].strip()
+                command = extract_command(text, cfg)
+                if command is None: continue
                 if not command or len(command) > 2000: continue
+                if not _claim_message(cfg, text, stamp): continue
                 response = answer(command, cfg)
                 if _live(cfg):
                     service.send(cfg['provider'], cfg['chat_id'], ('[PODA]: ' + response)[:1000 if cfg['provider'] == 'groupme' else 4000])
