@@ -41,7 +41,7 @@ async function startBackend(python) {
     PATH: ['/opt/homebrew/bin', '/usr/local/bin', process.env.PATH || '/usr/bin:/bin'].join(path.delimiter) };
   // Packaged builds always use the existing production encryption policy.
   if (app.isPackaged) processEnv.PODA_DB_ENCRYPTION = 'required';
-  const child = spawn(python, ['-u', path.join(source, 'desktop_child.py')], {
+  const child = spawn(python, ['-u', path.join(source, 'desktop_backend.py')], {
     cwd: source, env: processEnv, stdio: ['pipe', 'pipe', 'pipe'],
   });
   backend = child;

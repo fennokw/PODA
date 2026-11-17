@@ -24,3 +24,13 @@ test('failure clears singleflight and repeated crashes stop retrying',async()=>{
   for(let i=0;i<3;i++)await assert.rejects(ensure(),/failed/);
   await assert.rejects(ensure(),/repeatedly stopped/);
 });
+test('launcher entry point and local recovery modules are packaged',()=>{
+  const fs=require('node:fs'),path=require('node:path');
+  const desktop=path.join(__dirname,'../desktop');
+  const main=fs.readFileSync(path.join(desktop,'main.cjs'),'utf8');
+  const entry=main.match(/spawn\(python, \['-u', path.join\(source, '([^']+)'\)/)[1];
+  assert.ok(fs.existsSync(path.join(desktop,entry)),`Missing backend entry point: ${entry}`);
+  assert.ok(fs.readFileSync(path.join(desktop,'stage_backend.py'),'utf8').includes(`"${entry}"`));
+  const packaging=fs.readFileSync(path.join(desktop,'package-mac.cjs'),'utf8');
+  for(const [,name] of main.matchAll(/require\('\.\/([^']+)'\)/g))assert.ok(packaging.includes(`'${name}'`),`Module omitted from package: ${name}`);
+});
