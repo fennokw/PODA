@@ -1157,7 +1157,7 @@
       load(mapperBox, async () => {
         const [schema, mapping] = await Promise.all([api('/notion/schema'), api('/notion/mapping').catch(() => ({}))]);
         const props = schema.properties || schema.schema || {};
-        const current = mapping?.active?.mapping || {};
+        const current = mapping?.active?.mapping || mapping?.inferred || {};
         const currentVersion = mapping?.active?.version;
         const names = Object.keys(props);
         const byType = (types) => names.filter((n) => !types || types.includes(props[n].type));
@@ -1169,17 +1169,43 @@
         };
         const form = el('form', { class: 'stack-sm' },
           el('div', { class: 'grid-3' }, select('title', 'Title property', byType(['title']), false), select('date', 'Event date property', byType(['date'])), select('status', 'Status property', byType(['status', 'select'])),
-            select('type', 'Type property', byType(['select', 'multi_select', 'status'])), select('project_relation', 'Project Domain relation', byType(['relation'])), select('class_relation', 'Class relation', byType(['relation']))),
+            select('completed', 'Completion checkbox', byType(['checkbox'])), select('type', 'Type property', byType(['select', 'multi_select', 'status'])), select('project_relation', 'Project Domain relation', byType(['relation'])), select('class_relation', 'Class relation', byType(['relation']))),
           el('div', { class: 'field' }, el('label', { class: 'label' }, 'External ID properties (comma separated)'), el('input', { class: 'input', name: 'external_ids', value: Object.values(current.external_ids || {}).join(', '), placeholder: 'Canvas Assignment ID, External Event ID' })),
           el('div', { class: 'field' }, el('label', { class: 'label' }, 'Status values that mean done (comma separated)'), el('input', { class: 'input', name: 'done_values', value: (current.status_done_values || []).join(', '), placeholder: 'Done, Complete' })),
           el('div', { class: 'row' }, el('button', { class: 'btn btn-primary', type: 'submit' }, 'Save mapping version'), currentVersion ? el('span', { class: 'chip' }, 'version ', el('b', {}, currentVersion)) : pill('no mapping saved', 'warn')));
         form.addEventListener('submit', async (e) => {
           e.preventDefault(); const fd = new FormData(form);
-          const body = { title: fd.get('title'), date: fd.get('date') || null, status: fd.get('status') || null, type: fd.get('type') || null, project_relation: fd.get('project_relation') || null, class_relation: fd.get('class_relation') || null,
+          const body = { ...current, completed: fd.get('completed') || null, title: fd.get('title'), date: fd.get('date') || null, status: fd.get('status') || null, type: fd.get('type') || null, project_relation: fd.get('project_relation') || null, class_relation: fd.get('class_relation') || null,
             external_ids: Object.fromEntries(String(fd.get('external_ids') || '').split(',').map((s) => s.trim()).filter(Boolean).map((name) => [name, name])), status_done_values: String(fd.get('done_values') || '').split(',').map((s) => s.trim()).filter(Boolean) };
           try { await api('/notion/mapping', { method: 'POST', body }); toast('Mapping saved', 'ok'); refreshStatus(); drawCalendar(); } catch (err) { toast(errorDetail(err).message, 'danger'); }
         });
-        return form;
+        const preset = el('button', {class:'btn btn-primary', type:'button'}, "Use Kaden's BestNDS");
+        preset.addEventListener('click', async () => {
+          preset.disabled=true;
+          try { await api('/notion/mapping/bestnds',{method:'POST',body:{}}); toast('BestNDS mapping saved: calendar uses Date','ok'); refreshStatus(); }
+          catch(err) { toast(errorDetail(err).message,'danger'); }
+          finally { preset.disabled=false; }
+        });
+        const file = el('input',{type:'file',accept:'.json,application/json','aria-label':'Import mapping JSON',class:'input'});
+        file.addEventListener('change',async () => {
+          const selected=file.files?.[0]; if(!selected) return;
+          try {
+            if(selected.size>65536) throw new Error('Mapping files must be at most 64 KB.');
+            const document=JSON.parse(await selected.text());
+            await api('/notion/mapping/import',{method:'POST',body:document});
+            toast('Mapping imported and validated against this database','ok'); refreshStatus();
+          } catch(err) { toast(err.message || errorDetail(err).message,'danger'); }
+          finally { file.value=''; }
+        });
+        const download=el('button',{class:'btn',type:'button'},'Export mapping');
+        download.addEventListener('click',async () => {
+          try {
+            const value=await api('/notion/mapping/export');
+            const url=URL.createObjectURL(new Blob([JSON.stringify(value,null,2)],{type:'application/json'}));
+            const a=el('a',{href:url,download:'poda-notion-mapping.json'}); a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+          } catch(err) { toast(errorDetail(err).message,'danger'); }
+        });
+        return el('div',{class:'stack-sm'},el('p',{class:'small muted'},"BestNDS uses Date for calendar times and due dates, Completed for check-offs, and Commitment only for events. Connect Schedule & Tasks, then apply the preset. Custom mappings remain available below."),el('div',{class:'row'},preset,download),el('label',{},'Import a saved mapping',file),form);
       });
       load(previewBox, async () => {
         const r = await api('/notion/mapping/preview?n=5');

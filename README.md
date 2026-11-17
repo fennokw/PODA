@@ -96,3 +96,7 @@ node --test tests/desktop-recovery.test.cjs
 npm install --prefix /tmp/poda-ui-test jsdom
 NODE_PATH=/tmp/poda-ui-test/node_modules node --test tests/frontend-calendar.test.cjs
 ```
+
+### BestNDS mapping
+
+For [Kaden’s BestNDS](https://github.com/fennokw/BestNDS), connect Schedule & Tasks and choose **Use Kaden's BestNDS** in the schema mapper. Calendar placement uses Date, tasks/events support Completed, and event defaults are Committed / General. Custom property mapping and portable JSON import/export remain available. Apply the preset again after the dashboard migration to refresh the saved schema; remote permissions still apply.

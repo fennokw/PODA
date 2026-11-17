@@ -1,0 +1,27 @@
+{
+  "format": "poda-notion-mapping",
+  "version": 1,
+  "name": "Kaden's BestNDS",
+  "mapping": {
+    "preset": "kadens-bestnds-v1",
+    "title": "Name",
+    "date": "Date",
+    "type": "Type",
+    "completed": "Completed",
+    "commitment": "Commitment",
+    "area": "Area",
+    "task_kind": "Task kind",
+    "notes": "Notes",
+    "source": "Import Source",
+    "default_type": "Event",
+    "default_commitment": "Committed",
+    "default_area": "General",
+    "default_source": "Manual",
+    "external_ids": {
+      "canvas_assignment_id": "Canvas Assignment ID",
+      "canvas_course_id": "Canvas Course ID",
+      "ics_event_id": "External Event ID"
+    },
+    "status_done_values": []
+  }
+}

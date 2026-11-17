@@ -47,6 +47,7 @@ def resolve_fields(cfg: dict[str, Any], active: dict[str, Any] | None) -> dict[s
         "source": pick(None, ("Import Source", "Source"), "select"),
         "notes": typed(mapped.get("notes"), "rich_text") or typed("Notes", "rich_text"),
         "source_url": typed("Source URL", "url") or next((n for n, p in schema.items() if isinstance(p, dict) and p.get("type") == "url"), None),
+        "completed": typed(mapped.get("completed"), "checkbox") or typed("Completed", "checkbox"),
         "done_values": list(mapped.get("status_done_values") or []),
         "from_mapping": bool(active),
     }
@@ -75,7 +76,7 @@ def interpret(page: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any] | 
     return {
         "page_id": page.get("id"), "title": str(title), "url": page.get("url"),
         "start": start, "end": end, "all_day": "T" not in str(start), "time_zone": tz,
-        "type": type_val, "status": status_val, "done": (status_val in set(fields.get("done_values") or [])) if status_val is not None and fields.get("done_values") else None,
+        "type": type_val, "status": status_val, "done": bool(props.get(fields["completed"])) if fields.get("completed") else ((status_val in set(fields.get("done_values") or [])) if status_val is not None and fields.get("done_values") else None),
         "commitment": props.get(fields["commitment"]) if fields.get("commitment") else None,
         "area": area if isinstance(area, list) else ([area] if area else []),
         "source": props.get(fields["source"]) if fields.get("source") else None,

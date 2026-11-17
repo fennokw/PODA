@@ -26,7 +26,10 @@ def fields(schema,names):
 
 def resolve(schema,names,source,explicit=None):
     explicit=explicit or {}; saved=load(source); props={}; provisional={}; missing=[]
+    is_task = str(explicit.get('type') or '').casefold() in {'task','homework','test'}
     for key,name in fields(schema,names).items():
+        if is_task and key == 'commitment':
+            continue
         if not name:
             if key in {'area','commitment'} and any(n in schema for n in CANDIDATES[key]):
                 missing.append(key+' needs a supported select property or a related page chosen in Notion')

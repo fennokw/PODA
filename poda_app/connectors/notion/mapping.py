@@ -16,7 +16,8 @@ from .client import NotionClient, NotionError
 from .service import normalize_page, property_value, query_pages, schema_fingerprint
 
 MAPPING_FIELDS = {"title": {"title"}, "date": {"date"}, "status": {"status", "select"}, "type": {"select", "multi_select", "status"},
-                  "project_relation": {"relation"}, "class_relation": {"relation"}, "notes": {"rich_text"}}
+                  "project_relation": {"relation"}, "class_relation": {"relation"}, "notes": {"rich_text"}, "completed": {"checkbox"}, "commitment": {"select"},
+                  "area": {"select", "multi_select"}, "task_kind": {"select"}, "source": {"select"}}
 EXTERNAL_ID_TYPES = {"rich_text", "number", "url"}
 
 
@@ -33,6 +34,8 @@ def validate_mapping(mapping: dict[str, Any], schema: dict[str, Any]) -> list[st
         errors.append("A title property is required.")
     if not mapping.get("date"):
         errors.append("A date property is required (this is what Notion Calendar places on the calendar).")
+    if str(mapping.get("date") or "").casefold().startswith("source") and schema.get("Date", {}).get("type") == "date":
+        errors.append("Use Date for the calendar. Source Date and Source Last Seen are sync metadata.")
     for field, allowed in MAPPING_FIELDS.items():
         name = mapping.get(field)
         if not name:
@@ -191,6 +194,8 @@ def save_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
     clean["status_done_values"] = [str(v) for v in (mapping.get("status_done_values") or [])]
     clean["default_status"] = mapping.get("default_status") or None
     clean["default_type"] = mapping.get("default_type") or None
+    for key in ("default_commitment", "default_area", "default_source", "preset"):
+        clean[key] = mapping.get(key) or None
     errors = validate_mapping(clean, schema)
     if errors:
         raise NotionError("validation", "Mapping rejected: " + " ".join(errors), code="mapping_invalid")
@@ -222,7 +227,7 @@ def interpret_page(page: dict[str, Any], mapping: dict[str, Any]) -> dict[str, A
     return {
         "page_id": page.get("id"), "title": props.get(mapping.get("title") or "") or page.get("title"),
         "date_start": start, "date_end": end, "all_day": bool(start) and "T" not in str(start), "time_zone": (date or {}).get("time_zone") if isinstance(date, dict) else None,
-        "status": status_val, "done": status_val in set(mapping.get("status_done_values") or []) if status_val is not None else None,
+        "status": status_val, "done": bool(props.get(mapping["completed"])) if mapping.get("completed") else (status_val in set(mapping.get("status_done_values") or []) if status_val is not None else None),
         "type": props.get(mapping["type"]) if mapping.get("type") else None,
         "project_ids": props.get(mapping["project_relation"]) if mapping.get("project_relation") else None,
         "class_ids": props.get(mapping["class_relation"]) if mapping.get("class_relation") else None,
@@ -259,6 +264,10 @@ def build_properties(mapping: dict[str, Any], schema: dict[str, Any], event: dic
         props[mapping["project_relation"]] = {"relation": [{"id": i} for i in event["project_ids"]]}
     if mapping.get("class_relation") and event.get("class_ids"):
         props[mapping["class_relation"]] = {"relation": [{"id": i} for i in event["class_ids"]]}
+    if mapping.get("completed") and "completed" in event:
+        if not isinstance(event["completed"], bool):
+            raise NotionError("validation", "Completed must be true or false.")
+        props[mapping["completed"]] = {"checkbox": event["completed"]}
     if mapping.get("notes") and event.get("notes"):
         props[mapping["notes"]] = _text(event["notes"])
     for key, name in (mapping.get("external_ids") or {}).items():
@@ -518,6 +527,7 @@ def infer_mapping(schema: dict[str, Any]) -> dict[str, Any] | None:
         "title": pick(titles, TITLE_NAME_PRIORITY),
         "date": pick(dates, DATE_NAME_PRIORITY),
         "status": status,
+        "completed": next((n for n in (by_type.get("checkbox") or []) if n.casefold() in {"completed", "done"}), None),
         "type": type_prop,
         "project_relation": next((r for r in relations if "project" in r.lower() or "domain" in r.lower()), None),
         "class_relation": next((r for r in relations if "class" in r.lower() or "course" in r.lower()), None),
