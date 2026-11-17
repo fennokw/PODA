@@ -57,6 +57,7 @@
       this.bounds = sceneData.bounds || { center: [0, 0, 0], diagonal: 400 };
       this.onSelect = onSelect; this.onDirty = onDirty || (() => {});
       this.selectedId = null; this.hoverId = null; this.focusedCloudId = null; this.pointer = null; this.destroyed = false; this.projected = [];
+      this.events = new AbortController(); this.contextLost = false; this.paused = document.hidden;
       this.connectionsDirty = true; this.connSeq = 0; this.connPending = false; this.connLastRequest = 0;
       this.density = this.memoryNodes().length <= LOD_FULL_GRAPH_MAX ? 'complete' : 'neighbors';
       this.densityAuto = true;
@@ -78,19 +79,20 @@
       try {
         this.worker = new Worker('/static/memory-worker.js?v=0.6.0');
         this.worker.onmessage = (e) => {
-          const d = e.data; if (d.seq !== this.connSeq) return; // stale
+          const d = e.data; if (this.destroyed || this.contextLost || d.seq !== this.connSeq) return; // stale
           this.uploadConnections(d.pos, d.colors, d.alphas, d.count); this.connPending = false; this.edgeCount = d.edges;
           this.updateLodBadge();
           if (this.connectionsDirty) this.requestConnections();
         };
-        this.worker.onerror = () => { this.worker = null; this.connectionsDirty = true; };
+        this.worker.onerror = () => { this.worker?.terminate(); this.worker = null; this.connPending = false; this.connectionsDirty = true; };
       } catch { this.worker = null; }
     }
 
     compile(vs, fs) {
       const gl = this.gl;
       const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; };
-      const p = gl.createProgram(); gl.attachShader(p, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+      const p = gl.createProgram(); const vert=sh(gl.VERTEX_SHADER,vs),frag=sh(gl.FRAGMENT_SHADER,fs);
+      gl.attachShader(p,vert);gl.attachShader(p,frag);gl.linkProgram(p);gl.deleteShader(vert);gl.deleteShader(frag);
       if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
       return p;
     }
@@ -130,9 +132,25 @@
     }
 
     bind() {
-      this.onResize = () => this.resize(); window.addEventListener('resize', this.onResize);
-      this.canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-      this.canvas.addEventListener('wheel', (e) => {
+      this.onResize = () => { if (!this.destroyed && !this.contextLost) this.resize(); };
+      window.addEventListener('resize', this.onResize, { signal:this.events.signal });
+      const listen = (event,fn,options={}) => this.canvas.addEventListener(event,fn,{...options,signal:this.events.signal});
+      listen('webglcontextlost', e => {
+        e.preventDefault(); this.contextLost = true; cancelAnimationFrame(this.frameId); this.worker?.terminate(); this.worker = null; this.connPending = false;
+        setStatus('GRAPHICS PAUSED · WAITING FOR RECOVERY · DRAFT PRESERVED', 'busy');
+      });
+      listen('webglcontextrestored', () => {
+        if (this.destroyed) return;
+        this.contextLost = false; this.initGL(); this.initWorker(); this.connectionsDirty = true; this.resize();
+        setStatus(memoryDraftDirty ? 'PENDING DRAFT · GRAPHICS RESTORED' : 'GRAPHICS RESTORED', memoryDraftDirty ? 'dirty' : 'clean');
+        this.lastFrameAt = performance.now(); this.animate();
+      });
+      document.addEventListener('visibilitychange', () => {
+        this.paused = document.hidden; cancelAnimationFrame(this.frameId);
+        if (!this.paused && !this.destroyed && !this.contextLost) { this.lastFrameAt = performance.now(); this.animate(); }
+      }, {signal:this.events.signal});
+      listen('contextmenu', (e) => e.preventDefault());
+      listen('wheel', (e) => {
         e.preventDefault(); this.noteInteraction();
         const selected = this.nodeMap.get(this.selectedId);
         if (e.altKey && selected && selected.node_type !== 'root') {
@@ -142,12 +160,12 @@
         }
         this.camera.desiredDistance = clamp(this.camera.desiredDistance * Math.exp(e.deltaY * 0.00105), 28, 3000);
       }, { passive: false });
-      this.canvas.addEventListener('pointerdown', (e) => this.pointerDown(e));
-      this.canvas.addEventListener('pointermove', (e) => this.pointerMove(e));
-      this.canvas.addEventListener('pointerup', (e) => this.pointerUp(e));
-      this.canvas.addEventListener('pointercancel', (e) => this.pointerUp(e));
-      this.canvas.addEventListener('dblclick', (e) => { const hit = this.hitTest(e.offsetX, e.offsetY); if (hit?.node.node_type === 'domain') { this.noteInteraction(); this.focusCloud(hit.node.id); } else if (hit?.node.node_type === 'surface') { this.noteInteraction(); this.focusSurface(hit.node.id); } });
-      this.canvas.addEventListener('keydown', (e) => this.keyDown(e));
+      listen('pointerdown', (e) => this.pointerDown(e));
+      listen('pointermove', (e) => this.pointerMove(e));
+      listen('pointerup', (e) => this.pointerUp(e));
+      listen('pointercancel', (e) => this.pointerUp(e));
+      listen('dblclick', (e) => { const hit = this.hitTest(e.offsetX, e.offsetY); if (hit?.node.node_type === 'domain') { this.noteInteraction(); this.focusCloud(hit.node.id); } else if (hit?.node.node_type === 'surface') { this.noteInteraction(); this.focusSurface(hit.node.id); } });
+      listen('keydown', (e) => this.keyDown(e));
     }
     noteInteraction() { this.lastInteractionAt = performance.now(); this.setAutoRotateStatus(false); }
     setAutoRotateStatus(active, now = performance.now()) {
@@ -247,7 +265,7 @@
     }
 
     // ----- Edges: complete graph for small scenes, k-nearest beyond the LOD threshold; built off-thread when possible -----
-    setDensity(mode, auto = false) { this.density = mode; this.densityAuto = auto; this.connectionsDirty = true; this.updateLodBadge(); }
+    setDensity(mode, auto = false) { if(mode==='complete' && this.nodes.length>LOD_FULL_GRAPH_MAX){mode='neighbors';toast('Large graphs use nearest-neighbor edges to keep Memory responsive.','');} this.density = mode; this.densityAuto = auto; this.connectionsDirty = true; this.updateLodBadge(); }
     packedScene() {
       const surfaces = this.surfacesShown ? this.surfaceNodes() : [];
       const memories = this.memoryNodes();
@@ -262,10 +280,12 @@
       return { pos, count: all.length, tiers: { kinds, surfaceOf, reveal } };
     }
     requestConnections() {
+      if(this.destroyed || this.contextLost || this.paused)return;
+      if(this.worker && (this.connPending || performance.now()-this.connLastRequest<150))return;
       const { pos, count, tiers } = this.packedScene();
-      const mode = this.density;
-      const small = count <= 160 || (tiers && this.surfaceNodes().length <= 120 && count <= 900);
-      if ((!this.worker || small) && window.PODAEdges) { // small scenes: synchronous for instant feedback while dragging / fading
+      const mode = count>LOD_FULL_GRAPH_MAX && this.density==='complete' ? 'neighbors' : this.density;
+      const small = count <= 160;
+      if ((small || (!this.worker && count<=400)) && window.PODAEdges) { // small scenes: synchronous for instant feedback while dragging / fading
         const data = window.PODAEdges.buildEdges(pos, count, mode, KNN, tiers); this.uploadConnections(data.pos, data.colors, data.alphas, data.count); this.edgeCount = data.edges; this.connectionsDirty = false; this.updateLodBadge(); return;
       }
       if (!this.worker) { this.connectionsDirty = false; return; }
@@ -485,18 +505,28 @@
     overview() { this.noteInteraction(); this.focusedCloudId = null; this.pinnedReveal = null; this.camera.desiredTarget = [...(this.bounds.center || [0, 0, 0])]; this.camera.desiredDistance = Math.max(360, (this.bounds.diagonal || 320) * 1.45); }
     resetCamera() { this.noteInteraction(); if (this.focusedCloudId) this.focusCloud(this.focusedCloudId); else this.overview(); this.camera.desiredYaw = -0.66; this.camera.desiredPitch = 0.25; this.camera.desiredRoll = 0; this.camera.desiredFov = 50 * Math.PI / 180; }
     animate(now = performance.now()) {
-      if (this.destroyed) return;
+      if (this.destroyed || this.contextLost || this.paused) return;
       const dt = clamp((now - this.lastFrameAt) / 1000, 0, 0.08); this.frameTimes.push(now - this.lastFrameAt); if (this.frameTimes.length > 240) this.frameTimes.shift(); this.lastFrameAt = now;
       const autoActive = !REDUCED_MOTION && !this.pointer && (now - this.lastInteractionAt) >= this.idleRotateDelayMs;
       if (autoActive) this.camera.desiredYaw += this.autoRotateRate * dt;
       this.setAutoRotateStatus(autoActive, now);
-      this.render(dt); requestAnimationFrame((t) => this.animate(t));
+      this.render(dt); this.frameId = requestAnimationFrame((t) => this.animate(t));
     }
     frameStats() { const f = this.frameTimes.slice(1); if (!f.length) return null; const avg = f.reduce((a, b) => a + b, 0) / f.length; return { avg_ms: +avg.toFixed(2), max_ms: +Math.max(...f).toFixed(2), fps: +(1000 / avg).toFixed(1), samples: f.length }; }
-    destroy() { this.destroyed = true; window.removeEventListener('resize', this.onResize); this.worker?.terminate(); }
+    destroy() {
+      if(this.destroyed)return;
+      this.destroyed=true;cancelAnimationFrame(this.frameId);this.events.abort();this.worker?.terminate();this.worker=null;
+      const gl=this.gl;
+      for(const value of Object.values(this)) {
+        if(value instanceof WebGLBuffer)gl.deleteBuffer(value);
+        else if(value instanceof WebGLProgram)gl.deleteProgram(value);
+      }
+      if(this.cloudMesh)for(const value of Object.values(this.cloudMesh))if(value instanceof WebGLBuffer)gl.deleteBuffer(value);
+    }
   }
 
   // ---------------------------------------------------------------------------
+  let loadGeneration = 0;
   let memoryScene = null, memoryDraftDirty = false, memoryDeletedIds = new Set(), memoryDissolve = false, memorySearchMatches = [], memorySearchIndex = -1, searchTimer = 0, surfaceList = null;
 
   function setStatus(text, mode = '') { const node = $('#memoryDraftStatus'); node.textContent = text; node.dataset.mode = mode; }
@@ -717,8 +747,11 @@
   }
 
   async function loadMemoryViewer() {
-    setStatus('LOADING OPEN3D SCENE…', 'busy');
+    const generation=++loadGeneration;
+    setStatus('LOADING MEMORY SCENE…', 'busy');
     const data = await api('/memory/open3d/scene');
+    if(generation!==loadGeneration)return;
+    $('#viewerFatal').hidden=true;
     const tiers = data.tiers || {};
     $('#rendererBadge').textContent = `OPEN3D ${data.open3d?.version || ''} · VOLUMETRIC CLOUDS · ${tiers.surfaces !== undefined ? 'TWO-TIER WEB' : 'PERSISTENT POINT WEB'} · GEOMETRY COSINE · ${data.semantic_layout?.mode || ''}`;
     if (memoryScene) memoryScene.destroy();
@@ -735,7 +768,7 @@
     if (focus) openLinkedMemory(focus);
   }
 
-  $('#backToPoda').onclick = async () => { if (memoryDraftDirty && !(await confirmDialog({ title: 'Discard uncommitted memory changes?', body: 'Returning to chat abandons the current draft.', confirmLabel: 'Discard and return', danger: true }))) return; window.location.assign('/'); };
+  $('#backToPoda').onclick = async () => { if (memoryDraftDirty && !(await confirmDialog({ title: 'Discard uncommitted memory changes?', body: 'Returning to chat abandons the current draft.', confirmLabel: 'Discard and return', danger: true }))) return; memoryDraftDirty=false;memoryScene?.destroy();window.location.assign('/'); };
   $('#overviewMemory').onclick = () => memoryScene?.overview();
   $('#resetCamera').onclick = () => memoryScene?.resetCamera();
   $('#tiersHelp').onclick = openTiersHelp;
@@ -774,6 +807,15 @@
     } catch (err) { button.disabled = false; button.textContent = 'COMMIT MEMORY CHANGES'; setStatus('COMMIT FAILED · DRAFT STILL LOCAL', 'error'); toast(`Commit failed, nothing was applied: ${errorDetail(err).message}`, 'danger', 8000); }
   };
   function showFatal(err) { const f = $('#viewerFatal'); f.textContent = `OPEN3D MEMORY VIEWER ERROR: ${errorDetail(err).message}`; f.hidden = false; setStatus('VIEWER FAILED', 'error'); }
+  window.addEventListener('pagehide', () => { ++loadGeneration;clearTimeout(searchTimer);memoryScene?.destroy(); });
+  window.addEventListener('pageshow', e => {
+    if(!e.persisted)return;
+    if(memoryScene) {
+      const old=memoryScene;
+      memoryScene=new Open3DMemoryWeb($('#memoryGL'),$('#memoryLabels'),{nodes:old.nodes,bounds:old.bounds,cloud_volume:old.cloudVolume},showNode,markDirty);
+      window.__podaScene=memoryScene;
+    }else loadMemoryViewer().catch(showFatal);
+  });
   window.addEventListener('beforeunload', (e) => { if (memoryDraftDirty) { e.preventDefault(); e.returnValue = ''; } });
   window.addEventListener('hashchange', () => { const focus = new URLSearchParams(location.hash.replace(/^#/, '')).get('focus'); if (focus && memoryScene) openLinkedMemory(focus); });
 

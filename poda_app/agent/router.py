@@ -95,6 +95,8 @@ def get_proposal(proposal_id: str) -> dict[str, Any]:
 def approve_proposal(proposal_id: str) -> dict[str, Any]:
     try:
         return orchestrator.approve(proposal_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except KeyError:
         raise HTTPException(status_code=404, detail="Proposal not found")
 

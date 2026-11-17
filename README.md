@@ -27,3 +27,72 @@ In Chat, choose **Attach files**, drop files into the chat, or paste a screensho
 PODA packages its own llama.cpp engine. In **System**, download or import a GGUF and assign it to a model role. Install the Nomic embedding model for semantic recall and Hindsight. Advanced controls include speculative decoding, K/V cache precision, GPU offload, and Flash Attention. The first engine or model download needs an internet connection. Inference and OCR run locally afterward.
 
 Uploaded PDFs use native text when available and local PP-OCR for scanned pages. Chat also reads DOCX and XLSX content and recognizes screenshot text before asking a visual model to interpret image details.
+
+## Choose your calendar
+
+Open **Calendar → Calendar setup** and select **one** active provider. Chat, remote
+text commands, reminders, email event proposals and daily automation use it.
+Switching never moves or deletes events. Reauthorize unattended calendar writes
+in Messages and Daily Automation after changing provider or destination. Pending
+proposals for a previous destination must be prepared again.
+
+- **Notion** remains the default. Connect the original database, verify access,
+  and save its field mapping. **New event defaults** lets you select existing Type,
+  Commitment, Area, Status and Import Source options. PODA fills valid temporary
+  categories and asks whether you want changes. Timed events without an end get a
+  provisional one-hour duration. Edit details in chat, an authorized text prompt,
+  or the Calendar event inspector.
+- **PODA local:** click **Use PODA local calendar**. No account is needed. Events
+  remain in PODA's local database with its configured encryption and work offline.
+  This is the built-in PODA calendar, not Apple Calendar synchronization.
+- **Google Calendar:** enable Calendar API in a Google Cloud project, configure
+  OAuth consent (add your account as a test user while in Testing), create a
+  **Desktop app** OAuth client and download its JSON. Upload that file in setup,
+  click **Sign in with Google → Continue in Google**, then **Refresh calendars
+  after sign-in**. Select one calendar, choose whether edits are allowed, and
+  activate it. Sign-in uses the system browser, PKCE, and a five-minute loopback
+  callback. Tokens stay in macOS Keychain or Windows Credential Manager, not
+  prompts or SQLite. Google receives calendar API data; inference remains local.
+  Google consent settings, especially Testing mode, may require reauthorization.
+  Disconnect deletes local tokens; revoke access in your Google account too if
+  desired.
+
+### Notion Calendar visibility and dashboard setup
+
+See **[BestNDS — Kaden's Notion dashboard setup](https://github.com/fennokw/BestNDS)**
+for the dashboard integrating PODA and Kaden's other public repositories.
+
+PODA and Notion Calendar must use the **same original database and date property**.
+Add that database/view to Notion Calendar and compare its filters with PODA's
+new-event defaults. PODA verifies saved properties; a successful API write cannot
+prove that a filtered external calendar view displays a page.
+
+For an older entry, select it in PODA and choose **Edit event details → Fill missing
+calendar fields**. This fills empty supported category properties without replacing
+existing values. Relation, formula and rollup values are not fabricated: choose
+any required related page in Notion. Defaults never create new schema options and
+remain scoped to the connected source.
+
+### Desktop reopening and Memory performance
+
+Closing the Mac window keeps PODA's background tasks alive. Reopening and waking
+check the local server, recover a stopped child process, and reconnect the window.
+Recovery is bounded and does not automatically repeat interrupted actions. Use
+**Shut down PODA** or Quit to stop the app and its background work. A closed lid or
+system sleep can suspend execution despite the app's idle-sleep prevention;
+remote commands need the Mac powered on, awake, and connected.
+
+Memory opens its saved geometry without invoking embeddings or semantic reflow.
+The viewer pauses while hidden, restores graphics after context loss, and releases
+workers/listeners/GPU resources when leaving. Large graphs use neighbor edges to
+keep navigation responsive; explicit semantic reflow remains available.
+
+Developer regression checks for the calendar and window lifecycle:
+
+```sh
+python -m pytest -q tests/test_calendar_providers.py tests/test_notion_connector.py tests/test_memory_loading.py
+node --test tests/desktop-recovery.test.cjs
+# DOM regression tests (jsdom is a test dependency, not shipped with PODA):
+npm install --prefix /tmp/poda-ui-test jsdom
+NODE_PATH=/tmp/poda-ui-test/node_modules node --test tests/frontend-calendar.test.cjs
+```

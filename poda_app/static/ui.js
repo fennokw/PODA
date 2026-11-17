@@ -47,20 +47,33 @@
       this.status = status; this.detail = detail;
     }
   }
-  async function api(path, { method = 'GET', body, signal, raw = false } = {}) {
+  let renewingSession = null;
+  async function renewSession() {
+    if(!renewingSession) renewingSession=fetch('/',{credentials:'same-origin',cache:'no-store',signal:AbortSignal.timeout(5000)})
+      .then(r=>{if(!r.ok)throw new Error('Cannot reconnect to the local server.');}).finally(()=>{renewingSession=null;});
+    return renewingSession;
+  }
+  async function api(path, { method = 'GET', body, signal, raw = false, timeoutMs } = {}) {
     const multipart = body instanceof FormData;
-    const res = await fetch(path, {
-      method, signal, credentials: 'same-origin', cache: 'no-store',
-      headers: body !== undefined && !multipart ? { 'Content-Type': 'application/json' } : undefined,
-      body: body === undefined || multipart ? body : JSON.stringify(body),
-    });
-    if (raw) return res;
-    let data = null;
-    const text = await res.text();
-    try { data = text ? JSON.parse(text) : null; } catch { data = { detail: text.slice(0, 500) }; }
-    if (!res.ok) {
-      if (res.status === 401) toast('Local session expired. Reload the page to start a new session.', 'danger');
-      throw new ApiError(res.status, data?.detail ?? data ?? `HTTP ${res.status}`);
+    const timeout = AbortSignal.timeout(timeoutMs ?? (method === 'GET' ? 30000 : 300000));
+    const requestSignal = signal ? AbortSignal.any([signal,timeout]) : timeout;
+    const request = () => fetch(path, {method,signal:requestSignal,credentials:'same-origin',cache:'no-store',
+      headers:body!==undefined&&!multipart?{'Content-Type':'application/json'}:undefined,
+      body:body===undefined||multipart?body:JSON.stringify(body)});
+    let res;
+    try {
+      res=await request();
+      if(res.status===401 && method==='GET') {await renewSession();res=await request();}
+    } catch(error) {
+      if(error.name==='TimeoutError') throw new Error(method==='GET' ? 'This page took too long to load. Try refreshing it; the rest of PODA remains available.' : 'The request timed out. Check the result before retrying; it may have completed.');
+      throw error;
+    }
+    if(raw)return res;
+    let data=null;const text=await res.text();
+    try{data=text?JSON.parse(text):null;}catch{data={detail:text.slice(0,500)};}
+    if(!res.ok){
+      if(res.status===401)toast('Local session changed. Reopen this page and review the result before retrying an action.','danger');
+      throw new ApiError(res.status,data?.detail??data??`HTTP ${res.status}`);
     }
     return data;
   }
@@ -145,16 +158,19 @@
     const version = ++renderVersion;
     const name = currentRoute();
     const fn = routes.get(name) || routes.get('ask');
-    const view = $('#view');
+    const previousView = $('#view');
+    const view = previousView.cloneNode(false);
+    previousView.replaceWith(view); // late route completions only update their detached view
     $$('.nav-item').forEach((b) => b.setAttribute('aria-current', b.dataset.route === name ? 'page' : 'false'));
     if (current?.teardown) { try { current.teardown(); } catch { /* ignore */ } }
     current = null;
     view.replaceChildren();
     view.scrollTop = 0;
     document.dispatchEvent(new Event('poda:navigation'));
-    const inspector = $('#inspectorBody'); inspector.innerHTML = '';
+    const previousInspector = $('#inspectorBody');
+    const inspector = previousInspector.cloneNode(false); previousInspector.replaceWith(inspector);
     $('#inspectorTitle').textContent = 'Inspector';
-    const ctx = { view, inspector, setTitle: (t) => { $('#viewTitle').textContent = t; }, setInspectorTitle: (t) => { $('#inspectorTitle').textContent = t; } };
+    const ctx = { view, inspector, setTitle: (t) => { if (version === renderVersion) $('#viewTitle').textContent = t; }, setInspectorTitle: (t) => { if (version === renderVersion) $('#inspectorTitle').textContent = t; } };
     try {
       const rendered = (await fn(ctx)) || {};
       if (version === renderVersion) current = rendered;

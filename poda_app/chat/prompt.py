@@ -46,14 +46,15 @@ def tools_block(snapshot: dict[str, Any]) -> str:
 def access_block(capabilities: dict[str, Any]) -> str:
     """Plain-language statement of what PODA can reach RIGHT NOW and which tool does it. Prevents 'I am just a language model' denials."""
     lines = ["WHAT YOU CAN ACTUALLY DO RIGHT NOW (derived from the live ledger; these are facts, act on them):"]
-    notion = capabilities.get("notion", {})
+    notion = capabilities.get("calendar",{}).get("tool_access") or capabilities.get("notion", {})
     if notion.get("connected") and notion.get("can_read_content"):
-        lines.append(f"- Notion: you HAVE live read access to the database '{notion.get('database_title')}' (data source '{notion.get('data_source_name')}'), the original data source the current user connected for Notion Calendar. "
+        lines.append(f"- Active calendar: you HAVE live read access to '{notion.get('database_title')}' (data source '{notion.get('data_source_name')}'), the selected calendar. Legacy notion_* tools also serve PODA local and Google calendars. "
                      "For schedule, class, event, assignment, due-date or 'what do I have on …' questions call notion_agenda(day) or notion_query_items(start,end); they return local-time items. Never answer such questions from memory or from unfiltered rows, and never say you lack access.")
         if notion.get("can_insert_content") and notion.get("can_update_content"):
             lines.append("- Notion writes: insert/update are verified; chat writes still require a saved schema mapping and the user's explicit approval of a proposal.")
     else:
-        lines.append("- Notion: not connected; you cannot read the calendar database.")
+        lines.append("- The selected calendar has no verified read access.")
+    lines.append("After creating an event report the verified result and its review_question. Missing commitment/area uses tool defaults, then ask if the user wants changes. Do not block creation over optional categories. Never claim external calendar view visibility was verified.")
     em = capabilities.get("email", {})
     if em.get("can_read"):
         accts = "; ".join(f"{a.get('account_name')} ({a.get('address_masked')})" for a in em.get("accounts", []))
@@ -105,7 +106,7 @@ CURRENT SYSTEM-STATE MEMORY — AUTHORITATIVE:
 {ledger_context(capabilities)}
 
 {access_block(capabilities)}
-{calendar_profile_block() if capabilities.get('notion', {}).get('connected') else ''}
+{calendar_profile_block() if capabilities.get('calendar',{}).get('provider','notion') == 'notion' and capabilities.get('notion',{}).get('connected') else ''}
 {TRUTH_CONTRACT}
 
 (The full machine-readable capability manifest is available via the list_capabilities tool; the ledger lines above are its summary.)

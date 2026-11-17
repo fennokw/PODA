@@ -146,7 +146,7 @@ def unsupported_action_response(message: str, cap: dict[str, Any], *, sandbox_ta
             else:
                 blockers.append("create or modify Notion/calendar entries (Notion is not connected with verified write access)")
         elif intent == "calendar_read" and not cap.get("calendar", {}).get("can_read_calendar"):
-            blockers.append("read your Notion calendar database (not connected)")
+            blockers.append("read your selected calendar (not connected)")
     if not blockers:
         return None
     unique = list(dict.fromkeys(blockers))
@@ -160,7 +160,7 @@ def unsupported_action_response(message: str, cap: dict[str, Any], *, sandbox_ta
 def capability_answer(cap: dict[str, Any]) -> str:
     models = cap["inference"].get("models") or []
     fs = cap.get("filesystem", {})
-    notion = cap.get("notion", {})
+    notion = cap.get("calendar", {}).get("tool_access") or cap.get("notion", {})
     lines = ["Current verified PODA state (refreshed from the runtime, not inferred):", ""]
     lines.append(f"- **llama.cpp:** {'reachable' if cap['inference'].get('reachable') else 'not reachable'}. Installed: {', '.join(models[:8]) or 'none detected'}.")
     if fs.get("granted_roots"):
@@ -177,12 +177,12 @@ def capability_answer(cap: dict[str, Any]) -> str:
         last_email = em.get("last_successful_preview_account")
         lines.append("- **Mail:** no account is connected yet (connect an account in the Mail screen). The legacy arbitrary-host IMAP preview is retired." + (f" Last request-scoped preview: {last_email}." if last_email else ""))
     if notion.get("connected"):
-        lines.append(f"- **Notion:** {notion.get('status')} to '{notion.get('database_title') or notion.get('database_id')}' in workspace {notion.get('workspace_name') or 'unknown'}. "
+        lines.append(f"- **Selected calendar:** {notion.get('status')} to '{notion.get('database_title') or notion.get('database_id')}' in workspace {notion.get('workspace_name') or 'unknown'}. "
                      f"Read {'verified' if notion.get('can_read_content') else 'unverified'}; insert {'verified' if notion.get('can_insert_content') else 'unverified'}; update {'verified' if notion.get('can_update_content') else 'unverified'}; "
                      f"schema mapping {'saved' if notion.get('mapping_active') else 'not saved'}. The token stays in the operating system credential store.")
     else:
-        lines.append("- **Notion / calendar:** not connected. I can extract event candidates from text but cannot read or write your Notion database.")
+        lines.append("- **Calendar:** not connected. I can extract event candidates from text but cannot read or write your Notion database.")
     lines.append(f"- **Memory:** local second brain with {cap['memory']['memory_nodes']} memory nodes; encrypted at rest: {'yes' if cap['memory'].get('encrypted_at_rest') else 'no'}. Every chat turn I can recall is a visible node in the Memory Web.")
     lines.append(f"- **Projects:** priority engine active with {cap['projects']['projects_tracked']} tracked projects.")
-    lines.append(f"- **Network:** local-only. Offline mode {'on' if cap.get('offline_mode') else 'off'}; the only allowlisted external host is api.notion.com; no cloud models or telemetry.")
+    lines.append(f"- **Network:** local-only. Offline mode {'on' if cap.get('offline_mode') else 'off'}; connector traffic uses per-service host allowlists; no cloud models or telemetry.")
     return "\n".join(lines)

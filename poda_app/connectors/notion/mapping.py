@@ -71,6 +71,9 @@ def get_active_mapping(data_source_id: str | None = None) -> dict[str, Any] | No
 
 
 def require_write(permission: str) -> dict[str, Any]:
+    from ..calendar import service as calendars
+    if calendars.config()['provider'] != 'notion' or not calendars.config().get('allow_write',True):
+        raise NotionError('validation','Notion is not the active writable calendar. Select it in Calendar first.')
     cfg, _ = _schema()
     if cfg.get("status") not in {"CONNECTED", "DEGRADED"} or not cfg.get(f"{permission}_verified"):
         raise NotionError("validation", f"{permission.capitalize()} permission has not been verified for the connected Notion data source. Run Verify Write Access.", code="write_unverified")
@@ -307,6 +310,10 @@ def propose_event(event: dict[str, Any], session_id: str | None = None) -> dict[
         raise NotionError("validation", "title and start are required.")
     mapping = active["mapping"]
     payload = {"parent": {"type": "data_source_id", "data_source_id": cfg["data_source_id"]}, "properties": build_properties(mapping, schema, event)}
+    from . import event_defaults
+    defaults,provisional,missing = event_defaults.resolve(schema,mapping,cfg['data_source_id'],event)
+    payload['properties'].update(defaults)
+    event = {**event,'review_question':event_defaults.review(provisional,missing)}
     key = _idempotency_key(event)
     conn = connect()
     try:
@@ -388,7 +395,7 @@ def commit_event(proposal_id: str, session_id: str | None = None) -> dict[str, A
         raise
 
     names = active["mapping"]
-    expected = {name: plan["payload"]["properties"][name] for name in (names["title"], names["date"])}
+    expected = plan["payload"]["properties"]
     reread = None
     verification_error = None
     try:
@@ -400,7 +407,7 @@ def commit_event(proposal_id: str, session_id: str | None = None) -> dict[str, A
     verification = "re-read-after-write" if matches else "Created, but the saved title or date could not be verified"
     receipt = receipts.close_receipt(rid, "success" if matches else "unverified", verification, f"Created Notion page {page_id} in {plan.get('database_title')} / {plan.get('data_source_name')}", verification_error)
     _finish_proposal(proposal_id, "committed" if matches else "committed_unverified", [rid])
-    return {"created": True, "verified": matches, "page_id": page_id, "url": (reread or created).get("url"),
+    return {"review_question":plan.get("event",{}).get("review_question"), "created": True, "verified": matches, "page_id": page_id, "url": (reread or created).get("url"),
             "page": reread, "interpreted": interpret_page(reread, names) if reread else None, "receipt": receipt,
             "calendar_note": "The mapped calendar title and date were verified." if matches else "Check the created page in Notion before trying again."}
 

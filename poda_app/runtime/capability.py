@@ -25,6 +25,8 @@ def manifest() -> dict[str, Any]:
     finally:
         conn.close()
     notion = notion_state.capability()
+    from ..connectors.calendar import service as calendars
+    cal = calendars.capability()
     fs = filesystem_capability()
     enc = encryption_status()
     email = integrations.get("email", {})
@@ -52,19 +54,13 @@ def manifest() -> dict[str, Any]:
         "email": email_state.capability(email),
         "notion": notion,
         "calendar": {
-            "persistent_connection": notion["connected"],
-            "provider": "Notion database/data source" if notion["connected"] else None,
-            "connected_account": notion.get("database_title"),
-            "can_read_calendar": notion["can_read_content"],
-            "can_write_calendar": bool(notion["can_insert_content"] or notion["can_update_content"]),
-            "chat_can_execute_writes": bool((notion["can_insert_content"] or notion["can_update_content"]) and notion["mapping_active"]),
-            "can_extract_event_candidates_from_text": True,
-            "detail": (
-                (f"Notion status {notion['status']}: read={'verified' if notion['can_read_content'] else 'unverified'}, "
-                 f"insert={'verified' if notion['can_insert_content'] else 'unverified'}, update={'verified' if notion['can_update_content'] else 'unverified'}, "
-                 f"schema mapping={'active' if notion['mapping_active'] else 'not saved'}. Writes from chat require a saved mapping and explicit confirmation.")
-                if notion["connected"] else integrations.get("calendar", {}).get("detail", "No calendar connection.")
-            ),
+            "provider":cal['provider'], "persistent_connection":cal.get('connected'),
+            "connected_account":cal.get('database_title'), "tool_access":cal,
+            "can_read_calendar":cal.get('can_read_content'),
+            "can_write_calendar":bool(cal.get('can_insert_content') or cal.get('can_update_content')),
+            "chat_can_execute_writes":bool(cal.get('can_insert_content') and cal.get('mapping_active')),
+            "can_extract_event_candidates_from_text":True,
+            "detail":"Use notion_agenda / notion_calendar_* compatibility tools for the one selected provider.",
         },
         "filesystem": {**fs, "poda_sandbox": {"can_read": True, "can_create": True, "can_edit": True}, "managed_internal_paths": [str(config.DATA_DIR), str(config.STATIC_DIR)]},
         "memory": {
@@ -113,7 +109,7 @@ def ledger_context(cap: dict[str, Any]) -> str:
     notion_line = (f"Notion: {notion.get('status')} to '{notion.get('database_title') or notion.get('database_id')}' (workspace {notion.get('workspace_name') or 'unknown'}); "
                    f"read={'verified' if notion.get('can_read_content') else 'unverified'}, insert={'verified' if notion.get('can_insert_content') else 'unverified'}, "
                    f"update={'verified' if notion.get('can_update_content') else 'unverified'}, mapping={'active' if notion.get('mapping_active') else 'none'}."
-                   if notion.get("connected") else "Notion calendar database: NOT CONNECTED (status DISCONNECTED). Calendar text extraction only.")
+                   if notion.get("connected") else "Notion database: not connected.")
     em = cap.get("email", {})
     if em.get("can_read"):
         accts = "; ".join(f"{a.get('account_name')} {a.get('address_masked')} [{'read+modify' if a.get('allow_modify') else 'read-only'}{', send' if a.get('allow_send') else ''}]" for a in em.get("accounts", []))
@@ -128,9 +124,10 @@ def ledger_context(cap: dict[str, Any]) -> str:
         "PODA Sandbox: app-owned workspace with read, create and edit access. Users can download its files without a folder grant.",
         email_line,
         notion_line,
+        f"Active calendar: {cap.get('calendar',{}).get('provider')}; read={cap.get('calendar',{}).get('can_read_calendar')}; write={cap.get('calendar',{}).get('can_write_calendar')}. Calendar tools target ONLY this provider.",
         f"Memory: local second brain, {cap.get('memory', {}).get('memory_nodes', 0)} memory nodes; encrypted at rest: {cap.get('memory', {}).get('encrypted_at_rest')}.",
         f"Projects: priority engine active; {cap.get('projects', {}).get('projects_tracked', 0)} tracked.",
-        f"Network: offline_mode={cap.get('offline_mode')}; only api.notion.com is allowlisted for outbound requests; no cloud models, no telemetry.",
+        f"Network: offline_mode={cap.get('offline_mode')}; connector-specific hosts are allowlisted for outbound requests; no cloud models, no telemetry.",
         "A completed side effect may ONLY be claimed when an action receipt exists for it.",
     ]
     return "\n".join(f"- {line}" for line in lines)

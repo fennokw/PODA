@@ -31,14 +31,15 @@ def _notion_query_items(start: str | None = None, end: str | None = None, limit:
     except Exception as exc:
         return {"ok": False, "result": None, "error": f"Notion connector unavailable: {exc}", "verification": "no Notion request made"}
     try:
-        if start or end:
+        from ..connectors.calendar import service as calendars
+        if start or end or calendars.config()["provider"] != "notion":
             start = start or notion_mapping.local_day(0)
             end = end or start
-            data = notion_mapping.items_between_effective(start, end)
+            data = calendars.items_between_effective(start, end)
             data["items"] = _compact(data["items"][:max(1, min(int(limit), 200))])
             data["note"] = f"All times are local ({data['time_zone']}). Items marked is_deadline are Canvas homework/tests due that day; others are classes/events."
             return {"ok": True, "result": data, "error": None,
-                    "verification": f"read {data['count']} live Notion items dated {start}..{end} (local {data['time_zone']}; date property '{data['mapping']['date']}'{', inferred mapping' if data['mapping']['inferred'] else ''})"}
+                    "verification": f"read {data['count']} selected calendar items dated {start}..{end} (local {data['time_zone']}; date property '{data['mapping']['date']}'{', inferred mapping' if data['mapping']['inferred'] else ''})"}
         pages = query_pages(limit=max(1, min(int(limit), 200)))
         m = notion_mapping.effective_mapping()
         items = _compact([notion_mapping.interpret_item(p, m) for p in pages]) if m else pages
@@ -53,7 +54,8 @@ def _notion_agenda(day: str = "today", include_deadlines: bool = True, timezone_
         from ..connectors.notion import mapping as notion_mapping  # type: ignore
         zone = {"tz_name": timezone_name} if timezone_name else {}
         start, end = notion_mapping.resolve_day_word(day, **zone)
-        data = notion_mapping.items_between_effective(start, end, **zone)
+        from ..connectors.calendar.service import items_between_effective
+        data = items_between_effective(start, end, **zone)
     except Exception as exc:
         return {"ok": False, "result": None, "error": str(exc), "verification": "Notion request failed"}
     events = [i for i in data["items"] if not i.get("is_deadline")]
@@ -63,7 +65,7 @@ def _notion_agenda(day: str = "today", include_deadlines: bool = True, timezone_
     return {"ok": True, "result": {"covers": covers, "agenda_text": "\n".join(lines) or f"Nothing scheduled or due on {covers} — the calendar is clear.",
                                    "events": _compact(events), "deadlines": _compact(deadlines) if include_deadlines else [], "time_zone": data["time_zone"],
                                    "note": "Times are local. Report events/classes with their start–end times and deadlines as 'due <time>'."},
-            "error": None, "verification": f"read {data['count']} live Notion items for {start}..{end} ({len(events)} events, {len(deadlines)} deadlines)"}
+            "error": None, "verification": f"read {data['count']} selected calendar items for {start}..{end} ({len(events)} events, {len(deadlines)} deadlines)"}
 
 
 def _memory_dive(surface_id: str | None = None, query: str | None = None, limit: int = 6) -> dict[str, Any]:
@@ -129,9 +131,9 @@ TOOLS: dict[str, dict[str, Any]] = {
     "memory_dive": {"description": "Read the full question→response exchanges stored inside one surface memory (by surface_id, or the best surface for a query). Use when a surface memory is relevant but too compressed.",
                     "mutating": False, "requires_confirmation": False, "needs": None, "handler": _memory_dive,
                     "schema": _schema({"surface_id": _str("Surface memory id (from recalled memories)"), "query": _str("Topic to look up when no surface_id is known"), "limit": _int("Max exchanges", 1, 8)}, [])},
-    "notion_query_items": {"description": "Read the connected Notion calendar/task database. Pass start and end as local YYYY-MM-DD to get events, classes, and deadlines in local time (Canvas due times are converted from UTC).", "mutating": False, "requires_confirmation": False, "needs": "notion_read",
+    "notion_query_items": {"description": "Read the selected calendar (Notion, PODA local or Google)/task database. Pass start and end as local YYYY-MM-DD to get events, classes, and deadlines in local time (Canvas due times are converted from UTC).", "mutating": False, "requires_confirmation": False, "needs": "notion_read",
                            "handler": _notion_query_items, "schema": _schema({"start": _str("Local date lower bound YYYY-MM-DD"), "end": _str("Local date upper bound YYYY-MM-DD"), "limit": _int("Max items", 1, 200)}, [])},
-    "notion_agenda": {"description": "Agenda from the connected Notion calendar for a day word: today, tomorrow, yesterday, this week, next week, weekend, or YYYY-MM-DD. Returns events/classes with local times and deadlines separately. Use this for 'what do I have on…' questions.", "mutating": False, "requires_confirmation": False, "needs": "notion_read",
+    "notion_agenda": {"description": "Agenda from the selected calendar (Notion, PODA local or Google) for a day word: today, tomorrow, yesterday, this week, next week, weekend, or YYYY-MM-DD. Returns events/classes with local times and deadlines separately. Use this for 'what do I have on…' questions.", "mutating": False, "requires_confirmation": False, "needs": "notion_read",
                       "handler": _notion_agenda, "schema": _schema({"day": _str("today | tomorrow | yesterday | this week | next week | weekend | YYYY-MM-DD"), "include_deadlines": _bool("Include homework/test due items"), "timezone_name": _str("Optional IANA timezone for the agenda")}, ["day"])},
     "list_capabilities": {"description": "Return PODA's live verified capability state.", "mutating": False, "requires_confirmation": False, "needs": None,
                           "handler": _list_capabilities, "schema": _schema({}, [])},
@@ -161,19 +163,19 @@ def _load_extensions() -> None:
     register_extension(workload_tools.TOOLS)
     from ..project_manager import tools as project_tools
     register_extension(project_tools.TOOLS)
-    from ..connectors.notion.automation import create_calendar_event, update_calendar_event, archive_calendar_event
+    from ..connectors.calendar.service import create_calendar_event, update_calendar_event, archive_calendar_event
     register_extension({"notion_calendar_create":{
-        "description":"Create one future event in the connected Notion calendar. Requires approval in chat; unattended only for a schedule explicitly authorized to create calendar entries. Times must include UTC offset. Never invent an event.",
+        "description":"Create one future event in the selected calendar (Notion, PODA local or Google). Requires approval in chat; unattended only for a schedule explicitly authorized to create calendar entries. Times must include UTC offset. Never invent an event.",
         "mutating":True,"requires_confirmation":True,"needs":"notion_insert",
         "handler":create_calendar_event,
         "schema":_schema({"title":_str("Event title"),"start":_str("ISO 8601 datetime with timezone offset"),
             "end":_str("Optional ISO 8601 end datetime with offset"),"notes":_str("Optional details"),
-            "commitment":_str("Existing Notion Commitment select option, such as Maybe")},["title","start"])}
+            "commitment":_str("Optional commitment; omit to use a temporary default"),"area":_str("Optional area/category; omit to use a temporary default")},["title","start"])}
     })
     register_extension({
-        "notion_calendar_update":{"description":"Update title and/or date of a Notion calendar event by page ID; confirmation is required outside explicitly authorized automation.","mutating":True,"requires_confirmation":True,"needs":"notion_update",
-           "handler":update_calendar_event,"schema":_schema({"page_id":_str("Existing Notion page ID"),"title":_str("Optional title"),"start":_str("Optional timezone-aware ISO date"),"end":_str("Optional timezone-aware end")},["page_id"])},
-        "notion_calendar_archive":{"description":"Archive a Notion calendar event by page ID; confirmation is required outside explicitly authorized automation.","mutating":True,"requires_confirmation":True,"needs":"notion_archive",
+        "notion_calendar_update":{"description":"Update title and/or date of a selected-calendar event by page ID; confirmation is required outside explicitly authorized automation.","mutating":True,"requires_confirmation":True,"needs":"notion_update",
+           "handler":update_calendar_event,"schema":_schema({"page_id":_str("Existing Notion page ID"),"title":_str("Optional title"),"start":_str("Optional timezone-aware ISO date"),"end":_str("Optional timezone-aware end"),"commitment":_str("Optional new commitment"),"area":_str("Optional new area/category")},["page_id"])},
+        "notion_calendar_archive":{"description":"Archive a selected-calendar event by page ID; confirmation is required outside explicitly authorized automation.","mutating":True,"requires_confirmation":True,"needs":"notion_archive",
            "handler":archive_calendar_event,"schema":_schema({"page_id":_str("Existing Notion page ID")},["page_id"])}
     })
     from ..daily_updates import tools as daily_tools
@@ -238,10 +240,10 @@ def validate_args(name: str, args: Any) -> dict[str, Any]:
 
 def availability(snapshot: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
     fs = grants.filesystem_capability()
-    notion = (snapshot or {}).get("notion") or {}
+    notion = (snapshot or {}).get("calendar", {}).get("tool_access") or (snapshot or {}).get("notion") or {}
     if snapshot is None:
-        from ..connectors.notion import state as notion_state
-        notion = notion_state.capability()
+        from ..connectors.calendar import service as calendars
+        notion = calendars.capability()
     out = {}
     for name, spec in TOOLS.items():
         need = spec["needs"]
@@ -254,11 +256,11 @@ def availability(snapshot: dict[str, Any] | None = None) -> dict[str, dict[str, 
         elif need == "execute":
             ok, reason = fs["code_execution"], "requires a grant with execution allowed"
         elif need == "notion_read":
-            ok, reason = bool(notion.get("can_read_content")), "requires a connected Notion data source with verified read"
+            ok, reason = bool(notion.get("can_read_content")), "requires read access to the selected calendar"
         elif need in {"notion_insert", "notion_update", "notion_archive"}:
             permission = "can_insert_content" if need == "notion_insert" else "can_update_content"
             ok = bool(notion.get(permission) and (need == "notion_archive" or notion.get("mapping_active")))
-            reason = "requires verified Notion write access" + (" and a saved mapping" if need != "notion_archive" else "")
+            reason = "requires write access to the selected calendar" + (" and a saved mapping" if need != "notion_archive" else "")
         elif need in EXTENSION_NEEDS:
             predicate, why = EXTENSION_NEEDS[need]
             try:

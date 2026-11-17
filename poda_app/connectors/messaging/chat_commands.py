@@ -1,5 +1,6 @@
 """Opt-in per-conversation remote commands, scoped to selected senders and tools."""
 from __future__ import annotations
+from ..calendar import service as calendars
 import json
 import re
 import uuid
@@ -71,10 +72,10 @@ def save(provider, chat_id, enabled, prefix='/PODA', senders=None, calendar=Fals
         root = str(candidate)
     data_source = ''
     if calendar or calendar_edit:
-        from ..notion import state
+        from ..calendar import service as state
         cap = state.capability()
         if not cap.get('mapping_active') or (calendar and not cap.get('can_insert_content')) or (calendar_edit and not cap.get('can_update_content')):
-            raise ValueError('Connect and map a writable Notion calendar first.')
+            raise ValueError('Connect and map a writable calendar first.')
         data_source = cap.get('data_source_id') or ''
     owner = ''
     if provider == 'apple':
@@ -86,7 +87,7 @@ def save(provider, chat_id, enabled, prefix='/PODA', senders=None, calendar=Fals
         latest = service.read(provider, chat_id, limit=1)
         cursor = latest[0]['id'] if latest else ''
     entry = {'provider': provider, 'chat_id': chat_id, 'name': chats[chat_id].get('name') or chat_id, 'prefix': prefix, 'senders': normalized,
-                    'require_prefix': bool(require_prefix), 'calendar_edit': bool(calendar_edit), 'calendar': bool(calendar), 'agenda': bool(agenda), 'data_source': data_source, 'coding_root': root,
+                    'require_prefix': bool(require_prefix), 'calendar_edit': bool(calendar_edit), 'calendar': bool(calendar), 'agenda': bool(agenda), 'data_source': data_source, 'calendar_provider': calendars.config()['provider'], 'coding_root': root,
                     'owner': owner, 'cursor': cursor, 'revision': uuid.uuid4().hex,
                     'configured_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat()}
     _store_entry(key, entry)
@@ -119,10 +120,10 @@ def _guard(cfg, tool, args):
         except (ValueError, TypeError, OSError, PermissionError):
             return False, 'The project folder grant is unavailable.'
     if tool in {'notion_calendar_create', 'notion_calendar_update'}:
-        from ..notion import state
+        from ..calendar import service as state
         cap = state.capability()
         permitted = cfg.get('calendar') and cap.get('can_insert_content') if tool == 'notion_calendar_create' else cfg.get('calendar_edit') and cap.get('can_update_content')
-        if not permitted or not cap.get('mapping_active') or cap.get('data_source_id') != cfg.get('data_source'):
+        if not permitted or not cap.get('mapping_active') or cap.get('data_source_id') != cfg.get('data_source') or cap.get('provider','notion') != cfg.get('calendar_provider','notion'):
             return False, 'Calendar creation is not enabled or the calendar changed.'
     return True, 'Authorized for this monitored conversation.'
 
@@ -163,6 +164,7 @@ def answer(command, cfg):
                     verb = 'Added' if detail.get('created') else 'Updated'
                     args = x['step'].get('args') or {}
                     lines.append(f"{verb}: {detail.get('title') or args.get('title') or 'calendar event'} {detail.get('start') or args.get('start') or ''}".strip())
+                    if detail.get('review_question'): lines.append(detail['review_question'])
                 elif result.get('ok') and detail.get('duplicate'):
                     lines.append('Matching event already exists; no duplicate added.')
                 else:

@@ -25,6 +25,7 @@ from .agent.orchestrator import interrupt_running
 from .planner.router import router as planner_router
 from .security.router import router as privacy_router
 from .connectors.notion.router import router as notion_router
+from .connectors.calendar.router import router as calendar_router
 from .connectors.email.router import router as email_router
 from .agent.software_router import router as software_router  # registers software tools at import
 from .imports.router import router as imports_router
@@ -83,7 +84,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=config.APP_NAME, version=config.VERSION, lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.middleware("http")(security_middleware)
 
-for r in (runtime_router, memory_router, chat_router, chat_runs_router, agent_router, sandbox_router, planner_router, pace_router, workload_router, privacy_router, notion_router, email_router, software_router, imports_router, project_manager_router, model_manager_router, daily_updates_router, skills_router, hindsight_router, knowledge_router, messaging_router):
+for r in (runtime_router, memory_router, chat_router, chat_runs_router, agent_router, sandbox_router, planner_router, pace_router, workload_router, privacy_router, notion_router, calendar_router, email_router, software_router, imports_router, project_manager_router, model_manager_router, daily_updates_router, skills_router, hindsight_router, knowledge_router, messaging_router):
     app.include_router(r)
 
 

@@ -15,6 +15,7 @@ from typing import Any
 
 from ..runtime import config, inference, models
 from ..runtime.db import connect, now_iso, rows, one
+from ..connectors.calendar import service as calendar_service
 from . import tools
 
 MAX_PLAN_ROUNDS = 8
@@ -108,6 +109,7 @@ def _parse_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
     return calls
 
 
+@calendar_service.pin_destination
 def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", session_id: str | None = None,
          profile_model: str | None = None, unattended: bool = False,
          unattended_target: str | None = None, unattended_revision: str | None = None,
@@ -376,6 +378,7 @@ def plan(message: str, snapshot: dict[str, Any], recalled_context: str = "", ses
                                   VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
                                  (pid, session_id, now_iso(), "pending", json.dumps({
                                      "message": message[:30000], "steps": pending_mutations,
+                                     "calendar_binding": calendar_service._expected.get() or calendar_service.binding(),
                                      "rationale": out["rationale"], "model": model,
                                      "continuation_of": continuation_of,
                                  }, default=str), "[]"))
@@ -498,7 +501,15 @@ def approve(proposal_id: str) -> dict[str, Any]:
     status = "interrupted"
     try:
         for step in prop["plan"].get("steps", []):
-            run = tools.execute(step["tool"], step["args"], approved=True, session_id=prop.get("session_id"))
+            if step['tool'].startswith('notion_calendar_'):
+                destination = prop['plan'].get('calendar_binding')
+                with calendar_service._lock:
+                    if not destination or not calendar_service.matches(destination):
+                        raise ValueError('Calendar destination changed or older proposal has no bound destination. Prepare a new proposal.')
+                    with calendar_service.bound(destination):
+                        run = tools.execute(step['tool'],step['args'],approved=True,session_id=prop.get('session_id'))
+            else:
+                run = tools.execute(step['tool'],step['args'],approved=True,session_id=prop.get('session_id'))
             receipt = run["receipt"]
             receipts_out.append(receipt)
             results.append({"step": step, **run["result"]})

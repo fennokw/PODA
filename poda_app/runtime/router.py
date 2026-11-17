@@ -32,7 +32,7 @@ def save_view_preferences(req: ViewPreferences) -> ViewPreferences:
 
 
 @router.get("/system/build")
-def system_build() -> dict[str, Any]:
+async def system_build() -> dict[str, Any]:
     return {"app": config.APP_NAME, "version": config.VERSION, "build_id": config.BUILD_ID, "memory_viewer": "/memory-viewer",
             "static_dir": str(config.STATIC_DIR), "db_path": str(config.DB_PATH), "legacy_memory_modal": False, "port": config.PORT}
 

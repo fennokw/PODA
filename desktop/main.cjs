@@ -1,12 +1,13 @@
 'use strict';
 
-const { app, BrowserWindow, dialog, ipcMain, session, shell, powerSaveBlocker } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, session, shell, powerSaveBlocker, powerMonitor } = require('electron');
 const { spawn } = require('node:child_process');
 const { randomBytes, createHash } = require('node:crypto');
 const { existsSync, readFileSync, mkdirSync, createWriteStream } = require('node:fs');
 const { homedir } = require('node:os');
 const path = require('node:path');
 const readline = require('node:readline');
+const { createRecovery } = require('./recovery.cjs');
 const { setTimeout: sleep } = require('node:timers/promises');
 
 const source = app.isPackaged ? path.join(process.resourcesPath, 'backend') : path.join(__dirname, '.backend');
@@ -18,6 +19,11 @@ let window;
 let origin;
 let closing = false;
 let wakeLock;
+let opening = null;
+let pythonRuntime;
+let lastPath = '/';
+let recoveryDialog = false;
+const expectedExits = new WeakSet();
 
 function runtimePath() {
   const version = createHash('sha256').update(readFileSync(path.join(source, 'requirements.txt'))).digest('hex').slice(0, 16);
@@ -35,18 +41,19 @@ async function startBackend(python) {
     PATH: ['/opt/homebrew/bin', '/usr/local/bin', process.env.PATH || '/usr/bin:/bin'].join(path.delimiter) };
   // Packaged builds always use the existing production encryption policy.
   if (app.isPackaged) processEnv.PODA_DB_ENCRYPTION = 'required';
-  backend = spawn(python, ['-u', path.join(source, 'desktop_backend.py')], {
+  const child = spawn(python, ['-u', path.join(source, 'desktop_child.py')], {
     cwd: source, env: processEnv, stdio: ['pipe', 'pipe', 'pipe'],
   });
-  backend.stdin.on('error', () => {});
-  backend.stderr.pipe(log, { end: false });
-  backend.once('close', () => log.end());
-  const lines = readline.createInterface({ input: backend.stdout });
+  backend = child;
+  child.stdin.on('error', () => {});
+  child.stderr.pipe(log, { end: false });
+  child.once('close', () => log.end());
+  const lines = readline.createInterface({ input: child.stdout });
   const port = await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('The local backend did not report a port.')), 45000);
     const done = fn => value => { clearTimeout(timer); fn(value); };
-    backend.once('error', done(reject));
-    backend.once('close', done(code => reject(new Error(`Backend exited during startup (code ${code}).`))));
+    child.once('error', done(reject));
+    child.once('close', done(code => reject(new Error(`Backend exited during startup (code ${code}).`))));
     lines.on('line', line => {
       if (line.startsWith('PODA_DESKTOP_ERROR ')) {
         log.write(line + '\n');
@@ -67,43 +74,127 @@ async function startBackend(python) {
   });
   const url = `http://127.0.0.1:${port}`;
   for (let attempt = 0; attempt < 160; attempt += 1) {
-    if (backend.exitCode !== null || backend.signalCode) {
+    if (child.exitCode !== null || child.signalCode) {
       throw new Error('The local backend stopped. Another PODA instance may be using the data directory.');
     }
     try {
       const response = await fetch(url + '/system/build', {
         headers: { [header]: token }, redirect: 'error', signal: AbortSignal.timeout(1000),
       });
-      if (response.ok && (await response.json()).build_id) return url;
+      if (response.ok && (await response.json()).build_id) {
+        child.once('exit', () => { if (!closing && !expectedExits.has(child)) recoverWindow().catch(reportRecovery); });
+        return url;
+      }
     } catch { /* The socket is bound while the database and integrations initialize. */ }
     await sleep(250);
   }
   throw new Error('The local backend did not become ready. Check the desktop server log.');
 }
 
-function openWindow() {
-  const localSession = session.fromPartition('poda-desktop');
-  window = new BrowserWindow({
-    width: 1440, height: 930, minWidth: 840, minHeight: 620, title: 'PODA', backgroundColor: '#111018',
-    webPreferences: { session: localSession, sandbox: true, contextIsolation: true,
-      nodeIntegration: false, webviewTag: false, preload: path.join(__dirname, "preload.cjs") },
+function safePath(value) {
+  try { const url = new URL(value); return url.origin === origin ? url.pathname + url.search + url.hash : '/'; }
+  catch { return '/'; }
+}
+
+async function stopBackend() {
+  const child = backend;
+  if (!child || child.exitCode !== null || child.signalCode) return;
+  expectedExits.add(child);
+  await new Promise(resolve => {
+    const timer = setTimeout(() => child.kill('SIGKILL'), 12000);
+    child.once('exit', () => { clearTimeout(timer); resolve(); });
+    child.stdin.end();
   });
-  const isLocal = url => URL.canParse(url) && new URL(url).origin === origin;
-  for (const eventName of ['will-navigate', 'will-redirect', 'will-frame-navigate']) {
-    window.webContents.on(eventName, (event, url) => {
-      if (!isLocal(typeof url === 'string' ? url : url?.url ?? event.url)) event.preventDefault();
+}
+
+const ensureBackend = createRecovery({
+  isClosing: () => closing,
+  delay: ms => sleep(ms),
+  probe: async () => {
+    if (!origin || !backend || backend.exitCode !== null || backend.signalCode) return false;
+    try {
+      const r = await fetch(origin + '/system/build', { headers: { [header]: token }, redirect: 'error', signal: AbortSignal.timeout(2000) });
+      return r.ok && !!(await r.json()).build_id;
+    } catch { return false; }
+  },
+  stop: stopBackend,
+  start: () => startBackend(pythonRuntime),
+  onReady: async next => {
+    origin = next;
+    if (window && !window.isDestroyed()) await window.loadURL(origin + lastPath);
+  },
+});
+
+function reportRecovery(error) {
+  if (closing || recoveryDialog) return;
+  recoveryDialog = true;
+  dialog.showMessageBox({type:'error',title:'PODA needs to reconnect',message:error.message,
+    detail:'Your saved data is intact. Interrupted actions are not automatically repeated. Check the server log if Retry fails.',
+    buttons:['Retry','Close'],defaultId:0,cancelId:1}).then(r => {
+      recoveryDialog = false;
+      if (r.response === 0) recoverWindow().catch(reportRecovery);
     });
-  }
-  window.webContents.on('will-attach-webview', event => event.preventDefault());
-  window.webContents.setWindowOpenHandler(({ url }) => {
-    const target = new URL(url);
-    if (['http:', 'https:'].includes(target.protocol) && !target.username && !target.password && !isLocal(url)) {
-      shell.openExternal(url).catch(console.error);
+}
+
+async function recoverWindow() {
+  if (closing || !pythonRuntime) return;
+  await ensureBackend();
+}
+
+function openWindow() {
+  if (closing) return Promise.resolve();
+  if (opening) return opening;
+  opening = (async () => {
+    await ensureBackend();
+    if (closing) return;
+    if (window && !window.isDestroyed()) {
+      if (window.isMinimized()) window.restore();
+      window.show(); window.focus(); return;
     }
-    return { action: 'deny' };
-  });
-  window.on('closed', () => { window = null; });
-  return window.loadURL(origin);
+    const localSession = session.fromPartition('poda-desktop');
+    const win = new BrowserWindow({
+      width:1440,height:930,minWidth:840,minHeight:620,title:'PODA',backgroundColor:'#111018',
+      webPreferences:{session:localSession,sandbox:true,contextIsolation:true,nodeIntegration:false,
+        webviewTag:false,preload:path.join(__dirname,'preload.cjs')},
+    });
+    window = win;
+    const isLocal = url => URL.canParse(url) && new URL(url).origin === origin;
+    for (const eventName of ['will-navigate','will-redirect','will-frame-navigate']) {
+      win.webContents.on(eventName,(event,url) => {
+        if (!isLocal(typeof url === 'string' ? url : url?.url ?? event.url)) event.preventDefault();
+      });
+    }
+    win.webContents.on('did-navigate',(_e,url) => { if (isLocal(url)) lastPath = safePath(url); });
+    win.webContents.on('did-navigate-in-page',(_e,url,isMainFrame) => { if (isMainFrame && isLocal(url)) lastPath = safePath(url); });
+    win.webContents.on('will-attach-webview',event => event.preventDefault());
+    win.webContents.setWindowOpenHandler(({url}) => {
+      const target = new URL(url);
+      if (['http:','https:'].includes(target.protocol) && !target.username && !target.password && !isLocal(url)) shell.openExternal(url).catch(console.error);
+      return {action:'deny'};
+    });
+    let rendererRetries = 0;
+    let loadRetries = 0;
+    win.webContents.on('render-process-gone',async () => {
+      if (closing || win.isDestroyed()) return;
+      if (++rendererRetries > 2) { reportRecovery(new Error('The window renderer repeatedly stopped. Close and reopen the window.')); return; }
+      try { await ensureBackend(); if (!win.isDestroyed()) await win.loadURL(origin + '/#/ask'); }
+      catch(error) { reportRecovery(error); }
+    });
+    win.webContents.on('did-fail-load',(_e,code,_description,_url,isMainFrame) => {
+      if (!isMainFrame || code === -3 || closing || win.isDestroyed()) return;
+      if (++loadRetries > 2) { reportRecovery(new Error('The window could not load. Close and reopen the window.')); return; }
+      // A healthy server can still leave a failed navigation blank after waking.
+      setTimeout(async () => {
+        try {
+          const restarted = await ensureBackend();
+          if (!restarted && !closing && !win.isDestroyed()) await win.loadURL(origin + lastPath);
+        } catch(error) { reportRecovery(error); }
+      }, 500);
+    });
+    win.on('closed',() => { if (window === win) window = null; });
+    await win.loadURL(origin + lastPath);
+  })().finally(() => { opening = null; });
+  return opening;
 }
 
 ipcMain.handle('poda:shutdown', async event => {
@@ -127,6 +218,7 @@ ipcMain.handle('poda:choose-grant-path', async (event, kind) => {
 
 async function start() {
   const python = runtimePath();
+  pythonRuntime = python;
   if (!python || !existsSync(python)) {
     const result = await dialog.showMessageBox({
       type: 'info', buttons: ['Set Up Python Runtime', 'Quit'], cancelId: 1, defaultId: 0,
@@ -172,34 +264,26 @@ async function start() {
     if (new URL(details.url).origin === origin) headers[header] = token;
     callback({ requestHeaders: headers });
   });
-  backend.once('exit', () => {
-    if (closing) return;
-    dialog.showErrorBox('PODA stopped', `The local server exited. See ${path.join(data, 'logs', 'desktop-server.log')}.`);
-    app.quit();
-  });
   if (process.platform === 'darwin') wakeLock = powerSaveBlocker.start('prevent-app-suspension');
+  powerMonitor.on('resume', () => recoverWindow().catch(reportRecovery));
+  powerMonitor.on('unlock-screen', () => recoverWindow().catch(reportRecovery));
   await openWindow();
 }
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    if (window?.isMinimized()) window.restore();
-    if (window) window.focus();
-    else if (origin && !closing) openWindow().catch(console.error);
-  });
-  app.on('activate', () => { if (!window && origin && !closing) openWindow().catch(console.error); });
+  app.on('second-instance', () => { if (origin && !closing) openWindow().catch(reportRecovery); });
+  app.on('activate', () => { if (origin && !closing) openWindow().catch(reportRecovery); });
   // On macOS the app remains alive after closing its window for Daily Automation.
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
   app.on('before-quit', event => {
     if (wakeLock !== undefined && powerSaveBlocker.isStarted(wakeLock)) powerSaveBlocker.stop(wakeLock);
-    if (closing || !backend?.pid || backend.exitCode !== null || backend.signalCode) return;
-    event.preventDefault();
+    if (closing) return;
     closing = true;
-    const deadline = setTimeout(() => backend.kill('SIGKILL'), 12000);
-    backend.once('exit', () => { clearTimeout(deadline); app.quit(); });
-    backend.stdin.end();
+    if (!backend?.pid || backend.exitCode !== null || backend.signalCode) return;
+    event.preventDefault();
+    stopBackend().finally(() => app.quit());
   });
   app.whenReady().then(start).catch(error => {
     dialog.showErrorBox('PODA could not start', `${error.message}\n\nLog: ${path.join(data, 'logs', 'desktop-server.log')}`);

@@ -268,10 +268,11 @@ def _as_local(text: str | None, fallback: datetime) -> datetime:
 def _calendar_blocks(first: date, last: date) -> tuple[list[tuple[datetime, datetime]], str]:
     """Read only; if Notion cannot be reached, mark availability unverified."""
     try:
-        from ..connectors.notion import state, mapping
+        from ..connectors.calendar import service as state
+        from ..connectors.calendar import service as mapping
         status = state.capability()
         if not status.get("can_read_content"):
-            return [], "Notion not connected; calendar conflicts NOT checked"
+            return [], "Selected calendar not connected; calendar conflicts NOT checked"
         outcome = mapping.items_between_effective(first.isoformat(), last.isoformat())
         blocks: list[tuple[datetime, datetime]] = []
         now = datetime.now().astimezone()
@@ -293,9 +294,9 @@ def _calendar_blocks(first: date, last: date) -> tuple[list[tuple[datetime, date
                 if end <= begin:
                     end = begin + timedelta(hours=1)
                 blocks.append((begin, end))
-        return blocks, "Notion calendar read; draft plan only (not written to Notion)"
+        return blocks, "Selected calendar read; draft plan only (not written to calendar)"
     except Exception as exc:
-        return [], f"Notion availability unavailable: {type(exc).__name__}; conflicts NOT checked"
+        return [], f"Calendar availability unavailable: {type(exc).__name__}; conflicts NOT checked"
 
 
 def _overlap(begin: datetime, end: datetime, blocks: list[tuple[datetime, datetime]]) -> bool:
