@@ -52,6 +52,7 @@ NOTION_KEYCHAIN_SERVICE = "PODA.Public.Notion"
 NOTION_KEYCHAIN_ACCOUNT = "primary"
 
 EGRESS_ALLOWLIST = {
+    "google_calendar": {"oauth2.googleapis.com", "www.googleapis.com"},
     "addon_catalog": {"raw.githubusercontent.com"},
     "notion": {"api.notion.com"},
     "groupme": {"api.groupme.com"},

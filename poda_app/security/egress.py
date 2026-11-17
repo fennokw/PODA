@@ -42,7 +42,7 @@ def _log(service: str, method: str, host: str, path: str, status: int | None, by
 
 
 def guarded_request(service: str, method: str, url: str, *, headers: dict[str, str] | None = None,
-                    json_body: Any = None, timeout: float = 25, purpose: str | None = None) -> requests.Response:
+                    json_body: Any = None, form_body: dict | None = None, timeout: float = 25, purpose: str | None = None) -> requests.Response:
     """Perform an outbound HTTP request only if the host is allowlisted for `service` and offline mode is off."""
     parsed = urlparse(url)
     host = parsed.hostname or ""
@@ -62,7 +62,7 @@ def guarded_request(service: str, method: str, url: str, *, headers: dict[str, s
     started = time.perf_counter()
     bytes_out = len(requests.models.complexjson.dumps(json_body)) if json_body is not None else 0
     try:
-        response = requests.request(method, url, headers=headers, json=json_body, timeout=timeout, allow_redirects=False)
+        response = requests.request(method, url, headers=headers, json=json_body, timeout=timeout, allow_redirects=False, **({"data":form_body} if form_body is not None else {}))
     except requests.RequestException as exc:
         _log(service, method, host, parsed.path, None, bytes_out, 0, purpose, int((time.perf_counter() - started) * 1000), False)
         raise

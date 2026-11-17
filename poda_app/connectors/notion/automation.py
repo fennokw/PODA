@@ -5,14 +5,14 @@ from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Any
 
-from . import mapping
+from . import mapping, event_defaults
 from .client import NotionClient, NotionError
 from .service import normalize_page, query_pages
 
 _create_lock = Lock()
 
 
-def create_calendar_event(title: str, start: str, end: str = "", notes: str = "", commitment: str = "") -> dict[str, Any]:
+def create_calendar_event(title: str, start: str, end: str = "", notes: str = "", commitment: str = "", area: str = "") -> dict[str, Any]:
     try:
         cfg = mapping.require_write("insert")
         client = NotionClient()
@@ -26,24 +26,19 @@ def create_calendar_event(title: str, start: str, end: str = "", notes: str = ""
             ending = datetime.fromisoformat(end.replace("Z", "+00:00"))
             if ending.tzinfo is None or not timedelta(0) < ending - dt <= timedelta(hours=12):
                 raise ValueError("Event end must follow start by at most 12 hours")
+        missing_end = not end
+        end = end or (dt + timedelta(hours=1)).isoformat()
         event = {"title":title.strip(), "start":start, "end":end or None, "notes":notes}
         names = active["mapping"]
-        type_field = schema.get(names.get("type"), {})
-        type_kind = type_field.get("type")
-        event_type = next((option["name"] for option in (type_field.get(type_kind) or {}).get("options", [])
-                           if option.get("name", "").casefold() == "event"), None)
-        if commitment and event_type:
-            event["type"] = event_type
         props = mapping.build_properties(names, schema, event)
-        if commitment:
-            field = schema.get("Commitment", {})
-            options = (field.get("select") or {}).get("options", [])
-            choice = next((option["name"] for option in options
-                           if option.get("name", "").casefold() == commitment.casefold()), None)
-            if field.get("type") != "select" or not choice:
-                raise ValueError(f"The connected Notion calendar has no Commitment option named {commitment}.")
-            props["Commitment"] = {"select": {"name": choice}}
-            event["commitment"] = choice
+        defaults, provisional, missing = event_defaults.resolve(schema, names, cfg["data_source_id"], {"commitment":commitment, "area":area})
+        props.update(defaults)
+        for key,name in event_defaults.fields(schema,names).items():
+            if name in defaults: event[key] = mapping.property_value({'type':schema[name]['type'], **defaults[name]})
+        if missing_end: provisional['duration'] = '1 hour'
+        event['provisional_fields'] = provisional
+        event['review_question'] = event_defaults.review(provisional,missing)
+        event['visibility_note'] = 'Notion Calendar must use this database, mapped date property and matching view filters.'
         # Always check destination immediately before the write.
         # Check the event-local and UTC dates under a shared lock so concurrent
         # automations cannot both insert the same title and start.
@@ -59,11 +54,7 @@ def create_calendar_event(title: str, start: str, end: str = "", notes: str = ""
                         "verification":"duplicate found; no write"}
             payload = {"parent":{"type":"data_source_id","data_source_id":cfg["data_source_id"]},"properties":props}
             created = client.create_page(payload)
-        expected = {name: props[name] for name in (names["title"], names["date"])}
-        if "type" in event:
-            expected[names["type"]] = props[names["type"]]
-        if commitment:
-            expected["Commitment"] = props["Commitment"]
+        expected = props
         verification_error = None
         try:
             reread = normalize_page(mapping.page_in_source(client, created["id"], cfg["data_source_id"]))
@@ -77,14 +68,14 @@ def create_calendar_event(title: str, start: str, end: str = "", notes: str = ""
     except (ValueError, NotionError, KeyError) as exc:
         return {"ok":False,"result":None,"error":str(exc),"verification":"not confirmed"}
 
-def update_calendar_event(page_id: str, title: str = "", start: str = "", end: str = "") -> dict[str, Any]:
+def update_calendar_event(page_id: str, title: str = "", start: str = "", end: str = "", commitment: str = "", area: str = "") -> dict[str, Any]:
     """Update only title and/or date on an existing page in the bound source."""
     try:
         import uuid
         uuid.UUID(page_id)
         cfg = mapping.require_write("update")
         client = NotionClient()
-        active, _ = mapping.live_mapping(cfg, client)
+        active, schema = mapping.live_mapping(cfg, client)
         mapping.page_in_source(client, page_id, cfg["data_source_id"])
         props = {}
         names = active["mapping"]
@@ -105,8 +96,13 @@ def update_calendar_event(page_id: str, title: str = "", start: str = "", end: s
             props[names["date"]] = {"date":date_obj}
         elif end:
             raise ValueError("Provide start when updating end")
+        if commitment or area:
+            requested = {k:v for k,v in {"commitment":commitment,"area":area}.items() if v}
+            additions,_,_ = event_defaults.resolve(schema,names,cfg['data_source_id'],requested)
+            fields = event_defaults.fields(schema,names)
+            for key in requested: props[fields[key]] = additions[fields[key]]
         if not props:
-            raise ValueError("Specify title and/or start")
+            raise ValueError("Specify title, start, commitment or area")
         client.update_page(page_id,{"properties":props})
         after = normalize_page(mapping.page_in_source(client, page_id, cfg["data_source_id"]))
         ok = mapping.event_matches(after, props)
@@ -132,3 +128,18 @@ def archive_calendar_event(page_id: str) -> dict[str, Any]:
                 "error":None if ok else "Archive not confirmed","verification":"re-read-after-write" if ok else "not verified"}
     except (ValueError,NotionError) as exc:
         return {"ok":False,"result":None,"error":str(exc),"verification":"not confirmed"}
+
+
+def fill_missing_event_fields(page_id: str) -> dict[str, Any]:
+    """Repair one selected event, preserving existing values and date."""
+    try:
+        cfg=mapping.require_write('update');client=NotionClient();active,schema=mapping.live_mapping(cfg,client)
+        before=normalize_page(mapping.page_in_source(client,page_id,cfg['data_source_id']))
+        defaults,provisional,missing=event_defaults.resolve(schema,active['mapping'],cfg['data_source_id'])
+        props={k:v for k,v in defaults.items() if not before['properties'].get(k)}
+        fields=event_defaults.fields(schema,active['mapping']);provisional={k:v for k,v in provisional.items() if fields.get(k) in props}
+        if props:client.update_page(page_id,{'properties':props})
+        after=normalize_page(mapping.page_in_source(client,page_id,cfg['data_source_id']));ok=mapping.event_matches(after,props)
+        return {'ok':ok,'result':{'page_id':page_id,'verified':ok,'updated_fields':list(props),'review_question':event_defaults.review(provisional,missing)},
+                'error':None if ok else 'Saved properties did not match. Check Notion before retrying.'}
+    except (ValueError,NotionError,KeyError) as exc:return {'ok':False,'error':str(exc),'result':None}

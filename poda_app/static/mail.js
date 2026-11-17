@@ -406,19 +406,19 @@
       const conf = Math.round((c.confidence || 0) * 100);
       const when = c.date_start ? `${c.date_start}${c.date_end ? ` → ${c.date_end}` : ''}${c.all_day ? ' · all day' : ''}${c.time_zone ? ` · ${c.time_zone}` : ''}${c.duration_minutes ? ` · ${c.duration_minutes} min` : ''}` : 'no date found';
       const out = el('div');
-      const propose = el('button', { class: 'btn btn-sm btn-primary' }, 'Propose to Notion');
+      const propose = el('button', { class: 'btn btn-sm btn-primary' }, 'Propose calendar event');
       propose.onclick = async () => {
         propose.disabled = true; out.innerHTML = ''; out.appendChild(skeleton(2));
         try {
           const r = await api(`/mail/messages/${encodeURIComponent(m.id)}/propose-notion`, { method: 'POST', body: { account_id: state.accountId, commitment: c } });
           out.innerHTML = '';
           const dup = r.duplicates || [];
-          const confirm = el('button', { class: 'btn btn-sm btn-primary' }, 'Confirm and create in Notion');
-          confirm.onclick = async () => { confirm.disabled = true; try { const cr = await api('/notion/events/commit', { method: 'POST', body: { proposal_id: r.proposal_id, confirm: true } }); out.appendChild(el('div', { class: 'row' }, el('div', { class: 'notice notice-ok small' }, `Created and re-read in Notion${cr.page_id ? ` (${String(cr.page_id).slice(0, 8)})` : ''}.`), cr.receipt ? receiptChip(cr.receipt) : null)); } catch (err) { out.appendChild(errorNode(err)); confirm.disabled = false; } };
-          out.append(el('div', { class: 'notice notice-accent small stack-sm' }, el('strong', {}, 'Preview of the Notion page'), el('pre', { class: 'json', style: { maxHeight: '160px' } }, JSON.stringify(r.payload_preview || r.preview || {}, null, 2)), dup.length ? el('div', { class: 'notice notice-warn small' }, `${dup.length} possible duplicate${dup.length === 1 ? '' : 's'}: ${dup.map((d) => d.title || d.page_id || d).join('; ')}`) : el('span', { class: 'faint small' }, 'No duplicates detected.'), el('div', { class: 'row' }, confirm)));
+          const confirm = el('button', { class: 'btn btn-sm btn-primary' }, 'Confirm and create event');
+          confirm.onclick = async () => { confirm.disabled = true; try { const cr = await api('/calendar/commit', { method: 'POST', body: { proposal_id: r.proposal_id, confirm: true } }); out.appendChild(el('div', { class: 'row' }, el('div', { class: 'notice notice-ok small' }, `Calendar result: ${cr.duplicate ? 'matching event already exists' : cr.verified ? 'created and verified' : 'check before retrying'}${cr.page_id ? ` (${String(cr.page_id).slice(0, 8)})` : ''}. ${cr.review_question || ''}`), cr.receipt ? receiptChip(cr.receipt) : null)); } catch (err) { out.appendChild(errorNode(err)); confirm.disabled = false; } };
+          out.append(el('div', { class: 'notice notice-accent small stack-sm' }, el('strong', {}, 'Preview of the calendar event'), el('pre', { class: 'json', style: { maxHeight: '160px' } }, JSON.stringify(r.payload_preview || r.preview || {}, null, 2)), dup.length ? el('div', { class: 'notice notice-warn small' }, `${dup.length} possible duplicate${dup.length === 1 ? '' : 's'}: ${dup.map((d) => d.title || d.page_id || d).join('; ')}`) : el('span', { class: 'faint small' }, r.warning || 'No duplicates detected.'), el('div', { class: 'row' }, confirm)));
         } catch (err) {
           out.innerHTML = ''; const d = errorDetail(err); out.appendChild(errorNode(err));
-          if (d.code === 'NOTION_NOT_READY') out.appendChild(el('button', { class: 'btn btn-sm', onclick: () => navigate('notion') }, 'Open the Notion tab'));
+          if (d.code === 'NOTION_NOT_READY') out.appendChild(el('button', { class: 'btn btn-sm', onclick: () => navigate('notion') }, 'Open Calendar setup'));
           propose.disabled = false;
         }
       };

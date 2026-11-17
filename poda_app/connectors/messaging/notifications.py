@@ -61,7 +61,7 @@ def reminder_tick(now=None):
     cfg = config()
     if not cfg.get('enabled') or not cfg.get('reminders') or egress.offline_mode() or not service.allowed(cfg.get('provider', ''), cfg.get('chat_id', ''), 'write'):
         return 0
-    from ..notion import mapping
+    from ..calendar import service as mapping
     zone = ZoneInfo(cfg['timezone'])
     now = (now or datetime.now(timezone.utc)).astimezone(zone)
     until = now + timedelta(minutes=cfg['minutes'])

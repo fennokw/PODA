@@ -225,14 +225,14 @@ def propose_notion(message_id: str, req: ProposeRequest) -> dict[str, Any]:
     if not c.get("title") or not c.get("date_start"):
         raise HTTPException(status_code=400, detail={"code": "VALIDATION", "message": "commitment needs title and date_start"})
     try:
-        from ..notion import state as notion_state
-        from ..notion.mapping import propose_event
+        from ..calendar import service as notion_state
+        from ..calendar.service import propose_event
         from ..notion.client import NotionError
     except Exception as exc:
         raise HTTPException(status_code=409, detail={"code": "NOTION_NOT_READY", "message": f"Notion connector unavailable: {exc}"})
     cap = notion_state.capability()
     if not cap.get("connected") or not cap.get("mapping_active"):
-        raise HTTPException(status_code=409, detail={"code": "NOTION_NOT_READY", "message": "Connect Notion and save a schema mapping before proposing events."})
+        raise HTTPException(status_code=409, detail={"code": "NOTION_NOT_READY", "message": "Connect the selected calendar (and save its mapping for Notion) before proposing events."})
     event = {"title": c["title"], "start": c["date_start"], "end": c.get("date_end"), "all_day": bool(c.get("all_day", True)), "notes": f"Source email {message_id}: {c.get('evidence_span', '')[:300]}",
              "external_id": f"mail:{message_id}", "project": c.get("suggested_project"), "class": c.get("suggested_class")}
     try:

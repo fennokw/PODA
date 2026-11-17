@@ -413,7 +413,7 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                                  "in_depth_loaded": recalled.get("in_depth_loaded", depth == "deep"), "surfaces": recalled.get("surfaces", []), "knowledge_facts": recalled.get("knowledge_facts", []), "graph_ms": recalled.get("graph_ms"),
                                  "results": [{k: r.get(k) for k in ("id", "title", "provenance", "score", "factors", "parent_id", "memory_kind", "speaker", "source_message_id",
                                                                      "tier", "surface_id", "member_count")} for r in recalled.get("results", [])[:14]]})
-        notion_block = await asyncio.to_thread(notion_context.live_context) if not direct and snapshot.get("notion", {}).get("connected") else "[not connected]"
+        notion_block = await asyncio.to_thread(notion_context.live_context) if not direct and snapshot.get("calendar", {}).get("can_read_calendar") else "[not connected]"
         receipts_block = ""
         tool_results_block = ""
         proposal_note = ""

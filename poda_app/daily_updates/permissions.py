@@ -16,9 +16,9 @@ from typing import Any
 # In particular self-modifying automations, arbitrary inline Python, and
 # bulk operations backed by an unchecked preview are not auto-approved.
 PERMISSION_SPECS = {
-    "notion_calendar_create": ("Add Notion calendar events", {}),
-    "notion_calendar_update": ("Edit Notion calendar events", {}),
-    "notion_calendar_archive": ("Archive Notion calendar events", {}),
+    "notion_calendar_create": ("Add calendar events", {}),
+    "notion_calendar_update": ("Edit calendar events", {}),
+    "notion_calendar_archive": ("Archive calendar events", {}),
     "mail_mark": ("Mark or archive mail", {"account_id": "Connected mail account", "action": "Mail action"}),
     "mail_move": ("Move mail to a folder", {"account_id": "Connected mail account", "mailbox": "Exact destination mailbox"}),
     "mail_draft": ("Save draft emails", {"account_id": "Connected mail account", "recipient": "Exact recipient email address"}),
@@ -52,7 +52,7 @@ def catalog() -> list[dict[str, Any]]:
 
 def prepare(grants: list[dict[str, Any]]) -> list[dict[str, Any]]:
     from ..agent import tools
-    from ..connectors.notion import state
+    from ..connectors.calendar import service as calendars
     from ..agent import grants as filesystem_grants
     if not isinstance(grants, list) or len(grants) > 50:
         raise ValueError("Permissions must be an array of at most 50 specific grants")
@@ -69,12 +69,11 @@ def prepare(grants: list[dict[str, Any]]) -> list[dict[str, Any]]:
         spec_fields = PERMISSION_SPECS[tool][1]
         raw = grant["scope"]
         if not isinstance(raw, dict) or not (set(raw) == set(spec_fields) or (
-            tool.startswith("notion_calendar_") and set(raw) == {"data_source_id"})):
+            tool.startswith("notion_calendar_") and set(raw) in ({"data_source_id"},{"provider","data_source_id"}))):
             raise ValueError(f"Permission {tool} requires exactly: {', '.join(spec_fields) or 'no fields'}")
         if tool.startswith("notion_calendar_") and raw.get("data_source_id"):
-            cfg = state.get_config() or {}
-            if raw["data_source_id"] != cfg.get("data_source_id"):
-                raise ValueError("Existing Notion permission targets another data source")
+            if not calendars.matches(raw):
+                raise ValueError('Existing calendar permission targets another destination. Reauthorize this task.')
         scope = {}
         for key in spec_fields:
             val = raw[key]
@@ -82,11 +81,10 @@ def prepare(grants: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 raise ValueError(f"Invalid {key} for {tool}")
             scope[key] = val.strip()
         if tool.startswith("notion_calendar_"):
-            cfg = state.get_config() or {}
-            needed = "insert_verified" if tool == "notion_calendar_create" else "update_verified"
-            if not cfg.get("data_source_id") or not cfg.get(needed) or not state.token_present():
-                raise ValueError("Verify the required Notion write permission before authorizing this task")
-            scope["data_source_id"] = cfg["data_source_id"]
+            cap = calendars.capability()
+            needed = 'can_insert_content' if tool == 'notion_calendar_create' else 'can_update_content'
+            if not cap.get(needed): raise ValueError('Enable write access to the selected calendar first.')
+            scope.update(calendars.binding())
         if tool == "messages_send":
             from ..connectors.messaging import service as messaging
             if scope["provider"] not in {"apple", "groupme"} or not messaging.allowed(scope["provider"], scope["conversation_id"], "write"):
@@ -143,11 +141,10 @@ def _matches(permission: dict[str, Any], tool: str, args: dict[str, Any]) -> boo
         return False
     scope = permission.get("scope") or {}
     if tool.startswith("notion_calendar_"):
-        from ..connectors.notion import state
-        cfg = state.get_config() or {}
-        needed = "insert_verified" if tool == "notion_calendar_create" else "update_verified"
-        return bool(cfg.get("data_source_id") == scope.get("data_source_id")
-                    and cfg.get(needed) and state.token_present())
+        from ..connectors.calendar import service as calendars
+        cap = calendars.capability()
+        needed = 'can_insert_content' if tool == 'notion_calendar_create' else 'can_update_content'
+        return bool(calendars.matches(scope) and cap.get(needed))
     if tool.startswith("mail_"):
         from ..connectors.email import state as email_state
         accounts = {a["id"]:a for a in email_state.list_accounts()}

@@ -852,6 +852,11 @@
   // =====================================================================
   route('notion', async ({ view, inspector, setTitle, setInspectorTitle }) => {
     setTitle('Calendar'); setInspectorTitle('Calendar details'); $('#viewCrumb').textContent = 'Synced with Notion';
+    const providerState = await api('/calendar/status');
+    if (!view.isConnected) return;
+    const selectedProvider = providerState.config.provider;
+    const providerUI = window.PODACalendar.setup(providerState);
+    $('#viewCrumb').textContent = ({notion:'Synced with Notion',local:'Stored on this computer',google:'Synced with Google Calendar'})[selectedProvider];
     const statusHead = el('div', { class: 'stack-sm' });
     const stepsBar = el('div', { class: 'steps' });
     const tokenBox = el('div', { class: 'stack-sm' });
@@ -878,7 +883,8 @@
     const liveRows = el('details', { class: 'disclosure card dev-only', ontoggle: () => { if (liveRows.open) drawRows(); } },
       el('summary', {}, 'Live Notion rows'), el('div', { class: 'disclosure-body' }, rowsBox));
     view.appendChild(el('div', { class: 'screen stack' },
-      section('Calendar', null, calendarBox), connection, liveRows));
+      providerUI.element, section('Calendar', null, calendarBox), selectedProvider==='notion'?providerUI.defaults:null, connection, liveRows));
+    connection.hidden = selectedProvider!=='notion'; liveRows.hidden = selectedProvider!=='notion';
 
     let status = null;
     function drawSteps(st) {
@@ -892,6 +898,7 @@
       steps.forEach(([t, done], i) => { const active = !done && !activeSet; if (active) activeSet = true; stepsBar.appendChild(el('div', { class: `step ${done ? 'done' : ''} ${active ? 'active' : ''}` }, el('span', { class: 'n' }, done ? 'done' : `step ${i + 1}`), el('span', { class: 't' }, t))); });
     }
     async function refreshStatus(verify = false) {
+      if(selectedProvider!=='notion'){status={capability:providerState.capability};statusHead.replaceChildren(el('strong',{},providerState.capability.database_title));drawCalendar();return;}
       try { status = await api(`/notion/status${verify ? '?verify=true' : ''}`); }
       catch (err) { status = { error: err }; }
       const cap = status?.capability || {};
@@ -901,6 +908,7 @@
         el('p', { class: 'small muted' }, status?.status_detail || cap.status_detail || (status?.error ? errorDetail(status.error).message : 'No Notion database is connected.')),
         kv([['Database', cap.database_title || cap.database_id], ['Data source', cap.data_source_name || cap.data_source_id], ['Read', yesNo(cap.can_read_content)], ['Insert', yesNo(cap.can_insert_content)], ['Update', yesNo(cap.can_update_content)], ['Mapping', yesNo(cap.mapping_active)], ['API version', cap.api_version], ['Last verified', fmtTime(status?.last_verified_at || status?.config?.last_verified_at)]]),
         el('div', { class: 'row' }, el('button', { class: 'btn btn-sm', onclick: () => refreshStatus(true) }, 'Verify now'), el('button', { class: 'btn btn-sm btn-danger', onclick: disconnect }, 'Disconnect')));
+      providerUI.drawDefaults();
       drawSteps(status);
       drawCalendar(); drawToken(); drawSource(); drawSchema(); drawWrite(); drawMapper();
       connection.open = !status?.capability?.connected;
@@ -936,10 +944,11 @@
         : `${s.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} · ${fmtClock(s)}${e ? ` – ${fmtClock(e)}` : ''}`;
       calDetail.append(el('div', { class: 'row' }, el('strong', {}, ev.title), ev.type ? el('span', { class: `cal-type ${typeClass(ev.type)}` }, ev.type) : null),
         kv([['When', when], ['Status', ev.status], ['Commitment', ev.commitment], ['Area', (ev.area || []).join(', ')], ['Source', ev.source], ['Notes', ev.notes], ['Edited', fmtTime(ev.last_edited_time)]]),
-        el('div', { class: 'row' }, ev.url ? el('a', { class: 'btn btn-sm', href: ev.url, target: '_blank', rel: 'noopener' }, 'Open in Notion') : null, ev.source_url ? el('a', { class: 'btn btn-sm btn-ghost', href: ev.source_url, target: '_blank', rel: 'noopener' }, 'Open source') : null));
+        el('div', { class: 'row' }, ev.url ? el('a', { class: 'btn btn-sm', href: ev.url, target: '_blank', rel: 'noopener' }, selectedProvider==='google'?'Open in Google Calendar':'Open in Notion') : null, ev.source_url ? el('a', { class: 'btn btn-sm btn-ghost', href: ev.source_url, target: '_blank', rel: 'noopener' }, 'Open source') : null));
+      if(status?.capability?.can_update_content)calDetail.append(window.PODACalendar.editor(ev,selectedProvider,drawCalendar));
       calDetail.append(el('details', { class: 'dev-only disclosure' }, el('summary', {}, 'Raw calendar entry'), jsonBox(ev)));
       const options = (window.podaCalendarFields?.commitment_options || []);
-      if (ev.page_id && options.length) {
+      if (selectedProvider==='notion' && ev.page_id && options.length) {
         const selection = el('select', { class: 'input', 'aria-label': 'Commitment level' },
           el('option', { value: '' }, 'Not set'),
           ...options.map(v => el('option', { value: v, selected: v === ev.commitment }, v)));
@@ -977,6 +986,7 @@
           } }, 'Set up Notion')));
         return;
       }
+      if(cap.can_insert_content)calendarBox.append(window.PODACalendar.newEvent(drawCalendar,text=>{calDetail.replaceChildren(el('p',{},text));showDetails(true);}));
       const range = calRange();
       const nav = el('div', { class: 'cal-nav' },
         el('div', { class: 'row' },
@@ -991,7 +1001,7 @@
       calendarBox.append(nav, body);
       function persist() { try { sessionStorage.setItem('poda_notion_cal', JSON.stringify({ view: calState.view, cursor: calState.cursor.toISOString() })); } catch { /* ignore */ } }
       load(body, async () => {
-        const r = await api(`/notion/calendar?start=${dayKey(range.start)}&end=${dayKey(range.end)}`);
+        const r = await api(`/calendar/events?start=${dayKey(range.start)}&end=${dayKey(range.end)}`);
         window.podaCalendarFields = r.fields || {};
         const events = r.events || [];
         const byDay = new Map();
@@ -1191,7 +1201,7 @@
         return el('div', { class: 'stack-sm' }, ...items.map(p =>
           el('details', { class: 'disclosure' },
             el('summary', {}, p.title || 'Untitled row'),
-            p.url ? el('a', { href: p.url, target: '_blank', rel: 'noopener' }, 'Open in Notion') : null,
+            p.url ? el('a', { href: p.url, target: '_blank', rel: 'noopener' }, selectedProvider==='google'?'Open in Google Calendar':'Open in Notion') : null,
             jsonBox(p))));
       });
     }
@@ -1574,7 +1584,7 @@
       let timer;query.oninput=()=>{clearTimeout(timer);if(!query.value.trim()){results.replaceChildren();return;}timer=setTimeout(async()=>{try{const data=await api(`/messaging/${provider.value}/conversations?query=${encodeURIComponent(query.value)}&limit=25`);results.replaceChildren(...data.conversations.map(c=>el('button',{class:'btn btn-sm',type:'button',onclick:()=>{choice.replaceChildren(el('option',{value:c.id},c.name));results.replaceChildren();}},c.name+(c.participants?' · '+c.participants:''))));}catch(e){results.replaceChildren(errorNode(e));}},300);};
       monitorBody.append(label('Provider',provider),label('Find a conversation',query),results,label('Selected conversation',choice),el('label',{class:'check'},requirePrefix,'Require a code word'),label('Command prefix',prefix),el('p',{class:'small muted'},'With code words off, every new text from an allowed sender prompts PODA. PODA-marked messages are always ignored.'),label('Allowed senders (self or exact numbers / email addresses, comma separated)',senders),
         el('p',{class:'small muted'},'Only self is allowed by default. Adding other senders lets them use enabled capabilities under your account. GroupMe sender identifiers are GroupMe user IDs.'),
-        el('label',{class:'check'},agenda,'Allow reading the Notion agenda'),el('label',{class:'check'},calendar,'Allow adding Notion calendar events'),el('label',{class:'check'},calendarEdit,'Allow editing existing Notion calendar events'),el('label',{class:'check'},code,'Allow reading and editing code within one granted project folder'),label('Project folder (required for code)',root),
+        el('label',{class:'check'},agenda,'Allow reading the selected calendar'),el('label',{class:'check'},calendar,'Allow adding calendar events'),el('label',{class:'check'},calendarEdit,'Allow editing existing calendar events'),el('label',{class:'check'},code,'Allow reading and editing code within one granted project folder'),label('Project folder (required for code)',root),
         el('button',{class:'btn btn-primary',onclick:async()=>{
           if(!choice.value){toast('Search for and choose a conversation.','warn');return;}
           if(!(await confirmDialog({title:'Enable commands in this conversation?',body:'Allowed senders can trigger the selected actions and replies will be sent from your account. A prefix is not a password. Other participants can see messages.',confirmLabel:'Enable commands',danger:true})))return;

@@ -157,6 +157,20 @@ def semantic_layout(conn, clear_manual_positions: bool = False) -> dict[str, Any
     return {"embedding_model": config.EMBED_MODEL, "embedded_memories": sum(1 for i in vectors if i not in surface_ids), "surfaces": len(surface_ids), "clouds": len(domain_ids)}
 
 
+def display_positions(conn) -> dict[str, Any]:
+    """Fast scene read: preserve saved geometry; initialize only unpositioned points.
+    Semantic reflow is an explicit operation, not a side effect of opening Memory.
+    """
+    missing = rows(conn, "SELECT id,parent_id,node_type FROM memory_nodes WHERE node_type!='transient' AND (x IS NULL OR y IS NULL OR z IS NULL)")
+    centers = {r['id']:(r['x'] or 0,r['y'] or 0,r['z'] or 0) for r in rows(conn,'SELECT id,x,y,z FROM memory_nodes')}
+    for row in sorted(missing,key=lambda r: {'root':0,'domain':1,'surface':2}.get(r['node_type'],3)):
+        center = centers.get(row['parent_id'],(0,0,0)); unit = stable_unit_vector(row['id'])
+        radius = 165 if row['node_type']=='domain' else 35
+        xyz = (0,0,0) if row['node_type']=='root' else tuple(center[i]+unit[i]*radius for i in range(3))
+        conn.execute('UPDATE memory_nodes SET x=?,y=?,z=? WHERE id=?',(*xyz,row['id']));centers[row['id']]=xyz
+    return {'mode':'saved_geometry','initialized':len(missing)}
+
+
 def ensure_positions(conn) -> dict[str, Any]:
     """Prefer the semantic cosine layout; fall back to deterministic geometry if embeddings are unavailable."""
     try:
@@ -247,33 +261,32 @@ def _spatial_links_for(conn, node_rows: dict[str, dict[str, Any]], neighbors: in
 
 
 def open3d_geometry_template() -> dict[str, Any]:
+    """Portable unit sphere for WebGL; avoid loading Open3D just to read Memory."""
     global _GEOMETRY_CACHE
-    if _GEOMETRY_CACHE is not None:
-        return _GEOMETRY_CACHE
-    import numpy as np
-    import open3d as o3d
-    sphere = o3d.geometry.TriangleMesh.create_sphere(radius=1.0, resolution=24)
-    sphere.compute_vertex_normals()
-    vertices = np.asarray(sphere.vertices, dtype=float)
-    triangles = np.asarray(sphere.triangles, dtype=int)
-    normals = np.asarray(sphere.vertex_normals, dtype=float)
-    _GEOMETRY_CACHE = {
-        "cloud_volume": {"vertices": vertices.round(6).tolist(), "triangles": triangles.tolist(), "normals": normals.round(6).tolist(),
-                         "vertex_count": int(vertices.shape[0]), "triangle_count": int(triangles.shape[0]), "resolution": 24},
-        "open3d_version": str(o3d.__version__),
-    }
+    if _GEOMETRY_CACHE is not None: return _GEOMETRY_CACHE
+    rings, segments = 24,48
+    vertices, triangles = [],[]
+    for ring in range(rings+1):
+        theta = math.pi*ring/rings
+        for segment in range(segments):
+            phi = 2*math.pi*segment/segments
+            vertices.append([round(math.sin(theta)*math.cos(phi),6),round(math.cos(theta),6),round(math.sin(theta)*math.sin(phi),6)])
+    for ring in range(rings):
+        for segment in range(segments):
+            a=ring*segments+segment;b=ring*segments+(segment+1)%segments;c=a+segments;d=b+segments
+            if ring: triangles.append([a,c,b])
+            if ring<rings-1: triangles.append([b,c,d])
+    _GEOMETRY_CACHE = {'cloud_volume':{'vertices':vertices,'triangles':triangles,'normals':vertices,
+                       'vertex_count':len(vertices),'triangle_count':len(triangles),'resolution':rings},'open3d_version':'portable-mesh'}
     return _GEOMETRY_CACHE
 
 
 def scene_bounds(nodes: list[dict[str, Any]]) -> dict[str, Any]:
-    import numpy as np
-    import open3d as o3d
-    points = np.array([[float(n.get("x") or 0.0), float(n.get("y") or 0.0), float(n.get("z") or 0.0)] for n in nodes], dtype=float)
-    if len(points) == 0:
+    """Axis-aligned bounds without importing a native 3D engine on a page read."""
+    if not nodes:
         return {"center": [0.0, 0.0, 0.0], "extent": [1.0, 1.0, 1.0], "diagonal": 1.0}
-    cloud = o3d.geometry.PointCloud()
-    cloud.points = o3d.utility.Vector3dVector(points)
-    bounds = cloud.get_axis_aligned_bounding_box()
-    center = np.asarray(bounds.get_center(), dtype=float)
-    extent = np.asarray(bounds.get_extent(), dtype=float)
-    return {"center": center.round(5).tolist(), "extent": extent.round(5).tolist(), "diagonal": max(1.0, float(np.linalg.norm(extent)))}
+    axes = [[float(n.get(key) or 0.0) for n in nodes] for key in ('x', 'y', 'z')]
+    lo, hi = [min(a) for a in axes], [max(a) for a in axes]
+    extent = [hi[i] - lo[i] for i in range(3)]
+    return {"center": [round((lo[i] + hi[i]) / 2, 5) for i in range(3)],
+            "extent": [round(v, 5) for v in extent], "diagonal": max(1.0, math.sqrt(sum(v*v for v in extent)))}

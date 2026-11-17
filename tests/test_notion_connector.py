@@ -535,3 +535,45 @@ def test_chat_calendar_create_works_with_insert_only_and_checks_readback(fake):
     assert fake.pages[page_id]["properties"]["Commitment"]["select"]["name"] == "Maybe"
     assert automation.create_calendar_event("Office hours", start.isoformat(), commitment="Maybe")["result"]["duplicate"]
     assert not automation.create_calendar_event("Invalid category", start.isoformat(), commitment="Invalid")["ok"]
+
+
+def test_new_calendar_defaults_are_verified_not_just_title_and_date(fake, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    from poda_app.connectors.notion import automation
+    monkeypatch.setitem(SCHEMA, 'Area', {'type':'multi_select','multi_select':{'options':[{'name':'Personal'},{'name':'Music'}]}})
+    connect_ok(fake); service.verify_write(); mapping.save_mapping(GOOD_MAPPING)
+    original = fake.create_page
+    def create(payload):
+        response = original(payload)
+        for name, prop in payload['properties'].items():
+            response._body['properties'][name]={'type':next(iter(prop)),**prop}
+        return response
+    fake.routes[('POST','/pages')]=create
+    start=(datetime.now(timezone.utc)+timedelta(days=1)).replace(microsecond=0).isoformat()
+    result=automation.create_calendar_event('Metadata verification',start)
+    assert result['ok'] and result['result']['area']==['Personal']
+    assert 'area: Personal' in result['result']['review_question']
+    assert 'commitment: Maybe' in result['result']['review_question']
+    def wrong_area(payload):
+        response=create(payload)
+        response._body['properties']['Area']['multi_select']=[{'name':'Music'}]
+        return response
+    fake.routes[('POST','/pages')]=wrong_area
+    result=automation.create_calendar_event('Wrong saved area',start)
+    assert not result['ok'] and result['result']['created'] and not result['result']['verified']
+
+
+def test_repair_fills_missing_fields_without_overwriting_existing_values(fake,monkeypatch):
+    from poda_app.connectors.notion import automation
+    monkeypatch.setitem(SCHEMA,'Area',{'type':'multi_select','multi_select':{'options':[{'name':'Personal'},{'name':'Music'}]}})
+    connect_ok(fake);service.verify_write();mapping.save_mapping(GOOD_MAPPING)
+    before=fake.pages['page-0'];original_date=dict(before['properties']['Due Date / Event Date']['date'])
+    before['properties']['Area']={'type':'multi_select','multi_select':[{'name':'Music'}]}
+    result=automation.fill_missing_event_fields('page-0')
+    assert result['ok']
+    assert result['result']['updated_fields']==['Commitment']
+    after=fake.pages['page-0']['properties']
+    assert after['Area']['multi_select']==[{'name':'Music'}]
+    assert after['Due Date / Event Date']['date']==original_date
+    assert after['Type']['select']['name']=='Assignment'
+    assert after['Commitment']['select']['name']=='Maybe'

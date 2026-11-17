@@ -1,5 +1,6 @@
 """Authenticated, conversation-bound iMessage commands processed on the local Mac."""
 from __future__ import annotations
+from ..calendar import service as calendars
 
 import asyncio
 import hmac
@@ -47,10 +48,10 @@ def configure(enabled: bool, chat_id: str = '', secret: str = '', calendar_creat
         raise ValueError('Use a private command key of 20-128 letters, digits, underscores or hyphens.')
     data_source = ''
     if calendar_create:
-        from ..notion import state
+        from ..calendar import service as state
         cap = state.capability()
         if not cap.get('can_insert_content') or not cap.get('mapping_active'):
-            raise ValueError('Connect and map a writable Notion calendar before enabling remote calendar creation.')
+            raise ValueError('Connect and map a writable calendar before enabling remote calendar creation.')
         data_source = cap.get('data_source_id') or ''
     if provider == 'apple':
         latest = apple.messages(chat_id, newest=True, limit=1)
@@ -63,7 +64,7 @@ def configure(enabled: bool, chat_id: str = '', secret: str = '', calendar_creat
             raise ValueError('Could not verify the connected GroupMe account identity.')
         latest = service.read('groupme', chat_id, limit=1)
         cursor = latest[0]['id'] if latest else ''
-    new = {'enabled': True, 'provider': provider, 'owner_id': owner_id, 'configured_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(), 'chat_id': chat_id, 'calendar_create': bool(calendar_create), 'data_source_id': data_source,
+    new = {'enabled': True, 'provider': provider, 'owner_id': owner_id, 'configured_at': datetime.now(timezone.utc).replace(microsecond=0).isoformat(), 'chat_id': chat_id, 'calendar_create': bool(calendar_create), 'data_source_id': data_source, 'calendar_provider': calendars.config()['provider'],
            'cursor': cursor, 'revision': uuid.uuid4().hex}
     keychain.keychain_set(_SECRET_SERVICE, 'secret', secret)
     set_setting(_SETTING, json.dumps(new))
@@ -83,9 +84,9 @@ def _authorized(cfg: dict, command: str, tool: str, args: dict) -> tuple[bool, s
         return False, 'The message did not explicitly request creating an event.'
     if not re.search(r'\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?|\d{4}-\d{1,2}-\d{1,2}|\d{1,2}/\d{1,2})\b', command, re.I) or not re.search(r'\b(?:noon|midnight|\d{1,2}:\d{2}|\d{1,2}\s*(?:am|pm))\b', command, re.I):
         return False, 'Include an explicit event date and time in the remote message.'
-    from ..notion import state
+    from ..calendar import service as state
     cap = state.capability()
-    if not cap.get('can_insert_content') or not cap.get('mapping_active') or cap.get('data_source_id') != cfg.get('data_source_id'):
+    if not cap.get('can_insert_content') or not cap.get('mapping_active') or cap.get('data_source_id') != cfg.get('data_source_id') or cap.get('provider','notion') != cfg.get('calendar_provider','notion'):
         return False, 'The authorized calendar changed or is unavailable.'
     return True, 'Owner enabled remote creation for this calendar.'
 
@@ -119,7 +120,7 @@ def _answer(command: str, cfg: dict) -> str:
             item = creates[-1]['result']
             details = item.get('result') or {}
             if item.get('ok') and details.get('created') and details.get('verified'):
-                return f"Added and verified: {details.get('title', 'event')} at {details.get('start', '')}."
+                return f"Added and verified: {details.get('title', 'event')} at {details.get('start', '')}. " + (details.get('review_question') or '')
             if item.get('ok') and details.get('duplicate'):
                 return 'A matching calendar event already exists; no new event was created.'
             return 'I could not verify the calendar change: ' + str(item.get('error') or 'Check PODA for details.')[:300]

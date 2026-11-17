@@ -15,7 +15,7 @@ async function build() {
     const backendDir = path.join(stage, 'backend');
     mkdirSync(appDir);
     mkdirSync(backendDir);
-    for (const file of ['main.cjs', 'preload.cjs', 'package.json']) {
+    for (const file of ['main.cjs', 'preload.cjs', 'recovery.cjs', 'package.json']) {
       copyFileSync(path.join(__dirname, file), path.join(appDir, file));
     }
     execFileSync('python3', [path.join(__dirname, 'stage_backend.py'), backendDir], { stdio: 'inherit' });

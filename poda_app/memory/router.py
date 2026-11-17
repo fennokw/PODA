@@ -110,7 +110,7 @@ def get_memory() -> dict[str, Any]:
 def open3d_scene() -> dict[str, Any]:
     conn = connect()
     try:
-        semantic = layout.ensure_positions(conn)
+        semantic = layout.display_positions(conn)
         conn.commit()
         graph = store.list_graph(conn)
     finally:
