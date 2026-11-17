@@ -68,7 +68,7 @@ def create_calendar_event(title: str, start: str, end: str = "", notes: str = ""
     except (ValueError, NotionError, KeyError) as exc:
         return {"ok":False,"result":None,"error":str(exc),"verification":"not confirmed"}
 
-def update_calendar_event(page_id: str, title: str = "", start: str = "", end: str = "", commitment: str = "", area: str = "") -> dict[str, Any]:
+def update_calendar_event(page_id: str, title: str = "", start: str = "", end: str = "", commitment: str = "", area: str = "", completed: bool | None = None) -> dict[str, Any]:
     """Update only title and/or date on an existing page in the bound source."""
     try:
         import uuid
@@ -101,8 +101,14 @@ def update_calendar_event(page_id: str, title: str = "", start: str = "", end: s
             additions,_,_ = event_defaults.resolve(schema,names,cfg['data_source_id'],requested)
             fields = event_defaults.fields(schema,names)
             for key in requested: props[fields[key]] = additions[fields[key]]
+        if completed is not None:
+            name = names.get('completed')
+            if not name or schema.get(name,{}).get('type') != 'checkbox':
+                raise ValueError('Map a completion checkbox first.')
+            if not isinstance(completed, bool): raise ValueError('Completed must be true or false.')
+            props[name] = {'checkbox': completed}
         if not props:
-            raise ValueError("Specify title, start, commitment or area")
+            raise ValueError("Specify title, start, commitment, area or completed")
         client.update_page(page_id,{"properties":props})
         after = normalize_page(mapping.page_in_source(client, page_id, cfg["data_source_id"]))
         ok = mapping.event_matches(after, props)
@@ -135,7 +141,7 @@ def fill_missing_event_fields(page_id: str) -> dict[str, Any]:
     try:
         cfg=mapping.require_write('update');client=NotionClient();active,schema=mapping.live_mapping(cfg,client)
         before=normalize_page(mapping.page_in_source(client,page_id,cfg['data_source_id']))
-        defaults,provisional,missing=event_defaults.resolve(schema,active['mapping'],cfg['data_source_id'])
+        defaults,provisional,missing=event_defaults.resolve(schema,active['mapping'],cfg['data_source_id'],{'type':before['properties'].get(active['mapping'].get('type'))})
         props={k:v for k,v in defaults.items() if not before['properties'].get(k)}
         fields=event_defaults.fields(schema,active['mapping']);provisional={k:v for k,v in provisional.items() if fields.get(k) in props}
         if props:client.update_page(page_id,{'properties':props})

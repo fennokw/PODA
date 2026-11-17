@@ -69,6 +69,15 @@ class MappingRequest(BaseModel):
     status_done_values: list[str] = []
     default_status: str | None = None
     default_type: str | None = None
+    completed: str | None = None
+    commitment: str | None = None
+    area: str | None = None
+    task_kind: str | None = None
+    source: str | None = None
+    default_commitment: str | None = None
+    default_area: str | None = None
+    default_source: str | None = None
+    preset: str | None = None
 
 
 class EventProposal(BaseModel):
@@ -209,6 +218,30 @@ def notion_save_mapping(req: MappingRequest) -> dict[str, Any]:
         raise _http(exc)
     capability.sync_ledger()
     return result
+
+
+@router.get("/notion/mapping/export")
+def notion_export_mapping():
+    from . import presets
+    return presets.export_mapping()
+
+
+@router.post("/notion/mapping/import")
+def notion_import_mapping(document: dict[str, Any]):
+    from . import presets
+    try:
+        return presets.import_mapping(document)
+    except NotionError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/notion/mapping/bestnds")
+def notion_bestnds_mapping():
+    from . import presets
+    try:
+        return presets.apply_bestnds()
+    except NotionError as exc:
+        raise _http(exc) from exc
 
 
 @router.get("/notion/mapping/preview")
