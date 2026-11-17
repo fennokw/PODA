@@ -853,6 +853,7 @@
   route('notion', async ({ view, inspector, setTitle, setInspectorTitle }) => {
     setTitle('Calendar'); setInspectorTitle('Calendar details'); $('#viewCrumb').textContent = 'Synced with Notion';
     const providerState = await api('/calendar/status');
+    if (!view.isConnected) return;
     const selectedProvider = providerState.config.provider;
     const providerUI = window.PODACalendar.setup(providerState);
     $('#viewCrumb').textContent = ({notion:'Synced with Notion',local:'Stored on this computer',google:'Synced with Google Calendar'})[selectedProvider];

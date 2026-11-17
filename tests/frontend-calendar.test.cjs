@@ -122,3 +122,19 @@ test('Memory releases listeners and resumes its draft after context loss',()=>{
     assert.equal(scene.glInitializations,2);assert.ok(scene.destroyed);assert.equal(scene.worker,null);
   }finally{dom.window.close();}
 });
+test('leaving Calendar during setup cannot change the next page breadcrumb',async()=>{
+  const {dom,w}=create();
+  try{
+    let complete;
+    w.fetch=async url=>{
+      if(url==='/calendar/status')await new Promise(resolve=>complete=resolve);
+      const data=url==='/calendar/status'?{config:{provider:'local'},capability:{},google:{connected:false}}:{};
+      return {ok:true,status:200,text:async()=>JSON.stringify(data),json:async()=>data};
+    };
+    w.eval(fs.readFileSync(path.join(root,'app.js'),'utf8'));await settle();
+    w.PODA.route('destination',({view})=>{view.append('Next page');w.document.querySelector('#viewCrumb').textContent='Next breadcrumb';});
+    w.location.hash='#/destination';await w.PODA.renderRoute();complete();await settle();
+    assert.equal(w.document.querySelector('#viewCrumb').textContent,'Next breadcrumb');
+    assert.equal(w.document.querySelector('#view').textContent,'Next page');
+  }finally{dom.window.close();}
+});
