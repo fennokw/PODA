@@ -58,7 +58,7 @@ def test_chat_commands_scope_to_project_task_and_complete_goal(client):
         _, reply = _chat(client, "/taskdone", sid)
         assert "complete" in reply
         _patch(client, task_path, {"progress": 0})
-        _, reply = _chat(client, "Check this task off.", sid)
+        _, reply = _chat(client, "Check it off.", sid)
         assert "complete" in reply
         assert client.get(path).json()["tasks"][0]["progress"] == 100
     finally:

@@ -89,7 +89,7 @@ def command(session_id, message):
         ensure_projects(db)
         current = context(db, session_id)
         if message.casefold() == "/taskdone" or (current and current["task_id"] and re.fullmatch(
-                r"(?:please )?(?:mark (?:this|the) task (?:as )?(?:done|complete|completed)|check (?:this|the) task off|check off (?:this|the) task|complete (?:this|the) task)[.!]?",
+                r"(?:please )?(?:mark (?:this|the) task (?:as )?(?:done|complete|completed)|check (?:(?:this|the) task|it) off|check off (?:(?:this|the) task|it)|complete (?:this|the) task)[.!]?",
                 message, re.I)):
             if not current or not current["task_id"]:
                 return "", "Open a task chat or assign this chat with /task first.", current
