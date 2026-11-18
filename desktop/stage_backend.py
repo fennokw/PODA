@@ -11,6 +11,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 APP_FILES = ("requirements.txt", "PODA_VERSION.txt", "LICENSE")
 APP_SUFFIXES = {".py", ".html", ".js", ".css", ".svg"}
+APP_RESOURCES = {Path("connectors/notion/bestnds-v1.json")}
 
 
 def materialize_engine_aliases(runtime: Path) -> None:
@@ -40,11 +41,17 @@ def stage(target: Path) -> None:
             continue
         if path.is_symlink():
             raise ValueError(f"Refusing a link in the app source: {path.relative_to(ROOT)}")
-        if not path.is_file() or path.suffix not in APP_SUFFIXES or path == source / "server.py":
+        relative = path.relative_to(source)
+        if not path.is_file() or relative == Path("server.py"):
+            continue
+        if path.suffix not in APP_SUFFIXES and relative not in APP_RESOURCES:
             continue
         destination = target / path.relative_to(ROOT)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, destination)
+    for relative in APP_RESOURCES:
+        if not (target / "poda_app" / relative).is_file():
+            raise ValueError(f"Missing required desktop resource: {relative}")
     subprocess.run([sys.executable, "-m", "poda_app.runtime.chat_renderers",
                     str(target / "poda_app/static/chat-vendor")], cwd=ROOT, check=True)
     runtime = target / "llama-runtime"

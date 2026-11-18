@@ -26,6 +26,8 @@ def test_packaged_llama_cpp_runs():
 def test_desktop_requires_token_and_local_session(tmp_path):
     assert not (BACKEND / "poda_app" / "server.py").exists()
     assert (BACKEND / "poda_app" / "main.py").is_file()
+    preset = BACKEND / "poda_app" / "connectors" / "notion" / "bestnds-v1.json"
+    assert json.loads(preset.read_text(encoding="utf-8"))["mapping"]["date"] == "Date"
     env = dict(os.environ, PODA_DATA_DIR=str(tmp_path), PODA_BACKUP_DIR=str(tmp_path / "backups"),
                PODA_DB_ENCRYPTION="off", PODA_DESKTOP_TOKEN="synthetic-local-token")
     env["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -54,7 +56,15 @@ def test_desktop_requires_token_and_local_session(tmp_path):
                 http.headers["X-PODA-Desktop"] = env["PODA_DESKTOP_TOKEN"]
                 assert http.get("/system/build").json()["port"] == port
                 assert http.get("/memory").status_code == 401
-                assert http.get("/").status_code == 200
+                page = http.get("/")
+                assert page.status_code == 200
+                for asset in ("project-manager.js", "project-manager.css", "chat-commands.js", "chat-commands.css"):
+                    assert f"/static/{asset}" in page.text
+                    assert http.get(f"/static/{asset}").status_code == 200
+                assert http.get("/project-manager/chat-commands").json()["projects"] == []
+                preset_response = http.post("/notion/mapping/bestnds", json={})
+                assert preset_response.status_code == 400
+                assert "No Notion data source" in preset_response.json()["detail"]["message"]
                 assert http.get("/memory").status_code == 200
                 assert http.get("/memory", headers={"Origin": "https://example.test"}).status_code == 403
             child.stdin.close()

@@ -1,7 +1,7 @@
-"""Read-only Project Manager tools available through normal PODA chat."""
+"""Project Manager tools available through PODA chat."""
 from __future__ import annotations
 
-from ..agent.tools import _schema, _str
+from ..agent.tools import _int, _schema, _str
 from . import router
 
 
@@ -22,7 +22,7 @@ def project_manager_detail(project_id: str) -> dict:
         p = router.read_project(project_id)
         attachments = [{k: a.get(k) for k in ("id", "filename", "kind", "size_bytes")}
                        for a in p.get("attachments", [])]
-        tasks = [{k: t.get(k) for k in ("title", "description", "deadline", "status",
+        tasks = [{k: t.get(k) for k in ("id", "title", "description", "deadline", "status",
                  "importance", "difficulty", "progress", "estimate")}
                  for t in p.get("tasks", [])]
         return {"ok": True, "result": {"project": {k: v for k, v in p.items() if k not in ("tasks", "attachments")},
@@ -60,4 +60,39 @@ TOOLS = {
         "handler": project_manager_document,
         "schema": _schema({"project_id": _str("Project ID"), "attachment_id": _str("Attachment ID")}, ["project_id", "attachment_id"]),
     },
+}
+
+def update_task(project_id, task_id, progress=None, goal_current=None, deadline=None, event_id=None):
+    from . import folders
+    from ..connectors.calendar import service as calendar
+
+    changes = {k: v for k, v in {"progress": progress, "goal_current": goal_current,
+                                  "deadline": deadline, "event_id": event_id}.items() if v is not None}
+    if event_id:
+        changes["calendar_scope"] = calendar.binding()
+    if not changes:
+        return {"ok": False, "error": "Choose a progress update, deadline, or existing event."}
+    try:
+        task = folders.update_task(project_id, task_id, changes)
+        return {"ok": True, "verification": "Task saved in PODA",
+                "result": {k: task[k] for k in ("id", "title", "progress", "status", "deadline", "tracking")}}
+    except (RuntimeError, ValueError, KeyError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+TOOLS["project_task_update"] = {
+    "description": "Update project task progress, completion, or deadline after an explicit user request. "
+                   "Progress 100 checks the task off. A linked goal uses a verified count. "
+                   "Use either deadline or an existing calendar event ID from a calendar read. "
+                   "Report any calendar_error in tracking.",
+    "mutating": True, "requires_confirmation": True, "needs": None,
+    "handler": update_task,
+    "schema": _schema({
+        "project_id": _str("Project ID from current folder, or project_manager_list"),
+        "task_id": _str("Task ID from current folder, or project_manager_detail"),
+        "progress": _int("Percent complete, 100 means done", 0, 100),
+        "goal_current": _int("Verified goal count", 0, 1000000),
+        "deadline": _str("ISO date or timezone-aware datetime; empty clears it"),
+        "event_id": _str("Existing calendar event ID from a calendar read"),
+    }, ["project_id", "task_id"]),
 }

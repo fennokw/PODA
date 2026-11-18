@@ -186,7 +186,7 @@ def mapping_history() -> list[dict[str, Any]]:
     return out
 
 
-def save_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
+def save_mapping(mapping: dict[str, Any], *, calendar_defaults: dict[str, str] | None = None) -> dict[str, Any]:
     cfg, _ = _schema()
     schema = NotionClient().data_source(cfg["data_source_id"]).get("properties") or {}
     clean = {k: (mapping.get(k) or None) for k in MAPPING_FIELDS}
@@ -211,6 +211,12 @@ def save_mapping(mapping: dict[str, Any]) -> dict[str, Any]:
         mid = str(uuid.uuid4())
         conn.execute("INSERT INTO notion_mappings (id, version, data_source_id, mapping_json, schema_fingerprint, created_at, active) VALUES (?,?,?,?,?,?,1)",
                      (mid, version, cfg["data_source_id"], json.dumps(clean), schema_fingerprint(schema), now_iso()))
+        if calendar_defaults is not None:
+            from . import event_defaults
+            try:
+                event_defaults.save(cfg["data_source_id"], schema, clean, calendar_defaults, conn=conn)
+            except ValueError as exc:
+                raise NotionError("validation", str(exc), code="bestnds_defaults_invalid") from exc
         conn.commit()
     finally:
         conn.close()

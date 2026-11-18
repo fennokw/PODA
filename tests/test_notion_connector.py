@@ -164,6 +164,7 @@ def fake(monkeypatch):
     conn = connect()
     conn.execute("DELETE FROM notion_config"); conn.execute("DELETE FROM notion_mappings"); conn.execute("DELETE FROM agent_proposals")
     conn.execute("CREATE TABLE IF NOT EXISTS notion_test_pages (page_id TEXT PRIMARY KEY, data_source_id TEXT, title TEXT, created_at TEXT NOT NULL, archived INTEGER DEFAULT 0, note TEXT)")
+    conn.execute("DELETE FROM settings WHERE key=?", ("calendar_notion_defaults:" + DS,))
     conn.execute("DELETE FROM notion_test_pages"); conn.commit(); conn.close()
     yield fake
 
@@ -171,6 +172,41 @@ def fake(monkeypatch):
 def connect_ok(fake):
     fake.install_workspace()
     return service.connect_data_source(DS)
+
+
+def test_bestnds_button_saves_live_mapping_and_defaults_atomically(client, fake):
+    from poda_app.connectors.notion import event_defaults
+
+    connect_ok(fake)
+    response = fake.routes[("GET", f"/data_sources/{DS}")]
+    schema = {
+        "Name": {"type": "title"},
+        "Date": {"type": "date"},
+        "Completed": {"type": "checkbox"},
+        **{name: {"type": "rich_text"} for name in
+           ("Notes", "Canvas Assignment ID", "Canvas Course ID", "External Event ID")},
+        **{name: {"type": "select", "select": {"options": [{"name": opt} for opt in choices]}}
+           for name, choices in {
+               "Type": ["Event", "Task"], "Task kind": ["Homework"], "Event kind": ["Meeting"],
+               "Import Source": ["Manual"], "Area": ["General"], "Commitment": ["Committed"],
+           }.items()},
+    }
+    response.json()["properties"] = schema
+    applied = client.post("/notion/mapping/bestnds", json={})
+    assert applied.status_code == 200, applied.text
+    saved = applied.json()
+    assert saved["mapping"]["date"] == "Date"
+    assert saved["mapping"]["external_ids"]["ics_event_id"] == "External Event ID"
+    assert event_defaults.load(DS) == {"type": "Event", "commitment": "Committed", "area": "General", "source": "Manual"}
+
+    schema["Area"]["select"]["options"] = [{"name": "School"}]
+    rejected = client.post("/notion/mapping/bestnds", json={})
+    assert rejected.status_code == 400, rejected.text
+    assert rejected.json()["detail"]["code"] == "bestnds_defaults_invalid"
+    assert "General" in rejected.json()["detail"]["message"]
+    assert mapping.get_active_mapping()["id"] == saved["id"]
+    assert len(mapping.mapping_history()) == 1
+    assert event_defaults.load(DS)["area"] == "General"
 
 
 # ----------------------------------------------------------------------------- token / discovery

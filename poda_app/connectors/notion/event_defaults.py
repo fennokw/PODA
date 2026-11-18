@@ -52,11 +52,13 @@ def resolve(schema,names,source,explicit=None):
     return props,provisional,missing
 
 
-def save(source,schema,names,values):
+def save(source,schema,names,values, *, conn=None):
     known=fields(schema,names)
     for key,value in values.items():
-        if not known.get(key) or value not in options(schema[known[key]]): raise ValueError(f'Choose an existing option for {key}.')
-    set_setting('calendar_notion_defaults:'+source,json.dumps(values))
+        name = known.get(key)
+        if not name or value not in options(schema[name]):
+            raise ValueError(f'Notion needs the option "{value}" in "{name or key}". Add it to the connected database or map your calendar fields manually.')
+    set_setting('calendar_notion_defaults:'+source, json.dumps(values), conn=conn)
 
 
 def review(provisional,missing):
