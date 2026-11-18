@@ -158,3 +158,34 @@ test('Notion editor offers only the matching kind and saves completion independe
     }finally{dom.window.close();}
   }
 });
+test('project task folders show progress, reopen chats, and save a new due time',async()=>{
+  const {dom,w}=create();
+  try{
+    const projectPath='/project-manager/projects/demo';
+    const task={id:'task-one',title:'Prepare prototype',progress:25,estimate:{minutes:60,remaining_minutes:45},
+      deadline:'2027-04-02',tracking:{goal:'Samples',goal_target:4,goal_current:1},
+      chats:[{session_id:'saved-chat',title:'Prototype plan'}]};
+    const project={id:'demo',name:'Prototype',tasks:[task],chats:[{...task.chats[0],task_id:task.id}],attachments:[]};
+    let patch;
+    w.fetch=async(url,options)=>{
+      if(options?.method==='PATCH')patch=JSON.parse(options.body);
+      const data=url===projectPath?project:task;
+      return {ok:true,status:200,text:async()=>JSON.stringify(data)};
+    };
+    w.eval(fs.readFileSync(path.join(root,'project-manager.js'),'utf8'));
+    w.location.hash='#/projects?project=demo&task=task-one';
+    await w.PODA.renderRoute();
+    const screen=w.document.querySelector('.pm-screen');
+    assert.equal(screen.querySelector('.pm-task-rail progress').value,25);
+    const taskView=screen.querySelector('.pm-task-content');
+    assert.equal(taskView.querySelector('progress').value,25);
+    assert.match(taskView.querySelector('a[href="#/ask?session=saved-chat"]').textContent,/Prototype plan/);
+    taskView.querySelector('[name="due_time"]').value='15:30';
+    taskView.querySelector('[name="user_minutes"]').value='90';
+    taskView.querySelector('form').requestSubmit();
+    await settle();
+    assert.equal(patch.user_minutes,90);
+    assert.equal(patch.deadline,new w.Date('2027-04-02T15:30').toISOString());
+    assert.equal(patch.progress,undefined);
+  }finally{dom.window.close();}
+});

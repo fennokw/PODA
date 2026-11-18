@@ -508,6 +508,12 @@ def approve(proposal_id: str) -> dict[str, Any]:
                         raise ValueError('Calendar destination changed or older proposal has no bound destination. Prepare a new proposal.')
                     with calendar_service.bound(destination):
                         run = tools.execute(step['tool'],step['args'],approved=True,session_id=prop.get('session_id'))
+            elif step['tool'] == 'project_task_update':
+                destination = prop['plan'].get('calendar_binding')
+                if not destination or not calendar_service.matches(destination):
+                    raise ValueError('The selected calendar changed. Prepare a new task update.')
+                with calendar_service.bound(destination):
+                    run = tools.execute(step['tool'],step['args'],approved=True,session_id=prop.get('session_id'))
             else:
                 run = tools.execute(step['tool'],step['args'],approved=True,session_id=prop.get('session_id'))
             receipt = run["receipt"]

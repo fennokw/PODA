@@ -168,6 +168,15 @@
   };
 
   route('ask', async ({ view, inspector, setTitle, setInspectorTitle }) => {
+    const requestedSession = new URLSearchParams(location.hash.split('?')[1] || '').get('session');
+    if (requestedSession && requestedSession !== askState.sessionId) {
+      askState.controller?.abort();
+      askState.controller = null;
+      askState.sessionId = requestedSession;
+      askState.runId = null;
+      askState.transcript = [];
+      persistSession();
+    }
     setTitle('Chat'); setInspectorTitle('Chat details');
     $('#viewCrumb').textContent = 'Grounded local chat';
     const messages = el('div', { class: 'messages', id: 'messages', 'aria-live': 'polite' });
@@ -270,6 +279,7 @@
         toast('Wait for the current response to finish or stop it first.', 'warn');
         return;
       }
+      history.replaceState(null, "", "#/ask?session=" + encodeURIComponent(recentChats.value));
       askState.sessionId = recentChats.value;
       askState.runId = null;
       askState.transcript = [];
@@ -416,6 +426,7 @@
       askState.controller?.abort();
       // Finalize rolling short-term turns into visible second-brain memories.
       if (askState.sessionId) api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/flush', { method: 'POST' }).catch(() => {});
+      history.replaceState(null, "", "#/ask");
       askState.sessionId = null; askState.runId = null; askState.transcript = [];
       draftFiles.length = 0; drawDraftFiles();
       proposalCards.clear(); proposalMessages.clear();
@@ -945,7 +956,8 @@
       calDetail.append(el('div', { class: 'row' }, el('strong', {}, ev.title), ev.type ? el('span', { class: `cal-type ${typeClass(ev.type)}` }, ev.type) : null),
         kv([['When', when], ['Status', ev.status], ['Kind', ev.task_kind || ev.event_kind], ['Commitment', ev.commitment], ['Area', (ev.area || []).join(', ')], ['Source', ev.source], ['Notes', ev.notes], ['Edited', fmtTime(ev.last_edited_time)]]),
         el('div', { class: 'row' }, ev.url ? el('a', { class: 'btn btn-sm', href: ev.url, target: '_blank', rel: 'noopener' }, selectedProvider==='google'?'Open in Google Calendar':'Open in Notion') : null, ev.source_url ? el('a', { class: 'btn btn-sm btn-ghost', href: ev.source_url, target: '_blank', rel: 'noopener' }, 'Open source') : null));
-      if(status?.capability?.can_update_content)calDetail.append(window.PODACalendar.editor(ev,selectedProvider,drawCalendar,window.podaCalendarFields||{}));
+      if (ev.project_task_id) calDetail.append(el('a', {class:'btn', href:'#/projects?project='+encodeURIComponent(ev.project_id)+'&task='+encodeURIComponent(ev.project_task_id)}, 'Open project task'));
+      else if(status?.capability?.can_update_content)calDetail.append(window.PODACalendar.editor(ev,selectedProvider,drawCalendar,window.podaCalendarFields||{}));
       calDetail.append(el('details', { class: 'dev-only disclosure' }, el('summary', {}, 'Raw calendar entry'), jsonBox(ev)));
       const options = (window.podaCalendarFields?.commitment_options || []);
       if (selectedProvider==='notion' && !ev.is_deadline && ev.page_id && options.length) {
@@ -984,7 +996,6 @@
             connection.scrollIntoView({ block: 'start' });
             connection.querySelector('summary').focus({ preventScroll: true });
           } }, 'Set up Notion')));
-        return;
       }
       if(cap.can_insert_content)calendarBox.append(window.PODACalendar.newEvent(drawCalendar,text=>{calDetail.replaceChildren(el('p',{},text));showDetails(true);}));
       const range = calRange();

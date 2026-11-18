@@ -189,43 +189,83 @@ def archive_calendar_event(page_id):
     except Exception as exc:return _failure(exc)
 
 
-def events_between(start,end):
+def events_between(start, end, *, include_project_tasks=False):
     with _lock:
-        cap=_require();first,last=date.fromisoformat(start),date.fromisoformat(end)
-        if not 0<=(last-first).days<=120: raise ValueError('Choose a range of up to 120 days.')
-        if cap['provider']=='notion':
+        first, last = date.fromisoformat(start), date.fromisoformat(end)
+        if not 0 <= (last-first).days <= 120:
+            raise ValueError('Choose a range of up to 120 days.')
+        cap = capability()
+        scope = binding()
+        if not cap.get('can_read_content'):
+            if not include_project_tasks:
+                _require()
+            response = {"events": [], "fields": {}, "provider": cap["provider"], "start": start, "end": end}
+        elif cap['provider'] == 'notion':
+            _require()
             from ..notion.calendar import events_between as fetch
-            return fetch(start,end)
-        if cap['provider']=='google':
-            from . import google
-            events=google.events(start,end)
+            response = fetch(start, end)
         else:
-            db=_db()
-            try: events=[json.loads(r['payload']) for r in db.execute('SELECT payload FROM local_calendar_events WHERE archived=0')]
-            finally:db.close()
-    events=[e for e in events if e['start'][:10]<=(last+timedelta(days=1)).isoformat() and
-            (e.get('end') or e['start'])[:10]>=(first-timedelta(days=1)).isoformat()]
-    events.sort(key=lambda e:e['start'])
-    return {'events':events,'count':len(events),'fields':{},'start':start,'end':end,'provider':cap['provider']}
+            _require()
+            if cap['provider'] == 'google':
+                from . import google
+                events = google.events(start, end)
+            else:
+                db = _db()
+                try:
+                    events = [json.loads(r['payload']) for r in db.execute('SELECT payload FROM local_calendar_events WHERE archived=0')]
+                finally:
+                    db.close()
+            events = [e for e in events if e['start'][:10] <= (last+timedelta(days=1)).isoformat()
+                      and (e.get('end') or e['start'])[:10] >= (first-timedelta(days=1)).isoformat()]
+            response = {'events': events, 'fields': {}, 'start': start, 'end': end, 'provider': cap['provider']}
+    events = response["events"]
+    if include_project_tasks:
+        from ...project_manager.schedule import overlay
+        events = events + overlay(start, end, scope, events)
+    return {**response, "events": sorted(events, key=lambda e: e["start"]), "count": len(events)}
 
 
-def items_between_effective(start,end,include_cancelled=False,tz_name='America/New_York'):
-    if config()['provider']=='notion':
+def items_between_effective(start, end, include_cancelled=False, tz_name='America/New_York'):
+    from ...project_manager.schedule import overlay
+    scope = binding()
+    if scope['provider'] == 'notion':
         from ..notion.mapping import items_between_effective as fetch
-        return fetch(start,end,include_cancelled,tz_name)
-    zone=ZoneInfo(tz_name);items=[]
-    for ev in events_between(start,end)['events']:
-        all_day=ev.get('all_day',False)
-        beginning=datetime.fromisoformat(ev['start'].replace('Z','+00:00'))
-        stopping=datetime.fromisoformat((ev.get('end') or ev['start']).replace('Z','+00:00'))
-        if not all_day:beginning=beginning.astimezone(zone);stopping=stopping.astimezone(zone)
-        if stopping.date().isoformat()<start or beginning.date().isoformat()>end:continue
-        clock='All day' if all_day else beginning.strftime('%H:%M')+'–'+stopping.strftime('%H:%M')
-        items.append({**ev,'local_date':beginning.date().isoformat(),'start_local':beginning.isoformat(),'end_local':stopping.isoformat(),
-                      'date_start':ev['start'],'date_end':ev.get('end'),'start_time':None if all_day else beginning.strftime('%H:%M'),
-                      'end_time':None if all_day else stopping.strftime('%H:%M'),'areas':ev.get('area',[]),'kind':'event','is_deadline':False,
-                      'summary':f"{beginning.date()} {clock} — {ev['title']}"})
-    return {'items':items,'count':len(items),'time_zone':tz_name,'mapping':{'date':'start','inferred':False}}
+        from ..notion.client import NotionError
+        try:
+            response = fetch(start, end, include_cancelled, tz_name)
+        except NotionError:
+            if capability().get("can_read_content"):
+                raise
+            response = {'items': [], 'time_zone': tz_name, 'mapping': {'date': 'start', 'inferred': False}}
+        existing = response["items"]
+        events = overlay(start, end, scope, existing)
+    else:
+        response = {'time_zone': tz_name, 'mapping': {'date': 'start', 'inferred': False}}
+        existing = []
+        events = events_between(start, end, include_project_tasks=True)["events"]
+    zone = ZoneInfo(tz_name)
+    items = list(existing)
+    for ev in events:
+        all_day = ev.get('all_day', False)
+        beginning = datetime.fromisoformat(ev['start'].replace('Z', '+00:00'))
+        stopping = datetime.fromisoformat((ev.get('end') or ev['start']).replace('Z', '+00:00'))
+        if not all_day:
+            beginning = beginning.astimezone(zone)
+            stopping = stopping.astimezone(zone)
+        if stopping.date().isoformat() < start or beginning.date().isoformat() > end:
+            continue
+        clock = 'All day' if all_day else beginning.strftime('%H:%M')
+        if not all_day and ev.get('end'):
+            clock += '–' + stopping.strftime('%H:%M')
+        task = ev.get('is_deadline', False)
+        items.append({**ev, 'local_date': beginning.date().isoformat(), 'start_local': beginning.isoformat(),
+                      'end_local': stopping.isoformat(), 'date_start': ev['start'], 'date_end': ev.get('end'),
+                      'start_time': None if all_day else beginning.strftime('%H:%M'),
+                      'end_time': None if all_day or not ev.get('end') else stopping.strftime('%H:%M'),
+                      'areas': ev.get('area', []), 'kind': 'task' if task else 'event', 'is_deadline': task,
+                      'summary': f"{'[DUE] ' if task else ''}{beginning.date()} {clock} — {ev['title']}"})
+    items.sort(key=lambda item: item.get("start_local") or item.get("date_start") or "")
+    return {**response, 'items': items, 'count': len(items)}
 
 
 @pin_destination
