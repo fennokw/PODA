@@ -15,12 +15,14 @@ fi
 
 # Keep the running app bundle intact while another backend owns this profile.
 python3 - <<'PYTHON'
+from pathlib import Path
 from poda_app.runtime.instance import DataDirectoryInUse, claim_data_directory
 try:
-    with claim_data_directory(wait_seconds=15):
+    installed_backend = Path("dist/desktop/PODA-darwin-arm64/PODA.app/Contents/Resources/backend/desktop_backend.py").resolve()
+    with claim_data_directory(wait_seconds=18, desktop_entrypoint=installed_backend):
         pass
 except DataDirectoryInUse as exc:
-    raise SystemExit(f"{exc}\nIf PODA was force-quit and the folder is still busy, restart your Mac and rerun the installer.") from None
+    raise SystemExit(f"{exc}\nIf the other server is running in Terminal, stop it there before reinstalling.") from None
 PYTHON
 
 (

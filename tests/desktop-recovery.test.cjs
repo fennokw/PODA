@@ -34,3 +34,116 @@ test('launcher entry point and local recovery modules are packaged',()=>{
   const packaging=fs.readFileSync(path.join(desktop,'package-mac.cjs'),'utf8');
   for(const [,name] of main.matchAll(/require\('\.\/([^']+)'\)/g))assert.ok(packaging.includes(`'${name}'`),`Module omitted from package: ${name}`);
 });
+
+test('HTTP failure never replaces a still-running backend during window recovery', async () => {
+  const {calls, ensure} = fixture({isBackendAlive: () => true});
+  await assert.rejects(ensure(), /server is still running/);
+  assert.deepEqual(calls, ['probe','probe','probe']);
+});
+
+test('closing or retrying a macOS window keeps the backend, and quitting waits for it', async () => {
+  const {EventEmitter} = require('node:events');
+  const {PassThrough, Writable} = require('node:stream');
+  const {createRequire} = require('node:module');
+  const fs = require('node:fs');
+  const vm = require('node:vm');
+  const filename = require('node:path').resolve(__dirname, '../desktop/main.cjs');
+  const realRequire = createRequire(filename);
+  const until = async condition => {
+    for (let i = 0; i < 50 && !condition(); i++) await new Promise(resolve => setImmediate(resolve));
+    assert.ok(condition(), 'expected the launcher to finish this step');
+  };
+  const app = new EventEmitter();
+  app.requestSingleInstanceLock = () => true;
+  app.whenReady = async () => {};
+  let exited = 0;
+  app.quit = () => {
+    let prevented = false;
+    app.emit('before-quit', {preventDefault() { prevented = true; }});
+    if (!prevented) exited++;
+  };
+  const observations = {starts:0, probes:0, closedPipes:0, dialogs:0};
+  const windows = [];
+  let failNextLoad = false;
+  class BrowserWindow extends EventEmitter {
+    constructor() {
+      super();
+      this.webContents = Object.assign(new EventEmitter(), {
+        setWindowOpenHandler() {}, isCrashed: () => false, stop() {},
+      });
+      windows.push(this);
+    }
+    isDestroyed() { return this.destroyed; }
+    isMinimized() { return false; }
+    show() {}
+    focus() {}
+    async loadURL(url) {
+      if (failNextLoad) {
+        failNextLoad = false;
+        throw new Error('Navigation failed');
+      }
+      this.url = url;
+    }
+    destroy() {
+      this.destroyed = true;
+      this.emit('closed');
+      app.emit('window-all-closed');
+    }
+  }
+  const child = Object.assign(new EventEmitter(), {
+    pid:1234, exitCode:null, signalCode:null,
+    stdin:Object.assign(new EventEmitter(), {end() { observations.closedPipes++; }}),
+    stdout:new PassThrough(), stderr:new PassThrough(),
+    kill() { throw new Error('normal shutdown should finish without a forced kill'); },
+  });
+  const localSession = {
+    async setProxy() {}, setPermissionRequestHandler() {}, setPermissionCheckHandler() {},
+    webRequest:{onBeforeRequest() {}, onBeforeSendHeaders() {}},
+  };
+  const mocks = {
+    electron:{app, BrowserWindow,
+      dialog:{showMessageBox:async()=>{observations.dialogs++;return {response:1};}},
+      ipcMain:{handle() {}}, session:{fromPartition:()=>localSession}, shell:{},
+      powerMonitor:new EventEmitter(),
+      powerSaveBlocker:{start:()=>1,isStarted:()=>true,stop() {}},
+    },
+    'node:child_process':{spawn() {
+      observations.starts++;
+      setImmediate(() => child.stdout.write('PODA_DESKTOP {"port":12500}\n'));
+      return child;
+    }},
+    'node:fs':{existsSync:()=>true,readFileSync:()=>Buffer.from('runtime'), mkdirSync() {},
+      createWriteStream:()=>new Writable({write(_chunk,_encoding,done) { done(); }}),
+    },
+  };
+  vm.runInNewContext(fs.readFileSync(filename,'utf8'), {
+    require:name=>mocks[name] || realRequire(name), __dirname:require('node:path').dirname(filename),
+    process:{env:{},pid:123,platform:'darwin'}, console, URL, AbortSignal, setTimeout, clearTimeout,
+    fetch:async()=>{observations.probes++;return {ok:true,json:async()=>({build_id:'test'})};},
+  }, {filename});
+
+  await until(() => windows[0]?.url);
+  assert.equal(observations.starts,1);
+  windows[0].destroy();
+  assert.equal(observations.closedPipes,0);
+  assert.equal(exited,0);
+
+  failNextLoad = true;
+  app.emit('activate');
+  await until(() => observations.dialogs===1);
+  await new Promise(resolve => setImmediate(resolve));
+  app.emit('activate');
+  await until(() => windows[2]?.url);
+  assert.equal(observations.starts,1);
+  assert.equal(observations.probes,1);
+  assert.equal(observations.closedPipes,0);
+
+  app.quit();
+  app.quit();
+  assert.equal(observations.closedPipes,1);
+  assert.equal(exited,0);
+  child.exitCode=0;
+  child.emit('exit',0);
+  await until(() => exited===1);
+  assert.equal(observations.starts,1);
+});

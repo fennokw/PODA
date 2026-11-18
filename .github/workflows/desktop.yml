@@ -22,6 +22,7 @@ jobs:
         working-directory: desktop
         run: |
           python3 ../tools/release_guard.py --check
+          node --test ../tests/desktop-recovery.test.cjs
           brew list libusb >/dev/null || brew install libusb
           export PODA_DATA_DIR="$RUNNER_TEMP/poda-mac-smoke"
           export PODA_DB_KEY_HEX="$(printf '%064d' 1)"
