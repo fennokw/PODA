@@ -4,6 +4,8 @@ from __future__ import annotations
 import hmac
 import json
 import os
+from pathlib import Path
+import signal
 import socket
 import subprocess
 import sys
@@ -33,17 +35,28 @@ def supervise() -> int:
     Thread(target=_watch_pipe, args=(closed,), name="poda-desktop-owner", daemon=True).start()
     if _owner_gone(closed, parent_pid):
         return 0
-    with subprocess.Popen([sys.executable, "-u", __file__, "--serve"], stdin=subprocess.PIPE) as child:
+    env = {**os.environ, "PODA_DESKTOP_OWNER_PID": str(parent_pid)}
+    with subprocess.Popen([sys.executable, "-u", __file__, "--serve"], stdin=subprocess.PIPE,
+                          env=env, start_new_session=os.name != "nt") as child:
         while child.poll() is None:
             if not _owner_gone(closed, parent_pid):
                 continue
-            child.stdin.close()
+            try:
+                child.stdin.close()
+            except BrokenPipeError:
+                pass
             try:
                 return child.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 print("PODA stopped an unresponsive local backend after its window process exited.",
                       file=sys.stderr, flush=True)
-                child.kill()
+                if os.name == "nt":
+                    child.kill()
+                else:
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                 child.wait()
                 return 0
         return child.returncode
@@ -55,6 +68,7 @@ def serve() -> None:
         raise SystemExit("Open the PODA desktop app to start its backend.")
 
     parent_pid = os.getppid()
+    desktop_owner = int(os.environ.pop("PODA_DESKTOP_OWNER_PID", "0"))
     with socket.socket() as listener:
         if os.name == "nt":
             listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
@@ -92,10 +106,14 @@ def serve() -> None:
             server.should_exit = True
             # Also release the lock if the supervisor itself is killed.
             if not stopped.wait(12):
+                if os.name != "nt" and os.getpgrp() == os.getpid():
+                    os.killpg(os.getpid(), signal.SIGKILL)
                 os._exit(1)
 
         try:
-            with claim_data_directory(wait_seconds=15):
+            entrypoint = Path(__file__).resolve()
+            with claim_data_directory(wait_seconds=18, desktop_owner=desktop_owner,
+                                      desktop_entrypoint=entrypoint):
                 print("PODA_DESKTOP " + json.dumps({"port": port, "pid": os.getpid()}), flush=True)
                 Thread(target=_watch_pipe, args=(pipe_closed,), name="poda-desktop-pipe", daemon=True).start()
                 Thread(target=watch_parent, name="poda-desktop-parent", daemon=True).start()

@@ -69,10 +69,12 @@ def test_desktop_requires_token_and_local_session(tmp_path):
                 child.wait(timeout=3)
 
 
-@pytest.mark.parametrize("force_quit", [False, pytest.param(True, marks=pytest.mark.skipif(
-    os.name == "nt", reason="Uses POSIX signals to suspend the backend and force quit its owner."
-))])
-def test_relaunch_waits_for_profile_and_keeps_grant(tmp_path, force_quit):
+@pytest.mark.parametrize("shutdown", [
+    "normal",
+    pytest.param("force-quit", marks=pytest.mark.skipif(os.name == "nt", reason="Uses POSIX process signals.")),
+    pytest.param("frozen-supervisor", marks=pytest.mark.skipif(os.name == "nt", reason="Uses POSIX process signals.")),
+])
+def test_relaunch_waits_for_profile_and_keeps_grant(tmp_path, shutdown):
     from contextlib import ExitStack
 
     env = dict(os.environ, PODA_DATA_DIR=str(tmp_path / "profile"), PODA_DB_ENCRYPTION="required",
@@ -91,6 +93,7 @@ def test_relaunch_waits_for_profile_and_keeps_grant(tmp_path, force_quit):
 import os, subprocess, sys
 env = dict(os.environ, PODA_DESKTOP_PARENT_PID=str(os.getpid()))
 with subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE, env=env) as child:
+    print(f"TEST_SUPERVISOR {child.pid}", flush=True)
     sys.exit(child.wait())
 """, *args]
             with logfile.open("w", encoding="utf-8") as log:
@@ -123,23 +126,41 @@ with subprocess.Popen(sys.argv[1:], stdin=subprocess.PIPE, env=env) as child:
                 time.sleep(0.05)
             pytest.fail(logfile.read_text(encoding="utf-8", errors="replace"))
 
-        first, first_log = start("first", simulate_electron=force_quit)
+        first, first_log = start("first", simulate_electron=shutdown != "normal")
         http, backend_pid = connect(first, first_log)
         assert http.post("/agent/grants", json={"root_path": str(folder), "mode": "read"}).status_code == 200
         second, second_log = start("second")
         time.sleep(2)
         assert second.poll() is None
         assert "PODA_DESKTOP " not in second_log.read_text(encoding="utf-8", errors="replace")
-        if force_quit:
+        if shutdown != "normal":
             os.kill(backend_pid, signal.SIGSTOP)
+            if shutdown == "frozen-supervisor":
+                supervisor = int(next(line.split()[1] for line in first_log.read_text().splitlines()
+                                      if line.startswith("TEST_SUPERVISOR ")))
+                os.kill(supervisor, signal.SIGSTOP)
+                cleanup.callback(os.kill, supervisor, signal.SIGCONT)
+                # The competing live profile owner must not be killed even if unresponsive.
+                owner_record = json.loads((tmp_path / "profile" / ".server.lock").read_text())
+                assert owner_record["owner"]["pid"] == first.pid
+                assert owner_record["backend"]["pid"] == backend_pid
+                # Give the new launch time to attempt recovery while the original owner is alive.
+                time.sleep(10)
+                assert second.poll() is None
+                assert "PODA_DESKTOP " not in second_log.read_text(encoding="utf-8", errors="replace")
             first.kill()
             first.wait(timeout=5)
         else:
             first.stdin.close()
             assert first.wait(timeout=15) == 0
         http, _ = connect(second, second_log)
-        if force_quit:
-            assert "stopped an unresponsive local backend" in first_log.read_text(encoding="utf-8", errors="replace")
+        if shutdown == "force-quit":
+            first_output = first_log.read_text(encoding="utf-8", errors="replace")
+            second_output = second_log.read_text(encoding="utf-8", errors="replace")
+            assert ("stopped an unresponsive local backend" in first_output
+                    or "recovered an abandoned desktop backend" in second_output)
+        elif shutdown == "frozen-supervisor":
+            assert "recovered an abandoned desktop backend" in second_log.read_text(encoding="utf-8", errors="replace")
         assert any(item["root_path"] == str(folder.resolve()) for item in http.get("/agent/grants").json()["grants"])
         second.stdin.close()
         assert second.wait(timeout=15) == 0

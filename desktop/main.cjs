@@ -23,7 +23,14 @@ let opening = null;
 let pythonRuntime;
 let lastPath = '/';
 let recoveryDialog = false;
+let quittingFinished = false;
+let windowNeedsReload = false;
+const shutdowns = new WeakMap();
 const expectedExits = new WeakSet();
+
+function isBackendAlive(child = backend) {
+  return Boolean(child?.pid && child.exitCode === null && !child.signalCode);
+}
 
 function runtimePath() {
   const version = createHash('sha256').update(readFileSync(path.join(source, 'requirements.txt'))).digest('hex').slice(0, 16);
@@ -74,8 +81,8 @@ async function startBackend(python) {
   });
   const url = `http://127.0.0.1:${port}`;
   for (let attempt = 0; attempt < 160; attempt += 1) {
-    if (child.exitCode !== null || child.signalCode) {
-      throw new Error('The local backend stopped. Another PODA instance may be using the data directory.');
+    if (closing || !isBackendAlive(child)) {
+      throw new Error('The local server exited before it was ready.');
     }
     try {
       const response = await fetch(url + '/system/build', {
@@ -96,19 +103,23 @@ function safePath(value) {
   catch { return '/'; }
 }
 
-async function stopBackend() {
-  const child = backend;
-  if (!child || child.exitCode !== null || child.signalCode) return;
-  expectedExits.add(child);
-  await new Promise(resolve => {
-    const timer = setTimeout(() => child.kill('SIGKILL'), 12000);
-    child.once('exit', () => { clearTimeout(timer); resolve(); });
-    child.stdin.end();
-  });
+function stopBackend(child = backend) {
+  if (!isBackendAlive(child)) return Promise.resolve();
+  if (!shutdowns.has(child)) {
+    expectedExits.add(child);
+    shutdowns.set(child, new Promise(resolve => {
+      // The supervisor gets ten seconds to clean up the server and model processes first.
+      const timer = setTimeout(() => { if (isBackendAlive(child)) child.kill('SIGKILL'); }, 13000);
+      child.once('exit', () => { clearTimeout(timer); resolve(); });
+      child.stdin.end();
+    }));
+  }
+  return shutdowns.get(child);
 }
 
 const ensureBackend = createRecovery({
   isClosing: () => closing,
+  isBackendAlive,
   delay: ms => sleep(ms),
   probe: async () => {
     if (!origin || !backend || backend.exitCode !== null || backend.signalCode) return false;
@@ -118,10 +129,15 @@ const ensureBackend = createRecovery({
     } catch { return false; }
   },
   stop: stopBackend,
-  start: () => startBackend(pythonRuntime),
+  start: async () => {
+    try { return await startBackend(pythonRuntime); }
+    catch (error) { await stopBackend(); throw error; }
+  },
   onReady: async next => {
     origin = next;
-    if (window && !window.isDestroyed()) await window.loadURL(origin + lastPath);
+    if (window && !window.isDestroyed()) {
+      try { await reloadWindow(window); } catch (error) { reportRecovery(error); }
+    }
   },
 });
 
@@ -132,24 +148,57 @@ function reportRecovery(error) {
     detail:'Your saved data is intact. Interrupted actions are not automatically repeated. Check the server log if Retry fails.',
     buttons:['Retry','Close'],defaultId:0,cancelId:1}).then(r => {
       recoveryDialog = false;
-      if (r.response === 0) recoverWindow().catch(reportRecovery);
+      if (r.response === 0) {
+        if (window && !window.isDestroyed()) openWindow().catch(reportRecovery);
+        else recoverWindow().catch(reportRecovery);
+      }
     });
 }
 
 async function recoverWindow() {
   if (closing || !pythonRuntime) return;
-  await ensureBackend();
+  if (!origin || !isBackendAlive()) await ensureBackend();
+  else if (windowNeedsReload && window && !window.isDestroyed()) await reloadWindow(window);
+}
+
+async function reloadWindow(win) {
+  if (closing || win.isDestroyed()) return;
+  windowNeedsReload = false;
+  let timeout;
+  try {
+    const deadline = new Promise((_, reject) => {
+      timeout = setTimeout(() => {
+        reject(new Error('The window did not finish loading. The local server is still running.'));
+        if (!win.isDestroyed()) win.webContents.stop();
+      }, 15000);
+    });
+    await Promise.race([win.loadURL(origin + lastPath), deadline]);
+  } catch (error) {
+    if (closing || win.isDestroyed() || window !== win) return;
+    windowNeedsReload = true;
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function openWindow() {
   if (closing) return Promise.resolve();
   if (opening) return opening;
   opening = (async () => {
-    await ensureBackend();
+    if (!origin || !isBackendAlive()) await ensureBackend();
     if (closing) return;
     if (window && !window.isDestroyed()) {
-      if (window.isMinimized()) window.restore();
-      window.show(); window.focus(); return;
+      if (windowNeedsReload || window.webContents.isCrashed()) {
+        // Destroy a stalled macOS renderer without touching the live local server.
+        if (process.platform === 'darwin') window.destroy();
+        else return reloadWindow(window);
+      } else {
+        if (window.isMinimized()) window.restore();
+        window.show();
+        window.focus();
+        return;
+      }
     }
     const localSession = session.fromPartition('poda-desktop');
     const win = new BrowserWindow({
@@ -172,27 +221,13 @@ function openWindow() {
       if (['http:','https:'].includes(target.protocol) && !target.username && !target.password && !isLocal(url)) shell.openExternal(url).catch(console.error);
       return {action:'deny'};
     });
-    let rendererRetries = 0;
-    let loadRetries = 0;
-    win.webContents.on('render-process-gone',async () => {
-      if (closing || win.isDestroyed()) return;
-      if (++rendererRetries > 2) { reportRecovery(new Error('The window renderer repeatedly stopped. Close and reopen the window.')); return; }
-      try { await ensureBackend(); if (!win.isDestroyed()) await win.loadURL(origin + '/#/ask'); }
-      catch(error) { reportRecovery(error); }
+    win.on('unresponsive', () => { if (window === win) windowNeedsReload = true; });
+    win.webContents.on('render-process-gone', () => { if (window === win) windowNeedsReload = true; });
+    win.webContents.on('did-fail-load', (_event, code, _description, _url, mainFrame) => {
+      if (window === win && mainFrame && code !== -3) windowNeedsReload = true;
     });
-    win.webContents.on('did-fail-load',(_e,code,_description,_url,isMainFrame) => {
-      if (!isMainFrame || code === -3 || closing || win.isDestroyed()) return;
-      if (++loadRetries > 2) { reportRecovery(new Error('The window could not load. Close and reopen the window.')); return; }
-      // A healthy server can still leave a failed navigation blank after waking.
-      setTimeout(async () => {
-        try {
-          const restarted = await ensureBackend();
-          if (!restarted && !closing && !win.isDestroyed()) await win.loadURL(origin + lastPath);
-        } catch(error) { reportRecovery(error); }
-      }, 500);
-    });
-    win.on('closed',() => { if (window === win) window = null; });
-    await win.loadURL(origin + lastPath);
+    win.on('closed', () => { if (window === win) window = null; });
+    await reloadWindow(win);
   })().finally(() => { opening = null; });
   return opening;
 }
@@ -236,15 +271,13 @@ async function start() {
   while (!origin && !closing) {
     try { origin = await startBackend(python); }
     catch (error) {
+      await stopBackend();
+      if (closing) return;
       if (error.code !== 'profile_busy') throw error;
-      const previous = backend;
-      if (previous.exitCode === null && !previous.signalCode) {
-        await new Promise(resolve => previous.once('exit', resolve));
-      }
       const result = await dialog.showMessageBox({
         type: 'warning', title: 'PODA data folder is busy',
         message: 'Another PODA server is using this data folder.',
-        detail: 'Quit the other PODA app and click Retry. If it was force-quit and Retry still shows this message, restart your Mac, then open PODA again.',
+        detail: 'Quit the other PODA app with Command–Q, or stop the other server in the Terminal that launched it. Click Retry after it exits.',
         buttons: ['Retry', 'Quit'], defaultId: 0, cancelId: 1,
       });
       if (result.response !== 0) { app.quit(); return; }
@@ -267,7 +300,8 @@ async function start() {
   if (process.platform === 'darwin') wakeLock = powerSaveBlocker.start('prevent-app-suspension');
   powerMonitor.on('resume', () => recoverWindow().catch(reportRecovery));
   powerMonitor.on('unlock-screen', () => recoverWindow().catch(reportRecovery));
-  await openWindow();
+  // The renderer can be retried independently if startup navigation fails.
+  await openWindow().catch(reportRecovery);
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -279,11 +313,17 @@ if (!app.requestSingleInstanceLock()) {
   app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
   app.on('before-quit', event => {
     if (wakeLock !== undefined && powerSaveBlocker.isStarted(wakeLock)) powerSaveBlocker.stop(wakeLock);
+    if (!isBackendAlive() || quittingFinished) {
+      closing = true;
+      return;
+    }
+    event.preventDefault();
     if (closing) return;
     closing = true;
-    if (!backend?.pid || backend.exitCode !== null || backend.signalCode) return;
-    event.preventDefault();
-    stopBackend().finally(() => app.quit());
+    stopBackend().then(() => {
+      quittingFinished = true;
+      app.quit();
+    });
   });
   app.whenReady().then(start).catch(error => {
     dialog.showErrorBox('PODA could not start', `${error.message}\n\nLog: ${path.join(data, 'logs', 'desktop-server.log')}`);
