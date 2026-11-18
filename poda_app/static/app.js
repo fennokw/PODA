@@ -168,6 +168,15 @@
   };
 
   route('ask', async ({ view, inspector, setTitle, setInspectorTitle }) => {
+    const requestedSession = new URLSearchParams(location.hash.split('?')[1] || '').get('session');
+    if (requestedSession && requestedSession !== askState.sessionId) {
+      askState.controller?.abort();
+      askState.controller = null;
+      askState.sessionId = requestedSession;
+      askState.runId = null;
+      askState.transcript = [];
+      persistSession();
+    }
     setTitle('Chat'); setInspectorTitle('Chat details');
     $('#viewCrumb').textContent = 'Grounded local chat';
     const messages = el('div', { class: 'messages', id: 'messages', 'aria-live': 'polite' });
@@ -220,8 +229,9 @@
       return wrap;
     };
     const memoryToggle = el('label', { class: 'check' }, el('input', { type: 'checkbox', checked: askState.useMemory, onchange: (e) => { askState.useMemory = e.target.checked; } }), 'Use memory');
-    const composer = el('form', { class: 'composer' }, fileInput, draftAttachments, textarea,
-      el('div', { class: 'composer-bar' }, attachBtn,
+    const slashMenu = window.PODAChatCommands?.mount(textarea, () => askState.sessionId);
+    const composer = el('form', { class: 'composer' }, fileInput, draftAttachments, slashMenu?.field || textarea,
+      el('div', { class: 'composer-bar' }, attachBtn, slashMenu?.trigger,
         seg('Model', [['auto', 'Auto'], ['fast', 'Fast'], ['advanced', 'Advanced'], ['deep', 'Deep']], askState.mode, (v) => { askState.mode = v; }),
         (() => { const w = seg('Thinking', [['fast', 'Quick'], ['balanced', 'Balanced'], ['deep', 'Deep think']], askState.thinking, (v) => { askState.thinking = v; }); const deep = $$('button', w)[2]; if (deep) deep.title = 'Also reads in-depth memory (the full question and answer pairs behind each surface memory)'; return w; })(),
         memoryToggle, el('span', { class: 'spacer' }), el('button', { class: 'btn btn-ghost', type: 'button', title: 'Start a fresh conversation. Nothing is deleted: this chat stays in your memory web and can be recalled later.', onclick: () => newChat() }, 'New chat'), stopBtn, sendBtn));
@@ -270,6 +280,7 @@
         toast('Wait for the current response to finish or stop it first.', 'warn');
         return;
       }
+      history.replaceState(null, "", "#/ask?session=" + encodeURIComponent(recentChats.value));
       askState.sessionId = recentChats.value;
       askState.runId = null;
       askState.transcript = [];
@@ -279,7 +290,10 @@
     loadRecentChats();
 
     textarea.addEventListener('input', () => { textarea.style.height = 'auto'; textarea.style.height = Math.min(textarea.scrollHeight, 180) + 'px'; });
-    textarea.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); composer.requestSubmit(); } });
+    textarea.addEventListener('keydown', (e) => {
+      if (e.isComposing || slashMenu?.handleKey(e)) return;
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); composer.requestSubmit(); }
+    });
 
     let stickToLatest = true;
     let lastAutoScroll = 0;
@@ -412,10 +426,12 @@
     }
     scrollToLatest();
     function newChat() {
+      slashMenu?.reset();
       if (askState.runId) api('/chat/runs/' + encodeURIComponent(askState.runId) + '/cancel', { method: 'POST' }).catch(() => {});
       askState.controller?.abort();
       // Finalize rolling short-term turns into visible second-brain memories.
       if (askState.sessionId) api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/flush', { method: 'POST' }).catch(() => {});
+      history.replaceState(null, "", "#/ask");
       askState.sessionId = null; askState.runId = null; askState.transcript = [];
       draftFiles.length = 0; drawDraftFiles();
       proposalCards.clear(); proposalMessages.clear();
@@ -700,6 +716,7 @@
       if (askState.controller) return;
       const text = textarea.value.trim() || (draftFiles.length ? 'Review the attached files.' : '');
       if (!text) return;
+      slashMenu?.reset();
       textarea.value = '';
       textarea.style.height = 'auto';
       send(text, null, null, false, [...draftFiles]);
@@ -923,6 +940,11 @@
     const calState = (() => { try { return JSON.parse(sessionStorage.getItem('poda_notion_cal') || '{}'); } catch { return {}; } })();
     calState.view = calState.view || 'month';
     calState.cursor = calState.cursor ? new Date(calState.cursor) : new Date();
+    const requestedDay = new URLSearchParams(location.hash.split('?')[1] || '').get('day');
+    if (requestedDay && /^\d{4}-\d{2}-\d{2}$/.test(requestedDay)) {
+      const day = new Date(requestedDay + 'T00:00:00');
+      if (Number.isFinite(day.getTime())) { calState.cursor = day; calState.view = 'agenda'; }
+    }
     const dayKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
     const startOfWeek = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - x.getDay()); return x; };
@@ -945,7 +967,8 @@
       calDetail.append(el('div', { class: 'row' }, el('strong', {}, ev.title), ev.type ? el('span', { class: `cal-type ${typeClass(ev.type)}` }, ev.type) : null),
         kv([['When', when], ['Status', ev.status], ['Kind', ev.task_kind || ev.event_kind], ['Commitment', ev.commitment], ['Area', (ev.area || []).join(', ')], ['Source', ev.source], ['Notes', ev.notes], ['Edited', fmtTime(ev.last_edited_time)]]),
         el('div', { class: 'row' }, ev.url ? el('a', { class: 'btn btn-sm', href: ev.url, target: '_blank', rel: 'noopener' }, selectedProvider==='google'?'Open in Google Calendar':'Open in Notion') : null, ev.source_url ? el('a', { class: 'btn btn-sm btn-ghost', href: ev.source_url, target: '_blank', rel: 'noopener' }, 'Open source') : null));
-      if(status?.capability?.can_update_content)calDetail.append(window.PODACalendar.editor(ev,selectedProvider,drawCalendar,window.podaCalendarFields||{}));
+      if (ev.project_task_id) calDetail.append(el('a', {class:'btn', href:'#/projects?project='+encodeURIComponent(ev.project_id)+'&task='+encodeURIComponent(ev.project_task_id)}, 'Open project task'));
+      else if(status?.capability?.can_update_content)calDetail.append(window.PODACalendar.editor(ev,selectedProvider,drawCalendar,window.podaCalendarFields||{}));
       calDetail.append(el('details', { class: 'dev-only disclosure' }, el('summary', {}, 'Raw calendar entry'), jsonBox(ev)));
       const options = (window.podaCalendarFields?.commitment_options || []);
       if (selectedProvider==='notion' && !ev.is_deadline && ev.page_id && options.length) {
@@ -984,7 +1007,6 @@
             connection.scrollIntoView({ block: 'start' });
             connection.querySelector('summary').focus({ preventScroll: true });
           } }, 'Set up Notion')));
-        return;
       }
       if(cap.can_insert_content)calendarBox.append(window.PODACalendar.newEvent(drawCalendar,text=>{calDetail.replaceChildren(el('p',{},text));showDetails(true);}));
       const range = calRange();
@@ -1176,14 +1198,23 @@
         form.addEventListener('submit', async (e) => {
           e.preventDefault(); const fd = new FormData(form);
           const body = { ...current, task_kind: fd.get('task_kind') || null, event_kind: fd.get('event_kind') || null, completed: fd.get('completed') || null, title: fd.get('title'), date: fd.get('date') || null, status: fd.get('status') || null, type: fd.get('type') || null, project_relation: fd.get('project_relation') || null, class_relation: fd.get('class_relation') || null,
-            external_ids: Object.fromEntries(String(fd.get('external_ids') || '').split(',').map((s) => s.trim()).filter(Boolean).map((name) => [name, name])), status_done_values: String(fd.get('done_values') || '').split(',').map((s) => s.trim()).filter(Boolean) };
+            external_ids: Object.fromEntries(String(fd.get('external_ids') || '').split(',').map((s) => s.trim()).filter(Boolean).map((name) => [Object.entries(current.external_ids || {}).find(([, property]) => property === name)?.[0]
+              || (name === 'External Event ID' ? 'ics_event_id' : name), name])), status_done_values: String(fd.get('done_values') || '').split(',').map((s) => s.trim()).filter(Boolean) };
           try { await api('/notion/mapping', { method: 'POST', body }); toast('Mapping saved', 'ok'); refreshStatus(); drawCalendar(); } catch (err) { toast(errorDetail(err).message, 'danger'); }
         });
         const preset = el('button', {class:'btn btn-primary', type:'button'}, "Use Kaden's BestNDS");
+        const presetStatus = el('p', {class:'small', role:'status'});
         preset.addEventListener('click', async () => {
           preset.disabled=true;
-          try { await api('/notion/mapping/bestnds',{method:'POST',body:{}}); toast('BestNDS mapping saved: calendar uses Date','ok'); refreshStatus(); }
-          catch(err) { toast(errorDetail(err).message,'danger'); }
+          presetStatus.textContent = 'Checking the connected database…';
+          try {
+            await api('/notion/mapping/bestnds',{method:'POST',body:{}});
+            presetStatus.textContent = 'BestNDS mapping saved. Calendar uses Date.';
+            toast(presetStatus.textContent,'ok');
+            refreshStatus();
+          } catch(err) {
+            presetStatus.textContent = errorDetail(err).message;
+          }
           finally { preset.disabled=false; }
         });
         const file = el('input',{type:'file',accept:'.json,application/json','aria-label':'Import mapping JSON',class:'input'});
@@ -1205,7 +1236,7 @@
             const a=el('a',{href:url,download:'poda-notion-mapping.json'}); a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
           } catch(err) { toast(errorDetail(err).message,'danger'); }
         });
-        return el('div',{class:'stack-sm'},el('p',{class:'small muted'},"BestNDS uses Date for calendar times and due dates, Completed for check-offs, and Commitment only for events. Connect Schedule & Tasks, then apply the preset. Custom mappings remain available below."),el('div',{class:'row'},preset,download),el('label',{},'Import a saved mapping',file),form);
+        return el('div',{class:'stack-sm'},el('p',{class:'small muted'},"BestNDS uses Date for calendar times and due dates, Completed for check-offs, and Commitment only for events. Connect Schedule & Tasks, then apply the preset. Custom mappings remain available below."),el('div',{class:'row'},preset,download),presetStatus,el('label',{},'Import a saved mapping',file),form);
       });
       load(previewBox, async () => {
         const r = await api('/notion/mapping/preview?n=5');

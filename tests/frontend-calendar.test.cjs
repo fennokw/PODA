@@ -158,3 +158,188 @@ test('Notion editor offers only the matching kind and saves completion independe
     }finally{dom.window.close();}
   }
 });
+test('project task folders show progress, reopen chats, and save a new due time',async()=>{
+  const {dom,w}=create();
+  try{
+    const projectPath='/project-manager/projects/demo';
+    const task={id:'task-one',title:'Prepare prototype',progress:25,estimate:{minutes:60,remaining_minutes:45},
+      deadline:'2027-04-02',tracking:{goal:'Samples',goal_target:4,goal_current:1},
+      chats:[{session_id:'saved-chat',title:'Prototype plan'}]};
+    const project={id:'demo',name:'Prototype',tasks:[task],chats:[{...task.chats[0],task_id:task.id}],attachments:[]};
+    let patch;
+    w.fetch=async(url,options)=>{
+      if(options?.method==='PATCH')patch=JSON.parse(options.body);
+      const data=url===projectPath?project:task;
+      return {ok:true,status:200,text:async()=>JSON.stringify(data)};
+    };
+    w.eval(fs.readFileSync(path.join(root,'project-manager.js'),'utf8'));
+    w.location.hash='#/projects?project=demo&task=task-one';
+    await w.PODA.renderRoute();
+    const screen=w.document.querySelector('.pm-screen');
+    assert.equal(screen.querySelector('.pm-task-rail progress').value,25);
+    const taskView=screen.querySelector('.pm-task-content');
+    assert.equal(taskView.querySelector('progress').value,25);
+    assert.match(taskView.querySelector('a[href="#/ask?session=saved-chat"]').textContent,/Prototype plan/);
+    taskView.querySelector('[name="due_time"]').value='15:30';
+    taskView.querySelector('[name="user_minutes"]').value='90';
+    taskView.querySelector('form').requestSubmit();
+    await settle();
+    assert.equal(patch.user_minutes,90);
+    assert.equal(patch.deadline,new w.Date('2027-04-02T15:30').toISOString());
+    assert.equal(patch.progress,undefined);
+  }finally{dom.window.close();}
+});
+test('slash menu completes scoped commands without sending or losing drafts', async () => {
+  const {dom,w,calls}=create();
+  try {
+    let session;
+    w.fetch=async(url)=>{
+      calls.push(url);
+      const projects=[{name:'Demo Project',shortcut:'/demo-project',value:'/project "Demo Project"'}];
+      const data=url.includes('session_id=task-chat') ? {projects,task_name:'Review',goal_target:5,
+        tasks:[{name:'Review',shortcut:'/review',value:'/task "Review"'}]} : {projects,tasks:[]};
+      return {ok:true,status:200,text:async()=>JSON.stringify(data)};
+    };
+    w.eval(fs.readFileSync(path.join(root,'chat-commands.js'),'utf8'));
+    const area=w.document.createElement('textarea');
+    const menu=w.PODAChatCommands.mount(area,()=>session);
+    w.document.body.append(menu.field,menu.trigger);
+    let enters=0;
+    area.addEventListener('keydown',event=>{
+      if (!menu.handleKey(event) && event.key==='Enter') enters++;
+    });
+    const panel=menu.field.querySelector('.chat-slash-panel');
+    const type=value=>{
+      area.focus();area.value=value;area.setSelectionRange(value.length,value.length);
+      area.dispatchEvent(new w.Event('input',{bubbles:true}));
+    };
+    const press=key=>area.dispatchEvent(new w.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true}));
+    type('/');
+    await settle();
+    assert.equal(panel.hidden,false);
+    assert.match(panel.textContent,/Demo Project/);
+    assert.doesNotMatch(panel.textContent,/taskdone/);
+    type('/demo');
+    press('ArrowDown');press('Enter');
+    assert.equal(area.value,'/demo-project ');
+    assert.equal(enters,0);
+    assert.equal(panel.hidden,true);
+    press('Enter');
+    assert.equal(enters,1);
+
+    type('Summarize the plan');
+    menu.trigger.click();
+    panel.querySelector('[role="option"]').click();
+    assert.match(panel.textContent,/Demo Project/);
+    panel.querySelector('[role="option"]').click();
+    assert.equal(area.value,'/project "Demo Project" Summarize the plan');
+
+    session='task-chat';menu.reset();
+    type('/task');await settle();
+    assert.match(panel.textContent,/taskdone/);
+    assert.match(panel.textContent,/out of 5/);
+    assert.ok(calls.includes('/project-manager/chat-commands?session_id=task-chat'));
+    type('/task rev');
+    press('Tab');
+    assert.equal(area.value,'/task "Review" ');
+    type('/');press('Escape');
+    assert.equal(panel.hidden,true);
+    type('https://example.com/path');
+    assert.equal(panel.hidden,true);
+  } finally {dom.window.close();}
+});
+
+test('Projects exposes task folders and files an existing chat without a command',async()=>{
+  const {dom,w}=create();
+  try{
+    const projectPath='/project-manager/projects/demo';
+    const task={id:'task-one',title:'Prototype',progress:50,estimate:{minutes:60,remaining_minutes:30},
+      deadline:'2027-04-02',tracking:{scheduled:true},chats:[]};
+    const project={id:'demo',name:'Workshop',tasks:[task],open_task_count:1,chats:[],attachments:[]};
+    const saved={session_id:'saved-chat',title:'Sketch options',project_name:'Other project'};
+    let filed, eventLink;
+    w.fetch=async(url,opts={})=>{
+      let data={};
+      if(url==='/project-manager/projects')data={projects:[project]};
+      if(url===projectPath)data=project;
+      if(url.startsWith('/project-manager/chats?'))data={chats:[saved]};
+      if(url.startsWith('/project-manager/calendar-events?'))data={scope:{provider:'local'},events:[{page_id:'event',title:'Review',start:'2027-04-03'}]};
+      if(url===projectPath+'/tasks/task-one'){
+        if(opts.method==='PATCH')eventLink=JSON.parse(opts.body);
+        data=task;
+      }
+      if(url===projectPath+'/chats'&&opts.method==='POST'){
+        filed=JSON.parse(opts.body);
+        task.chats=[saved];
+      }
+      return {ok:true,status:200,text:async()=>JSON.stringify(data)};
+    };
+    const route=async hash=>{
+      w.history.replaceState(null,'',hash);
+      await w.PODA.renderRoute();
+    };
+    w.eval(fs.readFileSync(path.join(root,'project-manager.js'),'utf8'));
+    await route('#/projects');
+    const card=w.document.querySelector('.pm-project');
+    assert.equal(card.querySelector('a[aria-label="Open project Workshop"]').hash,'#/projects?project=demo');
+    const taskURL=card.querySelector('.pm-card-tasks a').hash;
+    assert.equal(taskURL,'#/projects?project=demo&task=task-one');
+    await route('#/projects?project=demo');
+    assert.match(w.document.querySelector('.pm-task-rail').textContent,/Task folders.*Prototype/);
+    assert.match(w.document.querySelector('.pm-task-content').textContent,/Project chats/);
+    await route(taskURL);
+    const taskView=w.document.querySelector('.pm-task-content');
+    assert.equal(taskView.querySelector('a[href^="#/notion?day="]').hash,'#/notion?day=2027-04-02');
+    const byLabel=(root, label)=>[...root.querySelectorAll('button')].find(button=>button.textContent===label);
+    byLabel(taskView,'Find events').click();await settle();
+    byLabel(taskView,'Use event start as deadline').click();await settle();
+    assert.deepEqual(eventLink,{event_id:'event',calendar_scope:{provider:'local'}});
+    const picker=w.document.querySelector('.pm-task-content .pm-chat-picker');
+    picker.open=true;
+    byLabel(picker,'Search').click();await settle();
+    byLabel(picker,'Move here').click();await settle();
+    assert.deepEqual(filed,{session_id:'saved-chat',task_id:'task-one'});
+    assert.match(w.document.querySelector('.pm-task-content a[href="#/ask?session=saved-chat"]').textContent,/Sketch options/);
+  }finally{dom.window.close();}
+});
+
+test('the actual Chat composer renders slash suggestions',async()=>{
+  const {dom,w}=create();
+  try{
+    w.history.replaceState(null,'','#/ask');
+    w.fetch=async url=>{
+      const data=url==='/project-manager/chat-commands'?{projects:[{name:'Workshop',shortcut:'/workshop',value:'/project "Workshop"'}]}:{};
+      return {ok:true,status:200,text:async()=>JSON.stringify(data)};
+    };
+    for(const name of ['chat-commands.js','app.js'])w.eval(fs.readFileSync(path.join(root,name),'utf8'));
+    await settle();
+    const area=w.document.querySelector('.composer textarea');
+    area.focus();area.value='/';
+    area.dispatchEvent(new w.Event('input',{bubbles:true}));
+    await settle();
+    const panel=w.document.querySelector('.composer .chat-slash-panel');
+    assert.equal(panel.hidden,false);
+    assert.match(panel.textContent,/\/workshop/);
+    panel.querySelector('[role="option"]').click();
+    assert.equal(area.value,'/project ');
+  }finally{dom.window.close();}
+});
+
+test('BestNDS matching errors stay beside the preset button',async()=>{
+  const {dom,w}=create();
+  try{
+    w.fetch=async url=>{
+      const bad=url==='/notion/mapping/bestnds';
+      const data=bad?{detail:{code:'mapping_invalid',message:"The 'Date' property is missing."}}
+        :url==='/calendar/status'?{config:{provider:'notion'},capability:{connected:true}}
+        :url==='/notion/status'?{capability:{connected:true}}
+        :url==='/notion/schema'?{properties:{Name:{type:'title'}}}:{};
+      return {ok:!bad,status:bad?400:200,text:async()=>JSON.stringify(data)};
+    };
+    w.eval(fs.readFileSync(path.join(root,'app.js'),'utf8'));await settle();await settle();
+    const preset=[...w.document.querySelectorAll('#view button')].find(b=>b.textContent==="Use Kaden's BestNDS");
+    assert.ok(preset);
+    preset.click();await settle();
+    assert.equal(preset.parentElement.nextElementSibling.textContent,"The 'Date' property is missing.");
+  }finally{dom.window.close();}
+});

@@ -58,7 +58,7 @@ EGRESS_ALLOWLIST = {
     "groupme": {"api.groupme.com"},
 }
 
-_SOURCE_GLOBS = ("poda_app/**/*.py", "poda_app/static/**/*", "*.cmd", "*.ps1", "requirements.txt")
+_SOURCE_GLOBS = ("poda_app/**/*.py", "poda_app/connectors/notion/bestnds-v1.json", "poda_app/static/**/*", "*.cmd", "*.ps1", "requirements.txt")
 
 
 def compute_build_id() -> str:

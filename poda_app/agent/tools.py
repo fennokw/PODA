@@ -37,7 +37,7 @@ def _notion_query_items(start: str | None = None, end: str | None = None, limit:
             end = end or start
             data = calendars.items_between_effective(start, end)
             data["items"] = _compact(data["items"][:max(1, min(int(limit), 200))])
-            data["note"] = f"All times are local ({data['time_zone']}). Items marked is_deadline are Canvas homework/tests due that day; others are classes/events."
+            data["note"] = f"All times are local ({data['time_zone']}). Items marked is_deadline are tasks due that day, regardless of category."
             return {"ok": True, "result": data, "error": None,
                     "verification": f"read {data['count']} selected calendar items dated {start}..{end} (local {data['time_zone']}; date property '{data['mapping']['date']}'{', inferred mapping' if data['mapping']['inferred'] else ''})"}
         pages = query_pages(limit=max(1, min(int(limit), 200)))

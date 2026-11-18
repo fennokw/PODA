@@ -13,7 +13,7 @@ SCALAR_KEYS = set(mapping.MAPPING_FIELDS) | {'default_status','default_type','de
 def validate_document(document):
     if len(json.dumps(document).encode()) > MAX_BYTES:
         raise NotionError('validation', 'Mapping files must be at most 64 KB.')
-    if document.get('format') != FORMAT or document.get('version') != VERSION:
+    if not isinstance(document, dict) or document.get('format') != FORMAT or document.get('version') != VERSION:
         raise NotionError('validation', 'Unsupported mapping format or version. Export a PODA mapping JSON file.')
     value = document.get('mapping')
     if not isinstance(value, dict) or set(value) - (SCALAR_KEYS | {'external_ids','status_done_values'}):
@@ -43,11 +43,13 @@ def export_mapping():
 
 
 def apply_bestnds():
-    document = json.loads(Path(__file__).with_name('bestnds-v1.json').read_text())
-    # save_mapping retrieves the live destination schema and versions the change atomically.
-    result = import_mapping(document)
-    from . import event_defaults, state
-    source = state.get_config()['data_source_id']
-    event_defaults.save(source,state.get_config()['schema'],result['mapping'],
-                        {'type':'Event','commitment':'Committed','area':'General','source':'Manual'})
-    return result
+    try:
+        document = json.loads(Path(__file__).with_name("bestnds-v1.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise NotionError("validation", "The BestNDS preset is missing or unreadable in this PODA build. Install the latest desktop build, or import your mapping JSON.", code="bestnds_preset_unavailable") from exc
+    names = validate_document(document)
+    fields = ("type", "commitment", "area", "source")
+    if any(not names.get(f"default_{field}") for field in fields):
+        raise NotionError("validation", "The BestNDS preset has incomplete calendar defaults. Install the latest desktop build.", code="bestnds_preset_unavailable")
+    defaults = {field: names[f"default_{field}"] for field in fields}
+    return mapping.save_mapping(names, calendar_defaults=defaults)
