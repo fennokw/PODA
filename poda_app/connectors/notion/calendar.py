@@ -6,9 +6,10 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any
 
-from . import mapping, state
+from . import mapping, state, item_types
 from .client import NotionError
 from .service import query_pages
+from .event_defaults import options
 
 LOOKBACK_DAYS = 14  # multi-day pages that *started* before the window but overlap it
 
@@ -39,7 +40,9 @@ def resolve_fields(cfg: dict[str, Any], active: dict[str, Any] | None) -> dict[s
         "date": date_prop,
         "type": pick(mapped.get("type"), ("Type", "Category", "Kind"), "select", "multi_select", "status"),
         "status": pick(mapped.get("status"), ("Status", "Source Status"), "status", "select"),
-        "commitment": typed("Commitment", "select"),
+        "commitment": typed(mapped.get("commitment"), "select") or typed("Commitment", "select"),
+        "task_kind": typed(mapped.get("task_kind"), "select") or typed("Task kind", "select"),
+        "event_kind": typed(mapped.get("event_kind"), "select") or typed("Event kind", "select"),
         "commitment_options": [o if isinstance(o,str) else o.get("name")
             for o in ((schema.get("Commitment") or {}).get("select") or {}).get("options", (schema.get("Commitment") or {}).get("options", []))
             if (o if isinstance(o,str) else o.get("name"))],
@@ -49,6 +52,8 @@ def resolve_fields(cfg: dict[str, Any], active: dict[str, Any] | None) -> dict[s
         "source_url": typed("Source URL", "url") or next((n for n, p in schema.items() if isinstance(p, dict) and p.get("type") == "url"), None),
         "completed": typed(mapped.get("completed"), "checkbox") or typed("Completed", "checkbox"),
         "done_values": list(mapped.get("status_done_values") or []),
+        "kind_options": {key: options(schema[name]) for key, fallback in (("task_kind", "Task kind"), ("event_kind", "Event kind"))
+                         if (name := typed(mapped.get(key), "select") or typed(fallback, "select"))},
         "from_mapping": bool(active),
     }
 
@@ -76,8 +81,8 @@ def interpret(page: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any] | 
     return {
         "page_id": page.get("id"), "title": str(title), "url": page.get("url"),
         "start": start, "end": end, "all_day": "T" not in str(start), "time_zone": tz,
-        "type": type_val, "status": status_val, "done": bool(props.get(fields["completed"])) if fields.get("completed") else ((status_val in set(fields.get("done_values") or [])) if status_val is not None and fields.get("done_values") else None),
-        "commitment": props.get(fields["commitment"]) if fields.get("commitment") else None,
+        "type": type_val, "status": status_val, "done": item_types.completion(props, fields),
+        **item_types.interpret(props, fields),
         "area": area if isinstance(area, list) else ([area] if area else []),
         "source": props.get(fields["source"]) if fields.get("source") else None,
         "notes": (str(notes)[:400] if notes else None),

@@ -15,7 +15,7 @@ def _memory_search(query: str, limit: int = 10) -> dict[str, Any]:
             "error": None, "verification": f"{len(out.get('results', []))} memories ranked via {out.get('mode')}"}
 
 
-_ITEM_KEYS = ("summary", "title", "kind", "done", "is_deadline", "local_date", "start_time", "end_time", "all_day", "course", "source_name", "commitment", "areas", "import_source", "source_status", "page_id")
+_ITEM_KEYS = ("summary", "title", "kind", "task_kind", "event_kind", "setup_warnings", "done", "is_deadline", "local_date", "start_time", "end_time", "all_day", "course", "source_name", "commitment", "areas", "import_source", "source_status", "page_id")
 
 
 def _compact(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -174,7 +174,7 @@ def _load_extensions() -> None:
     })
     register_extension({
         "notion_calendar_update":{"description":"Update title and/or date of a selected-calendar event by page ID; confirmation is required outside explicitly authorized automation.","mutating":True,"requires_confirmation":True,"needs":"notion_update",
-           "handler":update_calendar_event,"schema":_schema({"page_id":_str("Existing Notion page ID"),"title":_str("Optional title"),"start":_str("Optional timezone-aware ISO date"),"end":_str("Optional timezone-aware end"),"commitment":_str("Optional new commitment"),"area":_str("Optional new area/category"),"completed":_bool("Mark a Notion task or event completed; false reopens it")},["page_id"])},
+           "handler":update_calendar_event,"schema":_schema({"page_id":_str("Existing Notion page ID"),"title":_str("Optional title"),"start":_str("Optional timezone-aware ISO date"),"end":_str("Optional timezone-aware end"),"commitment":_str("Optional new commitment"),"area":_str("Optional new area/category"),"completed":_bool("Tasks only: mark any Notion task completed; false reopens it. Task kind is just a label. Do not complete events."),"task_kind":_str("Notion tasks only: existing Task kind option; empty string clears it"),"event_kind":_str("Notion events only: existing Event kind option; empty string clears it")},["page_id"])},
         "notion_calendar_archive":{"description":"Archive a selected-calendar event by page ID; confirmation is required outside explicitly authorized automation.","mutating":True,"requires_confirmation":True,"needs":"notion_archive",
            "handler":archive_calendar_event,"schema":_schema({"page_id":_str("Existing Notion page ID")},["page_id"])}
     })

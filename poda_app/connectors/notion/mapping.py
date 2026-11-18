@@ -11,13 +11,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ...agent import receipts
 from ...runtime.db import connect, now_iso, one, rows
-from . import state
+from . import state, item_types
 from .client import NotionClient, NotionError
 from .service import normalize_page, property_value, query_pages, schema_fingerprint
 
 MAPPING_FIELDS = {"title": {"title"}, "date": {"date"}, "status": {"status", "select"}, "type": {"select", "multi_select", "status"},
                   "project_relation": {"relation"}, "class_relation": {"relation"}, "notes": {"rich_text"}, "completed": {"checkbox"}, "commitment": {"select"},
-                  "area": {"select", "multi_select"}, "task_kind": {"select"}, "source": {"select"}}
+                  "area": {"select", "multi_select"}, "task_kind": {"select"}, "event_kind": {"select"}, "source": {"select"}}
 EXTERNAL_ID_TYPES = {"rich_text", "number", "url"}
 
 
@@ -227,8 +227,9 @@ def interpret_page(page: dict[str, Any], mapping: dict[str, Any]) -> dict[str, A
     return {
         "page_id": page.get("id"), "title": props.get(mapping.get("title") or "") or page.get("title"),
         "date_start": start, "date_end": end, "all_day": bool(start) and "T" not in str(start), "time_zone": (date or {}).get("time_zone") if isinstance(date, dict) else None,
-        "status": status_val, "done": bool(props.get(mapping["completed"])) if mapping.get("completed") else (status_val in set(mapping.get("status_done_values") or []) if status_val is not None else None),
+        "status": status_val, "done": item_types.completion(props, mapping),
         "type": props.get(mapping["type"]) if mapping.get("type") else None,
+        **item_types.interpret(props, mapping),
         "project_ids": props.get(mapping["project_relation"]) if mapping.get("project_relation") else None,
         "class_ids": props.get(mapping["class_relation"]) if mapping.get("class_relation") else None,
         "external_ids": ext, "last_edited_time": page.get("last_edited_time"), "in_trash": page.get("in_trash"), "url": page.get("url"),
@@ -260,6 +261,21 @@ def build_properties(mapping: dict[str, Any], schema: dict[str, Any], event: dic
     if mapping.get("type") and type_value:
         kind = (schema.get(mapping["type"]) or {}).get("type")
         props[mapping["type"]] = {"multi_select": [{"name": type_value}]} if kind == "multi_select" else {kind: {"name": type_value}}
+    try:
+        item_types.validate_changes(type_value, event)
+    except ValueError as exc:
+        raise NotionError("validation", str(exc)) from exc
+    for field in ("task_kind", "event_kind", "commitment"):
+        if field not in event:
+            continue
+        name = mapping.get(field)
+        if not name or schema.get(name, {}).get("type") != "select":
+            raise NotionError("validation", f"Map a select property for {field} first.")
+        value = event[field]
+        from .event_defaults import options
+        if value and value not in options(schema[name]):
+            raise NotionError("validation", f"Choose an existing option for {name}.")
+        props[name] = {"select": {"name": value} if value else None}
     if mapping.get("project_relation") and event.get("project_ids"):
         props[mapping["project_relation"]] = {"relation": [{"id": i} for i in event["project_ids"]]}
     if mapping.get("class_relation") and event.get("class_ids"):
@@ -430,10 +446,16 @@ def update_event(page_id: str, changes: dict[str, Any], expected_last_edited_tim
         raise NotionError("validation", f"Conflict: the page changed in Notion at {current.get('last_edited_time')} (expected {expected_last_edited_time}). Reload before editing.", code="conflict")
     mapping = active["mapping"]
     event = interpret_page(current, mapping)
-    merged = {"title": event["title"], "start": event["date_start"], "end": event["date_end"], "time_zone": event["time_zone"], **changes}
+    merged = {"title": event["title"], "start": event["date_start"], "end": event["date_end"], "time_zone": event["time_zone"], "type": event.get("type"), **changes}
     fields = {"project_ids": "project_relation", "class_ids": "class_relation"}
     names = {mapping.get(fields.get(field, field)) for field in changes if field != "external_ids"}
     names.update(mapping["external_ids"].get(key) for key in (changes.get("external_ids") or {}))
+    if "type" in changes:
+        # An explicit Type change also clears fields belonging to the old Type.
+        for field in (("event_kind", "commitment") if item_types.is_task(changes["type"]) else ("task_kind", "completed")):
+            if mapping.get(field) and field not in changes:
+                merged[field] = False if field == "completed" else None
+                names.add(mapping[field])
     if changes.keys() & {"start", "end", "time_zone"}:
         if not merged["start"]:
             raise NotionError("validation", "A start date is required to change the event date.")
@@ -529,6 +551,7 @@ def infer_mapping(schema: dict[str, Any]) -> dict[str, Any] | None:
         "status": status,
         "completed": next((n for n in (by_type.get("checkbox") or []) if n.casefold() in {"completed", "done"}), None),
         "type": type_prop,
+        **{key: name for key, name in {"task_kind": "Task kind", "event_kind": "Event kind", "commitment": "Commitment", "source": "Import Source"}.items() if schema.get(name, {}).get("type") == "select"},
         "project_relation": next((r for r in relations if "project" in r.lower() or "domain" in r.lower()), None),
         "class_relation": next((r for r in relations if "class" in r.lower() or "course" in r.lower()), None),
         "external_ids": {k: n for k, n in {
@@ -574,15 +597,15 @@ def interpret_item(page: dict[str, Any], mapping: dict[str, Any], tz_name: str =
     start = _to_local(base.get("date_start"), tz, base.get("time_zone"))
     end = _to_local(base.get("date_end"), tz, base.get("time_zone"))
     ctx = {k: props.get(k) for k in (mapping.get("context_props") or []) if props.get(k) not in (None, "", [], {})}
-    kind = str(ctx.get("Type") or base.get("type") or "")
-    source = str(ctx.get("Import Source") or "")
-    is_deadline = kind.lower() in {"homework", "test", "task", "assignment", "quiz", "exam"} or source.lower() == "canvas"
+    kind = item_types.text(base.get("type") or ctx.get("Type"))
+    source = item_types.text(props.get(mapping.get("source") or "Import Source"))
+    is_deadline = base["is_deadline"]
     return {
         **base,
         "start_local": start["local"], "end_local": end["local"], "local_date": start["date"], "local_end_date": end["date"],
         "start_time": start["time"], "end_time": end["time"], "all_day": bool(start["all_day"]),
         "kind": kind or None, "import_source": source or None, "is_deadline": is_deadline,
-        "commitment": ctx.get("Commitment"), "areas": ctx.get("Area"), "course": ctx.get("Notes") or None,
+        "commitment": base["commitment"], "areas": ctx.get("Area"), "course": ctx.get("Notes") or None,
         "source_name": ctx.get("Source Name") or None, "source_status": ctx.get("Source Status"),
         "summary": _item_summary(base.get("title"), kind, source, start, end, ctx, is_deadline),
     }

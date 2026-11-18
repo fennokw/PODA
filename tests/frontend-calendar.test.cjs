@@ -138,3 +138,23 @@ test('leaving Calendar during setup cannot change the next page breadcrumb',asyn
     assert.equal(w.document.querySelector('#view').textContent,'Next page');
   }finally{dom.window.close();}
 });
+test('Notion editor offers only the matching kind and saves completion independently',async()=>{
+  for(const task of [true,false]){
+    const {dom,w,calls}=create();
+    try{
+      const ev={page_id:'example',title:'Example',start:'2026-11-20',type:task?'Task':'Event',is_deadline:task,done:false,area:[],setup_warnings:['Clear the mismatched field.']};
+      const form=w.PODACalendar.editor(ev,'notion',()=>{},{kind_options:{task_kind:['Homework','Personal project'],event_kind:['Meeting']}});
+      w.document.body.append(form);
+      const kind=form.querySelector('select');assert.equal(kind.getAttribute('aria-label'),task?'Task kind':'Event kind');
+      assert.equal(form.querySelectorAll('select').length,1);
+      if(task)assert.doesNotMatch(form.textContent,/commitment/);
+      kind.value=task?'Personal project':'Meeting';
+      const completed=form.querySelector('[type="checkbox"]');
+      if(task){assert.ok(completed);completed.checked=true;}else assert.equal(completed,null);
+      form.querySelector('button').click();await settle();
+      const body=JSON.parse(calls.at(-1)[1].body);
+      assert.equal(body.completed,task?true:undefined);assert.equal(body[task?'task_kind':'event_kind'],kind.value);
+      assert.equal(body[task?'event_kind':'task_kind'],undefined);
+    }finally{dom.window.close();}
+  }
+});

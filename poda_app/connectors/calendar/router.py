@@ -27,6 +27,8 @@ class Event(BaseModel):
     commitment:str=''
     area:str=''
 class Edit(BaseModel):
+    task_kind:str|None=None
+    event_kind:str|None=None
     completed:bool|None=None
     title:str=''
     start:str=''

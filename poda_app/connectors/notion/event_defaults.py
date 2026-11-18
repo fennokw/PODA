@@ -1,5 +1,6 @@
 """Schema-valid new-event defaults, scoped to the connected Notion data source."""
 import json
+from . import item_types
 from ...runtime.db import get_setting, set_setting
 
 PREFERENCES = {'type':('Event','Meeting','Appointment','Calendar'), 'commitment':('Maybe','Tentative','Yes'),
@@ -26,7 +27,9 @@ def fields(schema,names):
 
 def resolve(schema,names,source,explicit=None):
     explicit=explicit or {}; saved=load(source); props={}; provisional={}; missing=[]
-    is_task = str(explicit.get('type') or '').casefold() in {'task','homework','test'}
+    effective_type = explicit.get('type') or saved.get('type') or 'Event'
+    item_types.validate_changes(effective_type, explicit)
+    is_task = item_types.is_task(effective_type)
     for key,name in fields(schema,names).items():
         if is_task and key == 'commitment':
             continue

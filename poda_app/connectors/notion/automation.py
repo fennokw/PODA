@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import Any
 
-from . import mapping, event_defaults
+from . import mapping, event_defaults, item_types
 from .client import NotionClient, NotionError
 from .service import normalize_page, query_pages
 
@@ -68,15 +68,15 @@ def create_calendar_event(title: str, start: str, end: str = "", notes: str = ""
     except (ValueError, NotionError, KeyError) as exc:
         return {"ok":False,"result":None,"error":str(exc),"verification":"not confirmed"}
 
-def update_calendar_event(page_id: str, title: str = "", start: str = "", end: str = "", commitment: str = "", area: str = "", completed: bool | None = None) -> dict[str, Any]:
-    """Update only title and/or date on an existing page in the bound source."""
+def update_calendar_event(page_id: str, title: str = "", start: str = "", end: str = "", commitment: str = "", area: str = "", completed: bool | None = None, task_kind: str | None = None, event_kind: str | None = None) -> dict[str, Any]:
+    """Validate and update selected fields on one page in the bound source."""
     try:
         import uuid
         uuid.UUID(page_id)
         cfg = mapping.require_write("update")
         client = NotionClient()
         active, schema = mapping.live_mapping(cfg, client)
-        mapping.page_in_source(client, page_id, cfg["data_source_id"])
+        before = normalize_page(mapping.page_in_source(client, page_id, cfg["data_source_id"]))
         props = {}
         names = active["mapping"]
         if title:
@@ -98,17 +98,27 @@ def update_calendar_event(page_id: str, title: str = "", start: str = "", end: s
             raise ValueError("Provide start when updating end")
         if commitment or area:
             requested = {k:v for k,v in {"commitment":commitment,"area":area}.items() if v}
-            additions,_,_ = event_defaults.resolve(schema,names,cfg['data_source_id'],requested)
+            item_type = before['properties'].get(names.get('type') or 'Type')
+            item_types.validate_changes(item_type, requested, before['properties'].get(names.get('source') or 'Import Source'))
+            additions,_,_ = event_defaults.resolve(schema,names,cfg['data_source_id'],{**requested, 'type': item_type})
             fields = event_defaults.fields(schema,names)
             for key in requested: props[fields[key]] = additions[fields[key]]
+        kind_changes = {k: v for k, v in {"task_kind": task_kind, "event_kind": event_kind}.items() if v is not None}
+        if kind_changes:
+            item_type = before['properties'].get(names.get('type') or 'Type')
+            # Resolve stored Type, then validate against the live select options.
+            built = mapping.build_properties(names, schema, {"title": title or before.get('title') or "Untitled", "type": item_type, **kind_changes})
+            for key in kind_changes:
+                props[names[key]] = built[names[key]]
         if completed is not None:
+            item_types.validate_changes(before['properties'].get(names.get('type') or 'Type'), {'completed': completed}, before['properties'].get(names.get('source') or 'Import Source'))
             name = names.get('completed')
             if not name or schema.get(name,{}).get('type') != 'checkbox':
                 raise ValueError('Map a completion checkbox first.')
             if not isinstance(completed, bool): raise ValueError('Completed must be true or false.')
             props[name] = {'checkbox': completed}
         if not props:
-            raise ValueError("Specify title, start, commitment, area or completed")
+            raise ValueError("Specify title, start, commitment, area, completed or a matching kind")
         client.update_page(page_id,{"properties":props})
         after = normalize_page(mapping.page_in_source(client, page_id, cfg["data_source_id"]))
         ok = mapping.event_matches(after, props)

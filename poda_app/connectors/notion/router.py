@@ -73,6 +73,7 @@ class MappingRequest(BaseModel):
     commitment: str | None = None
     area: str | None = None
     task_kind: str | None = None
+    event_kind: str | None = None
     source: str | None = None
     default_commitment: str | None = None
     default_area: str | None = None
@@ -81,6 +82,9 @@ class MappingRequest(BaseModel):
 
 
 class EventProposal(BaseModel):
+    task_kind: str | None = None
+    event_kind: str | None = None
+    completed: bool | None = None
     title: str
     start: str
     end: str | None = None
@@ -402,9 +406,16 @@ def change_commitment(page_id: str, req: CommitmentChange) -> dict[str, Any]:
         current = mapping.page_in_source(client, page_id, cfg["data_source_id"])
         if req.expected_last_edited_time and current.get("last_edited_time") != req.expected_last_edited_time:
             raise HTTPException(409, detail="Calendar item changed in Notion; refresh before editing.")
+        from .service import normalize_page
+        from . import item_types
+        names = (mapping.get_active_mapping() or {}).get("mapping", {})
+        props = normalize_page(current).get("properties", {})
+        try:
+            item_types.validate_changes(props.get(names.get("type") or "Type"), {"commitment":req.commitment}, props.get(names.get("source") or "Import Source"))
+        except ValueError as exc:
+            raise HTTPException(422, detail=str(exc)) from exc
         client.update_page(page_id, {"properties":{"Commitment":{"select":({"name":req.commitment} if req.commitment else None)}}})
         after = client.page(page_id)
-        from .service import normalize_page
         verified = normalize_page(after).get("properties",{}).get("Commitment") == req.commitment
         if not verified:
             raise HTTPException(502, detail="Notion update was not verified after re-reading.")

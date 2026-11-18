@@ -136,14 +136,17 @@ def create_calendar_event(title,start,end='',notes='',commitment='',area=''):
     except Exception as exc: return _failure(exc)
 
 
-def update_calendar_event(page_id,title='',start='',end='',commitment='',area='',completed=None):
+def update_calendar_event(page_id,title='',start='',end='',commitment='',area='',completed=None,task_kind=None,event_kind=None):
     try:
         if not page_id: raise ValueError('Choose an event to edit.')
         with _lock:
             cap=_require(True, "can_update_content")
             if cap['provider']=='notion':
                 from ..notion.automation import update_calendar_event as update
-                return update(page_id,title,start,end,commitment,area) if completed is None else update(page_id,title,start,end,commitment,area,completed=completed)
+                extra = {k:v for k,v in {'completed':completed,'task_kind':task_kind,'event_kind':event_kind}.items() if v is not None}
+                return update(page_id,title,start,end,commitment,area,**extra)
+            if task_kind is not None or event_kind is not None:
+                raise ValueError('Kind properties currently require a Notion calendar.')
             if completed is not None:
                 raise ValueError('Completion checkboxes currently require a Notion calendar.')
             if cap['provider']=='google':

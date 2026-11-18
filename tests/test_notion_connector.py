@@ -568,6 +568,7 @@ def test_repair_fills_missing_fields_without_overwriting_existing_values(fake,mo
     monkeypatch.setitem(SCHEMA,'Area',{'type':'multi_select','multi_select':{'options':[{'name':'Personal'},{'name':'Music'}]}})
     connect_ok(fake);service.verify_write();mapping.save_mapping(GOOD_MAPPING)
     before=fake.pages['page-0'];original_date=dict(before['properties']['Due Date / Event Date']['date'])
+    before['properties']['Type']['select']['name']='Event'
     before['properties']['Area']={'type':'multi_select','multi_select':[{'name':'Music'}]}
     result=automation.fill_missing_event_fields('page-0')
     assert result['ok']
@@ -575,5 +576,5 @@ def test_repair_fills_missing_fields_without_overwriting_existing_values(fake,mo
     after=fake.pages['page-0']['properties']
     assert after['Area']['multi_select']==[{'name':'Music'}]
     assert after['Due Date / Event Date']['date']==original_date
-    assert after['Type']['select']['name']=='Assignment'
+    assert after['Type']['select']['name']=='Event'
     assert after['Commitment']['select']['name']=='Maybe'

@@ -943,12 +943,12 @@
       const when = ev.all_day ? `${s.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}${e && dayKey(e) !== dayKey(s) ? ` → ${e.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}` : ''} · all day`
         : `${s.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} · ${fmtClock(s)}${e ? ` – ${fmtClock(e)}` : ''}`;
       calDetail.append(el('div', { class: 'row' }, el('strong', {}, ev.title), ev.type ? el('span', { class: `cal-type ${typeClass(ev.type)}` }, ev.type) : null),
-        kv([['When', when], ['Status', ev.status], ['Commitment', ev.commitment], ['Area', (ev.area || []).join(', ')], ['Source', ev.source], ['Notes', ev.notes], ['Edited', fmtTime(ev.last_edited_time)]]),
+        kv([['When', when], ['Status', ev.status], ['Kind', ev.task_kind || ev.event_kind], ['Commitment', ev.commitment], ['Area', (ev.area || []).join(', ')], ['Source', ev.source], ['Notes', ev.notes], ['Edited', fmtTime(ev.last_edited_time)]]),
         el('div', { class: 'row' }, ev.url ? el('a', { class: 'btn btn-sm', href: ev.url, target: '_blank', rel: 'noopener' }, selectedProvider==='google'?'Open in Google Calendar':'Open in Notion') : null, ev.source_url ? el('a', { class: 'btn btn-sm btn-ghost', href: ev.source_url, target: '_blank', rel: 'noopener' }, 'Open source') : null));
-      if(status?.capability?.can_update_content)calDetail.append(window.PODACalendar.editor(ev,selectedProvider,drawCalendar));
+      if(status?.capability?.can_update_content)calDetail.append(window.PODACalendar.editor(ev,selectedProvider,drawCalendar,window.podaCalendarFields||{}));
       calDetail.append(el('details', { class: 'dev-only disclosure' }, el('summary', {}, 'Raw calendar entry'), jsonBox(ev)));
       const options = (window.podaCalendarFields?.commitment_options || []);
-      if (selectedProvider==='notion' && ev.page_id && options.length) {
+      if (selectedProvider==='notion' && !ev.is_deadline && ev.page_id && options.length) {
         const selection = el('select', { class: 'input', 'aria-label': 'Commitment level' },
           el('option', { value: '' }, 'Not set'),
           ...options.map(v => el('option', { value: v, selected: v === ev.commitment }, v)));
@@ -1169,13 +1169,13 @@
         };
         const form = el('form', { class: 'stack-sm' },
           el('div', { class: 'grid-3' }, select('title', 'Title property', byType(['title']), false), select('date', 'Event date property', byType(['date'])), select('status', 'Status property', byType(['status', 'select'])),
-            select('completed', 'Completion checkbox', byType(['checkbox'])), select('type', 'Type property', byType(['select', 'multi_select', 'status'])), select('project_relation', 'Project Domain relation', byType(['relation'])), select('class_relation', 'Class relation', byType(['relation']))),
+            select('completed', 'Completion checkbox', byType(['checkbox'])), select('task_kind', 'Task kind property', byType(['select'])), select('event_kind', 'Event kind property', byType(['select'])), select('type', 'Type property', byType(['select', 'multi_select', 'status'])), select('project_relation', 'Project Domain relation', byType(['relation'])), select('class_relation', 'Class relation', byType(['relation']))),
           el('div', { class: 'field' }, el('label', { class: 'label' }, 'External ID properties (comma separated)'), el('input', { class: 'input', name: 'external_ids', value: Object.values(current.external_ids || {}).join(', '), placeholder: 'Canvas Assignment ID, External Event ID' })),
           el('div', { class: 'field' }, el('label', { class: 'label' }, 'Status values that mean done (comma separated)'), el('input', { class: 'input', name: 'done_values', value: (current.status_done_values || []).join(', '), placeholder: 'Done, Complete' })),
           el('div', { class: 'row' }, el('button', { class: 'btn btn-primary', type: 'submit' }, 'Save mapping version'), currentVersion ? el('span', { class: 'chip' }, 'version ', el('b', {}, currentVersion)) : pill('no mapping saved', 'warn')));
         form.addEventListener('submit', async (e) => {
           e.preventDefault(); const fd = new FormData(form);
-          const body = { ...current, completed: fd.get('completed') || null, title: fd.get('title'), date: fd.get('date') || null, status: fd.get('status') || null, type: fd.get('type') || null, project_relation: fd.get('project_relation') || null, class_relation: fd.get('class_relation') || null,
+          const body = { ...current, task_kind: fd.get('task_kind') || null, event_kind: fd.get('event_kind') || null, completed: fd.get('completed') || null, title: fd.get('title'), date: fd.get('date') || null, status: fd.get('status') || null, type: fd.get('type') || null, project_relation: fd.get('project_relation') || null, class_relation: fd.get('class_relation') || null,
             external_ids: Object.fromEntries(String(fd.get('external_ids') || '').split(',').map((s) => s.trim()).filter(Boolean).map((name) => [name, name])), status_done_values: String(fd.get('done_values') || '').split(',').map((s) => s.trim()).filter(Boolean) };
           try { await api('/notion/mapping', { method: 'POST', body }); toast('Mapping saved', 'ok'); refreshStatus(); drawCalendar(); } catch (err) { toast(errorDetail(err).message, 'danger'); }
         });
