@@ -11,7 +11,7 @@ def test_portable_preset_and_completion():
     assert m['date']=='Date'
     page={'properties':{'Name':'Deadline','Date':{'start':'2026-11-20'},'Type':'Task','Completed':True}}
     assert mapping.interpret_page(page,m)['done'] is True
-    assert mapping.interpret_page({'properties':{'Completed':False}},m)['done'] is False
+    assert mapping.interpret_page({'properties':{'Type':'Task','Completed':False}},m)['done'] is False
 
 
 def test_import_rejects_credentials_and_source_date():
@@ -37,7 +37,7 @@ def test_type_wins_over_kind_source_and_completion(item_type, task):
                         'Commitment':'Committed','Import Source':'Canvas'}}
     item=mapping.interpret_item(page,m)
     assert item['is_deadline'] is task
-    assert item['done'] is True
+    assert item['done'] is (True if task else None)
     assert item['task_kind']==('Homework' if task else None)
     assert item['event_kind']==(None if task else 'Meeting')
     assert item['commitment']==(None if task else 'Committed')
@@ -45,7 +45,7 @@ def test_type_wins_over_kind_source_and_completion(item_type, task):
     fields={**m,'done_values':[]}
     result=calendar.interpret(page,fields)
     assert result['is_deadline'] is task
-    assert result['done'] is True
+    assert result['done'] is (True if task else None)
     assert result['task_kind']==item['task_kind']
 
 
@@ -60,7 +60,8 @@ def test_custom_mapping_type_is_authoritative():
 def test_untyped_canvas_legacy_fallback_and_empty_kinds():
     from poda_app.connectors.notion import item_types
     assert item_types.interpret({'Import Source':'Canvas'}, {})['is_deadline'] is True
-    assert item_types.interpret({'Type':'Event','Completed':True}, {})['setup_warnings']==[]
+    assert item_types.interpret({'Type':'Event','Completed':True}, {})['setup_warnings']
+    assert item_types.interpret({'Type':'Event','Completed':False}, {})['setup_warnings']==[]
 
 
 def kind_schema():
@@ -76,6 +77,7 @@ def kind_mapping():
 @pytest.mark.parametrize('changes', [
     {'type':'Event','task_kind':'Homework'}, {'type':'Task','event_kind':'Meeting'},
     {'type':'Task','commitment':'Committed'}, {'type':'Task','task_kind':'invented option'},
+    {'type':'Event','completed':True},
 ])
 def test_conflicting_or_unknown_writes_fail_before_api(changes):
     with pytest.raises(NotionError):
@@ -83,8 +85,8 @@ def test_conflicting_or_unknown_writes_fail_before_api(changes):
 
 
 def test_matching_kinds_and_completion_write_and_clear():
-    props=mapping.build_properties(kind_mapping(),kind_schema(),{'title':'Example','type':'Event','event_kind':'Meeting','task_kind':None,'completed':True})
-    assert props['Completed']=={'checkbox':True}
+    props=mapping.build_properties(kind_mapping(),kind_schema(),{'title':'Example','type':'Event','event_kind':'Meeting','task_kind':None,'completed':False})
+    assert props['Completed']=={'checkbox':False}
     assert props['Event kind']=={'select':{'name':'Meeting'}}
     assert props['Task kind']=={'select':None}
 
@@ -109,6 +111,11 @@ def test_type_change_clears_opposite_fields_atomically(monkeypatch):
     assert result['verified'] is True
     assert writes[0]['properties']=={'Type':{'select':{'name':'Task'}},'Task kind':{'select':{'name':'Personal project'}},'Event kind':{'select':None},'Commitment':{'select':None}}
     assert service.normalize_page(raw)['properties']['Completed'] is True
+    result=mapping.update_event('example',{'type':'Event','event_kind':'Meeting'},None)
+    assert result['verified'] is True
+    assert writes[-1]['properties']['Completed']=={'checkbox':False}
+    assert writes[-1]['properties']['Task kind']=={'select':None}
+    assert result['interpreted']['done'] is None
 
 
 def test_unattended_edits_validate_stored_type(monkeypatch):
@@ -124,4 +131,31 @@ def test_unattended_edits_validate_stored_type(monkeypatch):
     for change in ({'commitment':'Committed'},{'event_kind':'Meeting'}):
         result=automation.update_calendar_event(raw['id'],**change)
         assert result['ok'] is False and 'does not apply' in result['error']
+    assert writes==[]
+
+
+@pytest.mark.parametrize('label', [None,'General','Homework','Test','Personal project','Project benchmark','Messaging/contacting','Errand','Administration','Research','Creative work','Other'])
+def test_all_task_labels_share_completion(label):
+    m=kind_mapping()
+    for checked in (False, True):
+        page={'properties':{'Type':'Task','Task kind':label,'Completed':checked}}
+        result=mapping.interpret_page(page,m)
+        assert result['done'] is checked
+        assert result['is_deadline'] is True
+        assert result['task_kind']==label
+        assert result['event_kind'] is None
+
+
+def test_remote_event_cannot_be_checked_off(monkeypatch):
+    from poda_app.connectors.notion import automation
+    writes=[]
+    class Client:
+        def update_page(self,*args):writes.append(args)
+    monkeypatch.setattr(automation,'NotionClient',Client)
+    monkeypatch.setattr(mapping,'require_write',lambda _: {'data_source_id':'source'})
+    monkeypatch.setattr(mapping,'live_mapping',lambda *_: ({'mapping':kind_mapping()},kind_schema()))
+    monkeypatch.setattr(mapping,'page_in_source',lambda *_: {'properties':{'Type':{'type':'select','select':{'name':'Event'}}}})
+    result=automation.update_calendar_event('aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',completed=True)
+    assert result['ok'] is False
+    assert 'Completed does not apply to events' in result['error']
     assert writes==[]

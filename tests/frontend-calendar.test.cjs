@@ -148,10 +148,12 @@ test('Notion editor offers only the matching kind and saves completion independe
       const kind=form.querySelector('select');assert.equal(kind.getAttribute('aria-label'),task?'Task kind':'Event kind');
       assert.equal(form.querySelectorAll('select').length,1);
       if(task)assert.doesNotMatch(form.textContent,/commitment/);
-      kind.value=task?'Personal project':'Meeting';form.querySelector('[type="checkbox"]').checked=true;
+      kind.value=task?'Personal project':'Meeting';
+      const completed=form.querySelector('[type="checkbox"]');
+      if(task){assert.ok(completed);completed.checked=true;}else assert.equal(completed,null);
       form.querySelector('button').click();await settle();
       const body=JSON.parse(calls.at(-1)[1].body);
-      assert.equal(body.completed,true);assert.equal(body[task?'task_kind':'event_kind'],kind.value);
+      assert.equal(body.completed,task?true:undefined);assert.equal(body[task?'task_kind':'event_kind'],kind.value);
       assert.equal(body[task?'event_kind':'task_kind'],undefined);
     }finally{dom.window.close();}
   }

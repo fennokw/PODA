@@ -227,7 +227,7 @@ def interpret_page(page: dict[str, Any], mapping: dict[str, Any]) -> dict[str, A
     return {
         "page_id": page.get("id"), "title": props.get(mapping.get("title") or "") or page.get("title"),
         "date_start": start, "date_end": end, "all_day": bool(start) and "T" not in str(start), "time_zone": (date or {}).get("time_zone") if isinstance(date, dict) else None,
-        "status": status_val, "done": bool(props.get(mapping["completed"])) if mapping.get("completed") else (status_val in set(mapping.get("status_done_values") or []) if status_val is not None else None),
+        "status": status_val, "done": item_types.completion(props, mapping),
         "type": props.get(mapping["type"]) if mapping.get("type") else None,
         **item_types.interpret(props, mapping),
         "project_ids": props.get(mapping["project_relation"]) if mapping.get("project_relation") else None,
@@ -452,9 +452,9 @@ def update_event(page_id: str, changes: dict[str, Any], expected_last_edited_tim
     names.update(mapping["external_ids"].get(key) for key in (changes.get("external_ids") or {}))
     if "type" in changes:
         # An explicit Type change also clears fields belonging to the old Type.
-        for field in (("event_kind", "commitment") if item_types.is_task(changes["type"]) else ("task_kind",)):
+        for field in (("event_kind", "commitment") if item_types.is_task(changes["type"]) else ("task_kind", "completed")):
             if mapping.get(field) and field not in changes:
-                merged[field] = None
+                merged[field] = False if field == "completed" else None
                 names.add(mapping[field])
     if changes.keys() & {"start", "end", "time_zone"}:
         if not merged["start"]:

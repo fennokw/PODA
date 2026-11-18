@@ -111,6 +111,7 @@ def update_calendar_event(page_id: str, title: str = "", start: str = "", end: s
             for key in kind_changes:
                 props[names[key]] = built[names[key]]
         if completed is not None:
+            item_types.validate_changes(before['properties'].get(names.get('type') or 'Type'), {'completed': completed}, before['properties'].get(names.get('source') or 'Import Source'))
             name = names.get('completed')
             if not name or schema.get(name,{}).get('type') != 'checkbox':
                 raise ValueError('Map a completion checkbox first.')

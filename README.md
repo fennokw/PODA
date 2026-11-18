@@ -99,10 +99,10 @@ NODE_PATH=/tmp/poda-ui-test/node_modules node --test tests/frontend-calendar.tes
 
 ### BestNDS mapping
 
-For [Kaden’s BestNDS](https://github.com/fennokw/BestNDS), connect Schedule & Tasks and choose **Use Kaden's BestNDS** in the schema mapper. Calendar placement uses Date, tasks/events support Completed, and event defaults are Committed / General. Custom property mapping and portable JSON import/export remain available. Apply the preset again after the dashboard migration to refresh the saved schema; remote permissions still apply.
+For [Kaden’s BestNDS](https://github.com/fennokw/BestNDS), connect Schedule & Tasks and choose **Use Kaden's BestNDS** in the schema mapper. Calendar placement uses Date, all tasks support Completed; events do not, and event defaults are Committed / General. Custom property mapping and portable JSON import/export remain available. Apply the preset again after the dashboard migration to refresh the saved schema; remote permissions still apply.
 
 ### BestNDS task and event kinds
 
-Type determines whether a Notion item is an event or task. Completed is valid for both. Task kind applies only to tasks; Event kind and Commitment apply only to events. PODA ignores incompatible stored fields with a setup warning, offers only the matching kind in its editor, validates changes against the live schema, and clears the old type's mapped fields on an explicit mapped Type change. Canvas provenance never overrides an explicit Event.
+Type determines whether a Notion item is an event or task. Completed applies only to tasks, regardless of Task kind. Homework is only a label. Task kind applies only to tasks; Event kind and Commitment apply only to events. PODA ignores incompatible stored fields with a setup warning, offers only the matching kind in its editor, validates changes against the live schema, and clears the old type's mapped fields on an explicit mapped Type change. Canvas provenance never overrides an explicit Event.
 
 After upgrading an older BestNDS database with Event kind, refresh the Notion schema and reapply **Use Kaden's BestNDS** before remote writes. The portable JSON and full option list are in [BestNDS](https://github.com/fennokw/BestNDS). Other schemas can map their kind properties separately. Notion's manual editor permits incompatible selections; BestNDS's Setup check formula flags them without hiding the calendar item.

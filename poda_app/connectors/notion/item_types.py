@@ -27,8 +27,10 @@ def interpret(props, names):
     if task:
         if event_kind: warnings.append("Event kind is ignored for a task; clear it in Notion.")
         if commitment: warnings.append("Commitment is ignored for a task; use Completed for progress.")
-    elif task_kind:
-        warnings.append("Task kind is ignored for an event; clear it in Notion.")
+    else:
+        if task_kind: warnings.append("Task kind is ignored for an event; clear it in Notion.")
+        if get("completed", "Completed"):
+            warnings.append("Completed applies only to tasks; uncheck it for this event.")
     return {"is_deadline": task, "task_kind": task_kind if task else None,
             "event_kind": event_kind if not task else None,
             "commitment": None if task else commitment, "setup_warnings": warnings}
@@ -36,8 +38,20 @@ def interpret(props, names):
 
 def validate_changes(type_value, changes, source=None):
     task = is_task(type_value, source)
-    invalid = ("event_kind", "commitment") if task else ("task_kind",)
+    invalid = ("event_kind", "commitment") if task else ("task_kind", "completed")
     for key in invalid:
         if changes.get(key):
             label = "tasks" if task else "events"
             raise ValueError(f"{key.replace('_', ' ').capitalize()} does not apply to {label}. Clear it or choose the matching Type.")
+
+
+def completion(props, names):
+    """Only tasks have completion state. Task kind never affects this rule."""
+    if not is_task(props.get(names.get("type") or "Type"), props.get(names.get("source") or "Import Source")):
+        return None
+    checkbox = names.get("completed")
+    if checkbox:
+        return bool(props.get(checkbox))
+    status = props.get(names.get("status") or "")
+    done_values = names.get("status_done_values") or names.get("done_values") or []
+    return status in set(done_values) if status is not None and done_values else None

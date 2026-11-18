@@ -81,7 +81,7 @@ def interpret(page: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any] | 
     return {
         "page_id": page.get("id"), "title": str(title), "url": page.get("url"),
         "start": start, "end": end, "all_day": "T" not in str(start), "time_zone": tz,
-        "type": type_val, "status": status_val, "done": bool(props.get(fields["completed"])) if fields.get("completed") else ((status_val in set(fields.get("done_values") or [])) if status_val is not None and fields.get("done_values") else None),
+        "type": type_val, "status": status_val, "done": item_types.completion(props, fields),
         **item_types.interpret(props, fields),
         "area": area if isinstance(area, list) else ([area] if area else []),
         "source": props.get(fields["source"]) if fields.get("source") else None,
