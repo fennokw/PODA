@@ -22,6 +22,7 @@
       "canvas_course_id": "Canvas Course ID",
       "ics_event_id": "External Event ID"
     },
-    "status_done_values": []
+    "status_done_values": [],
+    "event_kind": "Event kind"
   }
 }

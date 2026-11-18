@@ -73,15 +73,24 @@
     });
     form.append(label('Title',title),label('Start (this computer’s time zone)',start),label('End (optional)',end),save,feedback);return form;
   }
-  function editor(ev,provider,refresh){
+  function editor(ev,provider,refresh,fields={}){
     const form=el('details',{class:'disclosure'},el('summary',{},'Edit event details'));
     const values={title:ev.title,start:ev.start,end:ev.end||'',commitment:ev.commitment||'',area:(ev.area||[]).join(', ')};const inputs={};
-    if(['task','homework','test'].includes(String(ev.type).toLowerCase()))delete values.commitment;
+    const task=ev.is_deadline??['task','homework','test','assignment','quiz','exam'].includes(String(ev.type).toLowerCase());
+    if(task)delete values.commitment;
     for(const [k,v] of Object.entries(values)){inputs[k]=input(v);form.append(label(k==='start'||k==='end'?k+' (ISO date with timezone)':k,inputs[k]));}
+    const kindKey=task?'task_kind':'event_kind';
+    const choices=fields.kind_options?.[kindKey];
+    let kindInput;
+    if(provider==='notion' && choices){
+      kindInput=el('select',{class:'input','aria-label':task?'Task kind':'Event kind'},el('option',{value:''},'Not set'),...choices.map(v=>el('option',{value:v},v)));
+      kindInput.value=ev[kindKey]||'';form.append(label(task?'Task kind':'Event kind',kindInput));
+    }
+    for(const warning of ev.setup_warnings||[])form.append(el('p',{class:'notice notice-warn'},warning));
     const completed=el('input',{type:'checkbox',checked:!!ev.done});
     if(provider==='notion' && ev.done!==null && ev.done!==undefined)form.append(label('Completed',completed));
     const feedback=el('p',{class:'small','aria-live':'polite'});
-    form.append(button('Save event details',async()=>{const body={};if(provider==='notion' && ev.done!==null && ev.done!==undefined && completed.checked!==!!ev.done)body.completed=completed.checked;for(const [k,v] of Object.entries(inputs))if(v.value&&v.value!==values[k])body[k]=v.value;if(body.end&&!body.start)body.start=inputs.start.value;if(!Object.keys(body).length)return;await api('/calendar/events/'+encodeURIComponent(ev.page_id),{method:'PATCH',body});feedback.textContent='Event updated.';refresh();}),feedback);
+    form.append(button('Save event details',async()=>{const body={};if(kindInput&&kindInput.value!==(ev[kindKey]||''))body[kindKey]=kindInput.value;if(provider==='notion' && ev.done!==null && ev.done!==undefined && completed.checked!==!!ev.done)body.completed=completed.checked;for(const [k,v] of Object.entries(inputs))if(v.value&&v.value!==values[k])body[k]=v.value;if(body.end&&!body.start)body.start=inputs.start.value;if(!Object.keys(body).length)return;await api('/calendar/events/'+encodeURIComponent(ev.page_id),{method:'PATCH',body});feedback.textContent='Event updated.';refresh();}),feedback);
     if(provider==='notion')form.append(button('Fill missing calendar fields',async()=>{const r=await api('/calendar/notion/events/'+encodeURIComponent(ev.page_id)+'/fill-missing',{method:'POST'});feedback.textContent=r.result.review_question||'Missing fields checked; existing values preserved.';refresh();}));
     return form;
   }
