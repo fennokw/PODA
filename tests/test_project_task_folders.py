@@ -163,3 +163,32 @@ def test_notion_deadline_retry_reuses_native_task(client, monkeypatch):
     finally:
         client.delete("/workload/" + task["id"])
         client.delete("/project-manager/projects/" + project["id"])
+
+
+def test_slash_options_respect_chat_scope_and_escape_names(client):
+    name = 'Prototype "A"'
+    project = _post(client, "/project-manager/projects", {"name": name})
+    collision = _post(client, "/project-manager/projects", {"name": "taskdone"})
+    task = _post(client, "/workload", {"title": "Review design", "project": name})
+    path = f'/project-manager/projects/{project["id"]}'
+    endpoint = "/project-manager/chat-commands"
+    try:
+        unfiled = client.get(endpoint).json()
+        assert unfiled["tasks"] == [] and unfiled["task_name"] is None
+        target = next(p for p in unfiled["projects"] if p["name"] == name)
+        assert target["shortcut"] == "/prototype-a"
+        assert next(p for p in unfiled["projects"] if p["name"] == "taskdone")["shortcut"] is None
+        sid, reply = _chat(client, target["value"])
+        assert name in reply
+        filed = client.get(endpoint, params={"session_id": sid}).json()
+        assert [item["shortcut"] for item in filed["tasks"]] == ["/review-design"]
+        assert filed["task_name"] is None
+        _, reply = _chat(client, filed["tasks"][0]["value"], sid)
+        assert "Review design" in reply
+        _patch(client, path + "/tasks/" + task["id"], {"goal_target": 3})
+        scoped = client.get(endpoint, params={"session_id": sid}).json()
+        assert scoped["task_name"] == "Review design" and scoped["goal_target"] == 3
+    finally:
+        client.delete("/workload/" + task["id"])
+        client.delete(path)
+        client.delete("/project-manager/projects/" + collision["id"])

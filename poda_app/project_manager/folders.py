@@ -1,7 +1,9 @@
 """Project chat assignments and progress for existing workload tasks."""
 from __future__ import annotations
 
+import json
 import re
+from collections import Counter
 import uuid
 from threading import RLock
 
@@ -79,6 +81,60 @@ def resolve(items, name, label):
     return matches[0]
 
 
+COMMANDS = {"project", "task", "taskdone", "taskprogress"}
+
+
+def _targets(items, command, blocked):
+    counts = Counter(key(item["name"]) for item in items)
+    exact_counts = Counter(item["name"].casefold() for item in items)
+    targets = []
+    for item in items:
+        name = item["name"]
+        if exact_counts[name.casefold()] != 1:
+            continue
+        slug = key(name)
+        shortcut = "/" + slug if slug and slug not in blocked and counts[slug] == 1 else None
+        targets.append({
+            "name": name,
+            "value": f'/{command} {json.dumps(name, ensure_ascii=False)}',
+            "shortcut": shortcut,
+        })
+    return targets
+
+
+def command_options(db, session_id):
+    projects = rows(db, "SELECT id, name FROM projects ORDER BY lower(name)")
+    current = context(db, session_id) if session_id else None
+    tasks = []
+    if current:
+        tasks = rows(db, """SELECT id, title AS name FROM workload_items
+            WHERE lower(project)=lower(?) ORDER BY lower(title)""", (current["project_name"],))
+    # The parser resolves a project shortcut before looking at its tasks.
+    return {
+        "projects": _targets(projects, "project", COMMANDS),
+        "tasks": _targets(tasks, "task", COMMANDS | {key(p["name"]) for p in projects}),
+        "task_name": current["task_title"] if current else None,
+        "goal_target": current["goal_target"] if current else None,
+    }
+
+
+def _command_target(rest):
+    if not rest.startswith('"'):
+        return rest, ""
+    try:
+        target, end = json.JSONDecoder().raw_decode(rest)
+    except ValueError:
+        # Keep older quoted names containing a literal backslash usable.
+        quoted = re.match(r'^"([^"]+)"(?:\s+([\s\S]*))?$', rest)
+        if quoted:
+            return quoted[1], quoted[2] or ""
+        raise ValueError("Choose a name in quotes, or select it from the slash menu.") from None
+    suffix = rest[end:]
+    if suffix and not suffix[0].isspace():
+        raise ValueError("Add a space after the quoted name.")
+    return target, suffix.lstrip()
+
+
 def command(session_id, message):
     """Consume only explicit user commands. Return remaining prompt, reply, and current context."""
     from .router import ensure_tables as ensure_projects
@@ -108,8 +164,7 @@ def command(session_id, message):
         verb, rest = match[1], match[2] or ""
         project = task = None
         if verb.casefold() in {"project", "task"}:
-            name = re.match(r'^"([^"]+)"(?:\s+([\s\S]*))?$', rest)
-            target, remainder = (name[1], name[2] or "") if name else (rest, "")
+            target, remainder = _command_target(rest)
             if verb.casefold() == "project":
                 project = resolve(rows(db, "SELECT id, name FROM projects"), target, "Project")
             else:

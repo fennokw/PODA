@@ -189,3 +189,62 @@ test('project task folders show progress, reopen chats, and save a new due time'
     assert.equal(patch.progress,undefined);
   }finally{dom.window.close();}
 });
+test('slash menu completes scoped commands without sending or losing drafts', async () => {
+  const {dom,w,calls}=create();
+  try {
+    let session;
+    w.fetch=async(url)=>{
+      calls.push(url);
+      const projects=[{name:'Demo Project',shortcut:'/demo-project',value:'/project "Demo Project"'}];
+      const data=url.includes('session_id=task-chat') ? {projects,task_name:'Review',goal_target:5,
+        tasks:[{name:'Review',shortcut:'/review',value:'/task "Review"'}]} : {projects,tasks:[]};
+      return {ok:true,status:200,text:async()=>JSON.stringify(data)};
+    };
+    w.eval(fs.readFileSync(path.join(root,'chat-commands.js'),'utf8'));
+    const area=w.document.createElement('textarea');
+    const menu=w.PODAChatCommands.mount(area,()=>session);
+    w.document.body.append(menu.field,menu.trigger);
+    let enters=0;
+    area.addEventListener('keydown',event=>{
+      if (!menu.handleKey(event) && event.key==='Enter') enters++;
+    });
+    const panel=menu.field.querySelector('.chat-slash-panel');
+    const type=value=>{
+      area.focus();area.value=value;area.setSelectionRange(value.length,value.length);
+      area.dispatchEvent(new w.Event('input',{bubbles:true}));
+    };
+    const press=key=>area.dispatchEvent(new w.KeyboardEvent('keydown',{key,bubbles:true,cancelable:true}));
+    type('/');
+    await settle();
+    assert.equal(panel.hidden,false);
+    assert.match(panel.textContent,/Demo Project/);
+    assert.doesNotMatch(panel.textContent,/taskdone/);
+    type('/demo');
+    press('ArrowDown');press('Enter');
+    assert.equal(area.value,'/demo-project ');
+    assert.equal(enters,0);
+    assert.equal(panel.hidden,true);
+    press('Enter');
+    assert.equal(enters,1);
+
+    type('Summarize the plan');
+    menu.trigger.click();
+    panel.querySelector('[role="option"]').click();
+    assert.match(panel.textContent,/Demo Project/);
+    panel.querySelector('[role="option"]').click();
+    assert.equal(area.value,'/project "Demo Project" Summarize the plan');
+
+    session='task-chat';menu.reset();
+    type('/task');await settle();
+    assert.match(panel.textContent,/taskdone/);
+    assert.match(panel.textContent,/out of 5/);
+    assert.ok(calls.includes('/project-manager/chat-commands?session_id=task-chat'));
+    type('/task rev');
+    press('Tab');
+    assert.equal(area.value,'/task "Review" ');
+    type('/');press('Escape');
+    assert.equal(panel.hidden,true);
+    type('https://example.com/path');
+    assert.equal(panel.hidden,true);
+  } finally {dom.window.close();}
+});

@@ -229,8 +229,9 @@
       return wrap;
     };
     const memoryToggle = el('label', { class: 'check' }, el('input', { type: 'checkbox', checked: askState.useMemory, onchange: (e) => { askState.useMemory = e.target.checked; } }), 'Use memory');
-    const composer = el('form', { class: 'composer' }, fileInput, draftAttachments, textarea,
-      el('div', { class: 'composer-bar' }, attachBtn,
+    const slashMenu = window.PODAChatCommands?.mount(textarea, () => askState.sessionId);
+    const composer = el('form', { class: 'composer' }, fileInput, draftAttachments, slashMenu?.field || textarea,
+      el('div', { class: 'composer-bar' }, attachBtn, slashMenu?.trigger,
         seg('Model', [['auto', 'Auto'], ['fast', 'Fast'], ['advanced', 'Advanced'], ['deep', 'Deep']], askState.mode, (v) => { askState.mode = v; }),
         (() => { const w = seg('Thinking', [['fast', 'Quick'], ['balanced', 'Balanced'], ['deep', 'Deep think']], askState.thinking, (v) => { askState.thinking = v; }); const deep = $$('button', w)[2]; if (deep) deep.title = 'Also reads in-depth memory (the full question and answer pairs behind each surface memory)'; return w; })(),
         memoryToggle, el('span', { class: 'spacer' }), el('button', { class: 'btn btn-ghost', type: 'button', title: 'Start a fresh conversation. Nothing is deleted: this chat stays in your memory web and can be recalled later.', onclick: () => newChat() }, 'New chat'), stopBtn, sendBtn));
@@ -289,7 +290,10 @@
     loadRecentChats();
 
     textarea.addEventListener('input', () => { textarea.style.height = 'auto'; textarea.style.height = Math.min(textarea.scrollHeight, 180) + 'px'; });
-    textarea.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); composer.requestSubmit(); } });
+    textarea.addEventListener('keydown', (e) => {
+      if (e.isComposing || slashMenu?.handleKey(e)) return;
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); composer.requestSubmit(); }
+    });
 
     let stickToLatest = true;
     let lastAutoScroll = 0;
@@ -422,6 +426,7 @@
     }
     scrollToLatest();
     function newChat() {
+      slashMenu?.reset();
       if (askState.runId) api('/chat/runs/' + encodeURIComponent(askState.runId) + '/cancel', { method: 'POST' }).catch(() => {});
       askState.controller?.abort();
       // Finalize rolling short-term turns into visible second-brain memories.
@@ -711,6 +716,7 @@
       if (askState.controller) return;
       const text = textarea.value.trim() || (draftFiles.length ? 'Review the attached files.' : '');
       if (!text) return;
+      slashMenu?.reset();
       textarea.value = '';
       textarea.style.height = 'auto';
       send(text, null, null, false, [...draftFiles]);

@@ -202,6 +202,16 @@ class NewChat(BaseModel):
     task_id: str | None = None
 
 
+@router.get("/chat-commands")
+def chat_commands(session_id: str | None = None):
+    db = connect()
+    try:
+        ensure_tables(db)
+        return folders.command_options(db, session_id)
+    finally:
+        db.close()
+
+
 @router.post("/projects/{project_id}/chats")
 def create_chat(project_id: str, body: NewChat):
     db = connect()
