@@ -18,6 +18,7 @@ from ..runtime.db import connect, now_iso, one, rows
 from ..workload import service as workload
 from ..workload.router import _extract_text, _suggest
 from ..agent import grants
+from . import folders
 
 router = APIRouter(prefix="/project-manager", tags=["project-manager"])
 MAX_FILE_BYTES = 8 * 1024 * 1024
@@ -50,6 +51,7 @@ class FileLink(BaseModel):
 
 def ensure_tables(db) -> None:
     workload.ensure_tables(db)
+    folders.ensure_tables(db)
     db.execute("""CREATE TABLE IF NOT EXISTS pm_attachments (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
@@ -87,7 +89,7 @@ def _attachment_row(row: dict[str, Any]) -> dict[str, Any]:
 def _stats(db, project: dict[str, Any]) -> dict[str, Any]:
     tasks = rows(db, "SELECT * FROM workload_items WHERE lower(project)=lower(?) ORDER BY deadline ASC, updated_at DESC",
                  (project["name"],))
-    task_views = [{**t, "estimate": workload.estimate(t)} for t in tasks]
+    task_views = [{**t, "progress": 100 if t["status"] == "done" else t["progress"], "estimate": workload.estimate(t)} for t in tasks]
     open_items = [t for t in task_views if t.get("status") != "done"]
     remaining = sum(t["estimate"]["remaining_minutes"] for t in open_items)
     docs = rows(db, """SELECT id, project_id, kind, filename, source_path, mime, size_bytes,
@@ -134,7 +136,7 @@ def read_project(project_id: str) -> dict[str, Any]:
     db = connect()
     try:
         ensure_tables(db)
-        return _stats(db, _project(db, project_id))
+        return {**_stats(db, _project(db, project_id)), "chats": folders.chats(db, project_id)}
     finally:
         db.close()
 
@@ -173,12 +175,104 @@ def delete_project(project_id: str) -> dict[str, Any]:
         ensure_tables(db)
         old = _project(db, project_id)
         db.execute("UPDATE workload_items SET project='', updated_at=? WHERE lower(project)=lower(?)", (now_iso(), old["name"]))
+        db.execute("DELETE FROM pm_chat_folders WHERE project_id=?", (project_id,))
         db.execute("DELETE FROM pm_attachments WHERE project_id=?", (project_id,))
         db.execute("DELETE FROM projects WHERE id=?", (project_id,))
         db.commit()
         return {"deleted": True, "note": "Related workload tasks were preserved without a project assignment."}
     finally:
         db.close()
+
+
+class TaskPatch(BaseModel):
+    title: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=30000)
+    user_minutes: int | None = Field(default=None, ge=1, le=200000)
+    actual_minutes: int | None = Field(default=None, ge=1, le=200000)
+    progress: int | None = Field(default=None, ge=0, le=100)
+    deadline: str | None = None
+    goal: str | None = Field(default=None, max_length=300)
+    goal_target: int | None = Field(default=None, ge=1, le=1000000)
+    goal_current: int | None = Field(default=None, ge=0, le=1000000)
+    event_id: str | None = Field(default=None, max_length=300)
+    calendar_scope: dict[str, str] | None = None
+
+
+class NewChat(BaseModel):
+    task_id: str | None = None
+
+
+@router.get("/chat-commands")
+def chat_commands(session_id: str | None = None):
+    db = connect()
+    try:
+        ensure_tables(db)
+        return folders.command_options(db, session_id)
+    finally:
+        db.close()
+
+
+@router.post("/projects/{project_id}/chats")
+def create_chat(project_id: str, body: NewChat):
+    db = connect()
+    try:
+        ensure_tables(db)
+        _project(db, project_id)
+        if body.task_id:
+            folders.get_task(db, project_id, body.task_id)
+        return {"session_id": folders.new_chat(project_id, body.task_id)}
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    finally:
+        db.close()
+
+
+@router.get("/projects/{project_id}/tasks/{task_id}")
+def read_task(project_id: str, task_id: str):
+    try:
+        return folders.refresh_task(project_id, task_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.patch("/projects/{project_id}/tasks/{task_id}")
+def patch_task(project_id: str, task_id: str, body: TaskPatch):
+    from ..connectors.notion.client import NotionError
+
+    try:
+        data = body.model_dump(exclude_unset=True)
+        for field in ("title", "progress", "goal_current"):
+            if field in data and data[field] is None:
+                raise ValueError(f"{field} cannot be empty.")
+        if data.get("goal") is None and "goal" in data:
+            data["goal"] = ""
+        return folders.update_task(project_id, task_id, data)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, NotionError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/retry-calendar")
+def retry_task_calendar(project_id: str, task_id: str):
+    try:
+        return folders.refresh_task(project_id, task_id, retry=True)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+@router.get("/calendar-events")
+def linkable_events(start: str, end: str):
+    from ..connectors.calendar import service as calendar
+    from ..connectors.notion.client import NotionError
+
+    try:
+        with calendar._lock:
+            result = calendar.events_between(start, end)
+            return {"scope": calendar.binding(),
+                    "events": [event for event in result["events"] if not event.get("is_deadline")]}
+    except (ValueError, NotionError) as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 @router.post("/projects/{project_id}/attachments")

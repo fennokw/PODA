@@ -39,3 +39,11 @@
 @media(max-width:1040px){.pm-columns{grid-template-columns:1fr}.pm-fields{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:640px){.pm-stats{grid-template-columns:repeat(2,minmax(0,1fr))}.pm-cards{grid-template-columns:1fr}.pm-header{align-items:stretch}.pm-fields{grid-template-columns:1fr}}
 @media(prefers-reduced-motion:reduce){.pm-project,.pm-project:hover,.pm-progress i{transition:none;transform:none}}
+
+.pm-task-rail { align-self: start; }
+.pm-task-choice { display: grid; gap: .35rem; padding-bottom: .65rem; border-bottom: 1px solid var(--line, #334155); }
+.pm-task-choice .btn { white-space: normal; text-align: left; justify-content: flex-start; }
+.pm-task-choice .btn[aria-current="page"] { outline: 1px solid currentColor; }
+.pm-screen progress { width: 100%; height: .65rem; accent-color: var(--accent, #479cdb); }
+.pm-chat-link { display: block; overflow-wrap: anywhere; padding: .5rem 0; }
+.pm-task-content { min-width: 0; }

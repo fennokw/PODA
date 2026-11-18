@@ -1,0 +1,29 @@
+.chat-slash-anchor { position: relative; min-width: 0; }
+.chat-slash-panel {
+  position: absolute;
+  z-index: 5;
+  inset-inline-start: 0;
+  bottom: calc(100% + 8px);
+  width: min(100%, 420px);
+  max-height: min(300px, 42dvh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 5px;
+  border: 1px solid var(--line-1);
+  border-radius: var(--r-panel);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-2);
+}
+.chat-slash-option {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: var(--r-control);
+  cursor: pointer;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+}
+.chat-slash-option:hover, .chat-slash-option[aria-selected="true"] { background: var(--accent-soft); }
+.chat-slash-option span, .chat-slash-status { color: var(--text-2); font-size: var(--fs-12); }
+.chat-slash-status { margin: 6px; }
+.chat-slash-trigger { font-family: var(--font-mono, monospace); }
