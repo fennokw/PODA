@@ -48,7 +48,7 @@ def test_every_message_has_visible_node(client):
     from poda_app.runtime.db import connect
     conn = connect()
     try:
-        orphans = conn.execute("""SELECT COUNT(*) FROM messages m WHERE NOT EXISTS (
+        orphans = conn.execute("""SELECT COUNT(*) FROM messages m WHERE m.provenance!='work-discussion' AND NOT EXISTS (
             SELECT 1 FROM memory_nodes n WHERE n.source_message_id = m.id OR n.response_message_id = m.id)""").fetchone()[0]
     finally:
         conn.close()

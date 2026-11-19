@@ -402,7 +402,15 @@
       if(tracking.event_id)linkPanel.append(btn('Unlink event and keep deadline',async()=>{
         try{await rebuild({event_id:null});}catch(err){showError(err);}
       }));
-      calendar.append(linkPanel);
+      const canvasId=el('input',{class:'input',inputmode:'numeric','aria-label':'Canvas assignment ID',placeholder:'Assignment ID from Canvas'});
+      const canvasLink=el('details',{class:'pm-disclosure'},el('summary',{},'Link Canvas assignment in BestNDS'),
+        canvasId,btn('Link assignment',async()=>{
+          try{
+            await api(path+'/canvas',{method:'PUT',body:{assignment_id:canvasId.value.trim()}});
+            toast('Canvas assignment linked.','ok'); await detail(project.id,task.id);
+          }catch(err){showError(err);}
+        }));
+      calendar.append(linkPanel,canvasLink);
       root.append(calendar,chatList(project,'Task chats',task.chats,task.id),
         el('details',{class:'card pm-disclosure',open:true},el('summary',{},'Task details'),form));
     }

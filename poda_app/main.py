@@ -16,8 +16,11 @@ from .security.auth import security_middleware
 from .runtime.router import router as runtime_router
 from .memory.router import router as memory_router
 from .memory.knowledge_router import router as knowledge_router
+from .connectors.research_router import router as research_router
+from .connectors.github.router import router as github_router
+from .chat import discussions
 from .chat.router import router as chat_router
-from .chat.runs import router as chat_runs_router
+from .chat.runs import router as chat_runs_router, interrupt_checkpoints
 from .workload.router import router as workload_router
 from .agent.router import router as agent_router
 from .agent.sandbox_router import router as sandbox_router
@@ -58,9 +61,11 @@ async def lifespan(app: FastAPI):
     try:
         store.ensure_seed(conn)
         interrupt_running(conn)
+        interrupt_checkpoints(conn)
         conn.commit()
     finally:
         conn.close()
+    discussions.clear_old_caches()
     print(f"[PODA] v{config.VERSION} build {config.BUILD_ID} data={config.DATA_DIR} encryption={STARTUP_REPORT.get('encryption_status', {}).get('database_encrypted_on_disk')}")
     runner = asyncio.create_task(daily_service.scheduler(), name='poda-daily-scheduler')
     memory_runner = asyncio.create_task(background_sync(),name='poda-hindsight-sync')
@@ -84,7 +89,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title=config.APP_NAME, version=config.VERSION, lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.middleware("http")(security_middleware)
 
-for r in (runtime_router, memory_router, chat_router, chat_runs_router, agent_router, sandbox_router, planner_router, pace_router, workload_router, privacy_router, notion_router, calendar_router, email_router, software_router, imports_router, project_manager_router, model_manager_router, daily_updates_router, skills_router, hindsight_router, knowledge_router, messaging_router):
+for r in (runtime_router, github_router, research_router, memory_router, chat_router, chat_runs_router, agent_router, sandbox_router, planner_router, pace_router, workload_router, privacy_router, notion_router, calendar_router, email_router, software_router, imports_router, project_manager_router, model_manager_router, daily_updates_router, skills_router, hindsight_router, knowledge_router, messaging_router):
     app.include_router(r)
 
 

@@ -58,10 +58,16 @@ def test_desktop_requires_token_and_local_session(tmp_path):
                 assert http.get("/memory").status_code == 401
                 page = http.get("/")
                 assert page.status_code == 200
-                for asset in ("project-manager.js", "project-manager.css", "chat-commands.js", "chat-commands.css"):
+                for asset in ("project-manager.js", "project-manager.css", "chat-commands.js", "chat-commands.css", "learning.js"):
                     assert f"/static/{asset}" in page.text
                     assert http.get(f"/static/{asset}").status_code == 200
                 assert http.get("/project-manager/chat-commands").json()["projects"] == []
+                opened = http.post("/chat/stream", json={"message": "/work"})
+                finished = next(line for line in opened.text.splitlines() if '"work_discussion": true' in line)
+                session = json.loads(finished.removeprefix("data: "))["session_id"]
+                assert http.get(f"/chat/session/{session}/messages").json()["work_discussion"]
+                assert http.get("/connections/github").json()["repo"] == ""
+                assert http.get("/connections/web").json() == {"enabled": False, "search": False}
                 preset_response = http.post("/notion/mapping/bestnds", json={})
                 assert preset_response.status_code == 400
                 assert "No Notion data source" in preset_response.json()["detail"]["message"]

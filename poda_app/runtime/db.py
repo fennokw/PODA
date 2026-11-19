@@ -250,6 +250,21 @@ SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY, role TEXT NOT NULL, content TEXT NOT NULL, model TEXT, created_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS chat_discussions (
+        session_id TEXT PRIMARY KEY, title TEXT, created_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS pm_canvas_links (
+        task_id TEXT PRIMARY KEY, page_id TEXT NOT NULL UNIQUE, source_id TEXT NOT NULL, assignment_id TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS pm_homework_checklists (
+        task_id TEXT PRIMARY KEY, items_json TEXT NOT NULL, revision INTEGER NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS chat_run_checkpoints (
+        run_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, state TEXT NOT NULL,
+        prompt TEXT NOT NULL, phase TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+    """CREATE INDEX IF NOT EXISTS idx_chat_run_checkpoints
+        ON chat_run_checkpoints(session_id, updated_at)""",
+    """CREATE TABLE IF NOT EXISTS chat_materials (
+        id TEXT PRIMARY KEY, session_id TEXT NOT NULL, name TEXT NOT NULL, data BLOB NOT NULL,
+        created_at TEXT NOT NULL, digest TEXT NOT NULL, UNIQUE(session_id,name,digest))""",
+    """CREATE INDEX IF NOT EXISTS idx_chat_materials_session ON chat_materials(session_id, created_at)""",
     """CREATE TABLE IF NOT EXISTS memory_nodes (
         id TEXT PRIMARY KEY, parent_id TEXT, title TEXT NOT NULL, node_type TEXT DEFAULT 'memory',
         summary TEXT, content TEXT, reference_triggers TEXT, tags_json TEXT,
@@ -417,6 +432,7 @@ def init_schema(conn) -> list[str]:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_links_source ON memory_links(source_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_links_target ON memory_links(target_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)")
     for stmt in FTS_STATEMENTS:
         conn.execute(stmt)
     fts_count = conn.execute("SELECT COUNT(*) FROM memory_fts").fetchone()[0]

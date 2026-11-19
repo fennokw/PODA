@@ -25,6 +25,10 @@
         <div class="nav-group" role="group" aria-label="Workspace">
           <span class="nav-label">Workspace</span>
           <button class="nav-item" data-route="ask"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-5 4V17"/></svg><span>Chat</span><kbd class="nav-key">1</kbd></button>
+          <details class="work-discussions" id="workDiscussions" open>
+            <summary>Work Discussions</summary>
+            <div id="workDiscussionLinks"></div>
+          </details>
           <button class="nav-item" id="memoryBtn" data-route="memory"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="2.2"/><circle cx="5" cy="7" r="1.4"/><circle cx="19" cy="6" r="1.4"/><circle cx="18" cy="18" r="1.4"/><circle cx="6" cy="18" r="1.4"/><path d="M12 12L5 7m7 5l7-6m-7 6l6 6m-6-6l-6 6"/></svg><span>Memory</span><kbd class="nav-key">2</kbd></button>
           <button class="nav-item" data-route="projects"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 7h7l2 2h9v10H3z"/><path d="M3 7V5h8l2 2h8"/><path d="M8 13h8m-8 3h5"/></svg><span>Projects</span><kbd class="nav-key">3</kbd></button>
           <button class="nav-item" data-route="daily"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="4" y="5" width="16" height="16" rx="2"/><path d="M4 10h16M8 3v4m8-4v4m-8 8h8m-8 3h4"/></svg><span>Daily Automation</span><kbd class="nav-key">0</kbd></button>
@@ -83,6 +87,7 @@
   <script src="/static/model-manager.js?v=0.9.7"></script>
   <script src="/static/calendar-setup.js"></script>
   <script src="/static/chat-commands.js"></script>
+  <script src="/static/learning.js"></script>
   <script src="/static/app.js?v=0.9.12"></script>
 </body>
 </html>

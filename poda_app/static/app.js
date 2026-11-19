@@ -155,17 +155,38 @@
   // hard navigation; the transcript is restored from PODA's encrypted local store.
   const askState = {
     sessionId: sessionStorage.getItem('poda_session_id') || null,
+    workDiscussion: !!sessionStorage.getItem('poda_session_id'),
     runId: sessionStorage.getItem('poda_active_run') || null,
     mode: 'auto', thinking: 'balanced', useMemory: true,
     controller: null, transcript: []
   };
   // Only opaque identifiers go in browser storage. Full conversations remain in encrypted SQLite.
   const persistSession = () => {
-    if (askState.sessionId) sessionStorage.setItem('poda_session_id', askState.sessionId);
+    if (askState.sessionId && askState.workDiscussion) sessionStorage.setItem('poda_session_id', askState.sessionId);
     else sessionStorage.removeItem('poda_session_id');
-    if (askState.runId) sessionStorage.setItem('poda_active_run', askState.runId);
+    if (askState.runId && askState.workDiscussion) sessionStorage.setItem('poda_active_run', askState.runId);
     else sessionStorage.removeItem('poda_active_run');
   };
+
+  async function refreshWorkDiscussions() {
+    const links = $('#workDiscussionLinks');
+    if (!links) return;
+    const data = await api('/chat/sessions').catch(() => null);
+    if (!data) return;
+    links.replaceChildren(...(data.sessions || []).map(item => el('a', {
+      href: '#/ask?session=' + encodeURIComponent(item.session_id),
+      title: item.label,
+      'aria-current': item.session_id === askState.sessionId && askState.workDiscussion ? 'page' : 'false'
+    }, item.label)));
+  }
+  refreshWorkDiscussions();
+
+  $('#nav [data-route="ask"]')?.addEventListener('click', () => {
+    if (!askState.workDiscussion) return;
+    askState.controller?.abort();
+    Object.assign(askState, {sessionId:null, workDiscussion:false, runId:null, transcript:[], controller:null});
+    persistSession();
+  });
 
   route('ask', async ({ view, inspector, setTitle, setInspectorTitle }) => {
     const requestedSession = new URLSearchParams(location.hash.split('?')[1] || '').get('session');
@@ -173,11 +194,13 @@
       askState.controller?.abort();
       askState.controller = null;
       askState.sessionId = requestedSession;
+      askState.workDiscussion = true;
       askState.runId = null;
       askState.transcript = [];
       persistSession();
     }
-    setTitle('Chat'); setInspectorTitle('Chat details');
+    setTitle(askState.workDiscussion ? 'Work Discussion' : 'Chat'); setInspectorTitle('Chat details');
+    refreshWorkDiscussions();
     $('#viewCrumb').textContent = 'Grounded local chat';
     const messages = el('div', { class: 'messages', id: 'messages', 'aria-live': 'polite' });
     const textarea = el('textarea', { placeholder: 'Ask PODA. Shift+Enter for a new line.', rows: 1, 'aria-label': 'Message' });
@@ -259,35 +282,24 @@
     inspector.append(el('div', { class: 'stack-sm' }, el('h3', {}, 'Why was this recalled?'), recallBox), el('div', { class: 'divider' }), el('div', { class: 'stack-sm' }, el('h3', {}, 'Last response'), sessionBox));
     const checkpointBox = el('div', { class: 'stack-sm', hidden: true }, el('h3', {}, 'Workflow checkpoints'));
     inspector.append(checkpointBox);
-    const recentChats = el('select', { 'aria-label': 'Open a recent chat' });
-    const recentChatsBox = el('label', { class: 'stack-sm', hidden: true }, el('strong', {}, 'Recent chats'), recentChats);
-    inspector.prepend(recentChatsBox);
     const proposalCards = new Map();
     const proposalMessages = new Map();
-
-    async function loadRecentChats() {
-      const data = await api('/chat/sessions').catch(() => null);
-      if (!data?.sessions?.length) return;
-      recentChats.replaceChildren(el('option', { value: '' }, 'Open a previous chat…'),
-        ...data.sessions.map((item) => el('option', { value: item.session_id }, item.label || fmtTime(item.updated_at))));
-      recentChats.value = askState.sessionId || '';
-      recentChatsBox.hidden = false;
-    }
-    recentChats.onchange = () => {
-      if (!recentChats.value) return;
-      if (askState.controller) {
-        recentChats.value = askState.sessionId || '';
-        toast('Wait for the current response to finish or stop it first.', 'warn');
-        return;
-      }
-      history.replaceState(null, "", "#/ask?session=" + encodeURIComponent(recentChats.value));
-      askState.sessionId = recentChats.value;
-      askState.runId = null;
-      askState.transcript = [];
-      persistSession();
-      renderRoute();
+    const rename = el('button', {class:'btn btn-sm btn-ghost', type:'button', hidden:!askState.workDiscussion}, 'Rename discussion');
+    rename.onclick = async () => {
+      const title = window.prompt('Name this Work Discussion');
+      if (!title?.trim()) return;
+      try {
+        await api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/title', {method:'PATCH', body:{title}});
+        refreshWorkDiscussions();
+      } catch (error) { toast(error.message, 'warn'); }
     };
-    loadRecentChats();
+    const checklistPanel = el('div');
+    inspector.prepend(rename, checklistPanel);
+    if (askState.workDiscussion) window.PODALearning?.checklist(askState.sessionId, checklistPanel);
+    const practice = (text) => {
+      if (askState.controller) return;
+      textarea.value = text; composer.requestSubmit();
+    };
 
     textarea.addEventListener('input', () => { textarea.style.height = 'auto'; textarea.style.height = Math.min(textarea.scrollHeight, 180) + 'px'; });
     textarea.addEventListener('keydown', (e) => {
@@ -399,12 +411,66 @@
     // Restore only THIS local session from PODA's encrypted store after a full page navigation.
     // We intentionally do not save conversation text to browser localStorage/sessionStorage.
     let savedWorkflows = [];
-    if (askState.sessionId) {
+    const readHistory = m => ({role:m.role, content:m.content, at:m.created_at, activity:m.workflow_activity,
+      download:m.download, attachments:m.attachments, widgets:m.learning_widgets});
+    function restoreMessage(m) {
+      const {wrap, metaRow} = addMessage(m.role, m.content, m.at, m.attachments);
+      restoreActivity(wrap, m.activity);
+      window.PODALearning?.mount(m.widgets, wrap, practice,
+        m.widgets?.some(widget => widget.kind === 'checklist') ? checklistPanel : null, askState.sessionId);
+      addDownload(metaRow, m.download, askState.sessionId);
+      return wrap;
+    }
+    let earlier;
+    if (askState.sessionId && askState.workDiscussion) {
       try {
         const history = await api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/messages?limit=120');
+        if (history.work_discussion === false) {
+          askState.sessionId = null;
+          askState.workDiscussion = false;
+          askState.runId = null;
+          historyReplaceChat();
+          persistSession();
+          rename.hidden = true;
+          setTitle('Chat');
+        }
         savedWorkflows = history.workflows || [];
         askState.transcript = (history.messages || []).filter((m) => m.role === 'user' || m.role === 'assistant')
-          .map((m) => ({ role: m.role, content: m.content, at: m.created_at, activity: m.workflow_activity, download: m.download, attachments: m.attachments }));
+          .map(readHistory);
+        if (history.materials?.length) {
+          inspector.append(el('details', {class:'stack-sm'}, el('summary', {}, 'Discussion materials'),
+            ...history.materials.map(material => el('a', {
+              href:'/chat/session/' + encodeURIComponent(askState.sessionId) + '/materials/' + encodeURIComponent(material.id),
+              download:material.name
+            }, material.name))));
+        }
+        if (history.interrupted) {
+          askState.runId = null;
+          persistSession();
+          inspector.prepend(el('section', {class:'notice stack-sm'}, el('strong', {}, 'Interrupted by restart'),
+            el('span', {}, history.interrupted.phase.replaceAll('_', ' ')),
+            el('button', {type:'button', class:'btn btn-sm', onclick:() => {
+              textarea.value = 'Continue the prior request. Review the saved actions and verify current state before repeating any changes. Earlier request: ' +
+                history.interrupted.prompt;
+              textarea.focus();
+            }}, 'Continue from checkpoint')));
+        }
+        if (history.next_before) {
+          let before = history.next_before;
+          earlier = el('button', {type:'button', class:'btn btn-sm btn-ghost', onclick:async () => {
+            earlier.disabled = true;
+            try {
+              const page = await api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/messages?limit=120&before=' + before);
+              const turns = (page.messages || []).map(readHistory);
+              const beforeNode = earlier.nextSibling;
+              for (const m of turns) messages.insertBefore(restoreMessage(m), beforeNode);
+              askState.transcript.unshift(...turns);
+              before = page.next_before;
+              if (!before) earlier.remove();
+            } catch (error) { toast(error.message, 'warn'); }
+            finally { earlier.disabled = false; }
+          }}, 'Load earlier messages');
+        }
         if (askState.runId) {
           const run = await api('/chat/runs/' + encodeURIComponent(askState.runId)).catch(() => null);
           if (!run || (run.state !== 'running' && askState.transcript.at(-1)?.role === 'assistant')) {
@@ -413,31 +479,30 @@
         }
       } catch { /* Server might have restarted; active run status will report that accurately. */ }
     }
-    if (askState.transcript.length) for (const m of askState.transcript) {
-      const { wrap, metaRow } = addMessage(m.role, m.content, m.at, m.attachments);
-      restoreActivity(wrap, m.activity);
-      addDownload(metaRow, m.download, askState.sessionId);
-    }
+    if (askState.transcript.length) askState.transcript.forEach(restoreMessage);
     else showEmpty();
+    if (earlier) messages.prepend(earlier);
     for (const workflow of savedWorkflows) {
       const parent = proposalMessages.get(workflow.id) || checkpointBox;
       if (parent === checkpointBox) checkpointBox.hidden = false;
       renderProposal(parent, { ...workflow, proposal_id: workflow.id });
     }
     scrollToLatest();
-    function newChat() {
+    function historyReplaceChat() { window.history.replaceState(null, '', '#/ask'); }
+    async function newChat() {
       slashMenu?.reset();
-      if (askState.runId) api('/chat/runs/' + encodeURIComponent(askState.runId) + '/cancel', { method: 'POST' }).catch(() => {});
+      if (askState.runId) await api('/chat/runs/' + encodeURIComponent(askState.runId) + '/cancel', { method: 'POST' }).catch(() => {});
       askState.controller?.abort();
       // Finalize rolling short-term turns into visible second-brain memories.
-      if (askState.sessionId) api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/flush', { method: 'POST' }).catch(() => {});
-      history.replaceState(null, "", "#/ask");
+      if (askState.sessionId && !askState.workDiscussion) await api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/flush', { method: 'POST' }).catch(() => {});
+      historyReplaceChat();
+      askState.workDiscussion = false; rename.hidden = true; checklistPanel.replaceChildren(); setTitle('Chat');
       askState.sessionId = null; askState.runId = null; askState.transcript = [];
       draftFiles.length = 0; drawDraftFiles();
       proposalCards.clear(); proposalMessages.clear();
       checkpointBox.replaceChildren(el('h3', {}, 'Workflow checkpoints')); checkpointBox.hidden = true;
       persistSession();
-      loadRecentChats();
+      refreshWorkDiscussions();
       messages.innerHTML = ''; showEmpty(); statusLine.innerHTML = ''; recallBox.innerHTML = ''; sessionBox.innerHTML = '';
       recallBox.appendChild(el('p', { class: 'faint small' }, 'Send a message to see which memories were recalled and why.'));
       toast('Fresh conversation started', 'ok'); textarea.focus();
@@ -520,7 +585,7 @@
       const addActivity = workflowActivity(wrap);
       let full = '', thoughtText = '', raf = 0, finished = false, responseError;
       let phase = '';
-      const paint = () => { raf = 0; rich.renderInto(bubble, full, { streaming: true }); scrollToLatest(); };
+      const paint = () => { raf = 0; rich.renderInto(bubble, full.split(/^```poda-(?:quiz|graph|checklist)/m)[0], { streaming: true }); scrollToLatest(); };
       const schedule = () => { if (!raf) raf = requestAnimationFrame(paint); };
       const setStatus = (text, live, elapsed = 0) => {
         if (!elapsed) phase = text;
@@ -553,7 +618,17 @@
         // This subscriber can reconnect while generation remains owned by the server.
         for await (const [event, data] of chatEvents(askState.runId, subscription.signal)) {
             switch (event) {
-              case 'session': if (data.session_id) { askState.sessionId = data.session_id; persistSession(); } break;
+              case 'session':
+                if (data.session_id) {
+                  askState.sessionId = data.session_id;
+                  askState.workDiscussion = Boolean(data.work_discussion);
+                  if (askState.workDiscussion) {
+                    history.replaceState(null, '', '#/ask?session=' + encodeURIComponent(data.session_id));
+                    setTitle('Work Discussion'); rename.hidden = false;
+                  }
+                  persistSession();
+                }
+                break;
               case 'status': {
                 const label = chatPhase[data.message] || String(data.message || '').replaceAll('_', ' ');
                 addActivity([String(data.message || '').replaceAll('_', ' '), data.model, data.detail].filter(Boolean).join(' · '));
@@ -594,7 +669,13 @@
                 badges.prepend(pill(data.profile === 'gate' ? 'Action gate' : data.profile === 'ledger' ? 'Capability ledger' : `Model · ${data.profile || 'auto'}`, 'accent'));
                 sessionBox.innerHTML = ''; sessionBox.appendChild(kv([['Model', data.model || ''], ['Profile', data.profile || ''], ['Output tokens', data.eval_count ?? 'n/a'], ['Speed', tps ? `${tps} tok/s` : 'n/a'], ['Prompt tokens', data.prompt_eval_count ?? 'n/a'], ['Speculation', data.speculation || 'off'], ['Session', askState.sessionId ? askState.sessionId.slice(0, 8) : 'new']]));
                 setStatus(`Done · ${data.model || ''}`, false);
+                if (typeof data.answer === 'string') full = data.answer;
                 rich.renderInto(bubble, full);
+                window.PODALearning?.mount(data.learning_widgets, wrap, practice, checklistPanel, askState.sessionId);
+                if (data.checklist_changed) {
+                  checklistPanel.replaceChildren();
+                  window.PODALearning?.checklist(askState.sessionId, checklistPanel);
+                }
                 if (data.diagram_image && data.download?.message_id) {
                   const imageStatus = el('span', { class: 'small muted', role: 'status' }, 'Preparing PNG…');
                   metaRow.append(imageStatus);
@@ -607,7 +688,7 @@
                     addDownload(metaRow, data.download, askState.sessionId);
                   } catch (error) { imageStatus.textContent = `Could not create PNG: ${error.message}`; addDownload(metaRow, data.download, askState.sessionId); }
                 } else addDownload(metaRow, data.download, askState.sessionId);
-                askState.transcript.push({ role: 'assistant', content: full, at: new Date().toISOString(), download: data.download });
+                askState.transcript.push({ role: 'assistant', content: full, at: new Date().toISOString(), download: data.download, widgets: data.learning_widgets });
                 break;
               }
               case 'error': responseError = data; setStatus('Error', false); finished = true; break;
@@ -643,7 +724,7 @@
       } finally {
         if (raf) cancelAnimationFrame(raf);
         bubble.classList.remove('streaming'); if (askState.controller === subscription) askState.controller = null; sendBtn.disabled = attachBtn.disabled = false; stopBtn.hidden = true; scrollToLatest();
-        if (finished) { askState.runId = null; persistSession(); }
+        if (finished) { askState.runId = null; persistSession(); refreshWorkDiscussions(); }
         if (!thoughtText) thoughts.remove(); else $('.live', thoughts)?.remove();
       }
     }
@@ -1298,6 +1379,59 @@
       try { await api('/agent/grants', { method: 'POST', body: { root_path: fd.get('root_path'), mode: fd.get('mode'), label: fd.get('label') || null, allow_execute: fd.get('allow_execute') === 'on', ttl_minutes: +fd.get('ttl_minutes') || null } }); form.reset(); syncGrantMode(); toast('Access granted.', 'ok'); refresh(); }
       catch (err) { toast(errorDetail(err).message, 'danger'); }
     });
+    const githubBox = el('div');
+    const webBox = el('div');
+    function connectorForms() {
+      return Promise.all([
+        load(githubBox, async () => {
+          const state = await api('/connections/github');
+          const form = el('form', {class:'stack-sm'},
+            el('p', {class:'small muted'}, 'Use a fine-grained GitHub token for one selected repository. Enable Contents and Pull requests write permissions if you want PODA to publish a draft PR.'),
+            el('label', {}, 'Repository', el('input', {class:'input', name:'repo', value:state.repo, placeholder:'owner/name', required:true})),
+            el('label', {}, 'GitHub token', el('input', {class:'input', type:'password', name:'token', required:true, autocomplete:'off'})),
+            el('label', {class:'check'}, el('input', {type:'checkbox', name:'write', checked:state.write}), 'Allow approval-based publishing'),
+            el('div', {class:'row'}, el('button', {class:'btn btn-primary', type:'submit'}, 'Connect repository'),
+              state.repo ? el('button', {class:'btn btn-sm', type:'button', onclick:async () => {
+                try { await api('/connections/github', {method:'DELETE'}); connectorForms(); }
+                catch (err) { toast(errorDetail(err).message, 'danger'); }
+              }}, 'Disconnect') : null));
+          form.onsubmit = async event => {
+            event.preventDefault();
+            const data = new FormData(form);
+            try {
+              await api('/connections/github', {method:'PUT', body:{repo:data.get('repo'), token:data.get('token'), write:data.has('write')}});
+              toast('GitHub repository verified.', 'ok'); connectorForms();
+            } catch (err) { toast(errorDetail(err).message, 'danger'); }
+            finally { form.elements.token.value = ''; }
+          };
+          return form;
+        }),
+        load(webBox, async () => {
+          const state = await api('/connections/web');
+          const form = el('form', {class:'stack-sm'},
+            el('label', {class:'check'}, el('input', {type:'checkbox', name:'enabled', checked:state.enabled}), 'Read public web pages and PDFs'),
+            el('label', {}, state.search ? 'Replace saved Brave Search API key' : 'Brave Search API key (optional)',
+              el('input', {class:'input', type:'password', name:'search_key', autocomplete:'off'})),
+            el('p', {class:'small muted'}, 'Search sends the query to Brave. Page reading sends requests to the selected public sites. PODA inference stays local.'),
+            el('div', {class:'row'}, el('button', {class:'btn btn-primary', type:'submit'}, 'Save web settings'),
+              state.search ? el('button', {class:'btn btn-sm', type:'button', onclick:async () => {
+                try { await api('/connections/web', {method:'PUT', body:{enabled:form.elements.enabled.checked, search_key:''}}); connectorForms(); }
+                catch (err) { toast(errorDetail(err).message, 'danger'); }
+              }}, 'Remove search key') : null));
+          form.onsubmit = async event => {
+            event.preventDefault();
+            const data = new FormData(form);
+            const body = {enabled:data.has('enabled')};
+            if (data.get('search_key')) body.search_key = data.get('search_key');
+            try { await api('/connections/web', {method:'PUT', body}); toast('Web settings saved.', 'ok'); connectorForms(); }
+            catch (err) { toast(errorDetail(err).message, 'danger'); }
+            finally { form.elements.search_key.value = ''; }
+          };
+          return form;
+        })
+      ]);
+    }
+    connectorForms();
     const sandboxBox = el('div');
     const dataBox = el('div');
     const upload = el('input', { type: 'file', class: 'input', 'aria-label': 'Import file into PODA Sandbox' });
@@ -1332,6 +1466,7 @@
         el('p', { class: 'small muted' }, 'Files created in chat are saved here. Import a copy of a file and ask PODA to revise it by name. Download a copy to your computer when you’re ready.'),
         el('div', { class: 'row' }, upload, uploadButton), sandboxBox),
       el('div', { class: 'grid-main-side' }, section('File and path grants', 'scoped access to your files', grantsBox), section('Grant access', null, form)),
+      el('div', { class: 'grid-2' }, section('GitHub workspace', null, githubBox), section('Web research', null, webBox)),
       el('div', { class: 'grid-2' }, section('Tool registry', 'what the agent can call', toolsBox), section('Pending proposals', 'awaiting your approval', proposalsBox)),
       section('Action history', null, receiptsBox),
       el('a', { class: 'btn text-link', href: '#/addons' }, 'Find program tools and skills in Add-ons')));

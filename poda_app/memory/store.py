@@ -335,21 +335,25 @@ def apply_pair(conn, node: dict[str, Any], response_message_id: str, assistant_t
         conn.execute("UPDATE memory_nodes SET stale=1 WHERE id=?", (node["surface_id"],))
 
 
-def flush_session_to_graph(session_id: str, retain_messages: int = 0) -> dict[str, int]:
+def flush_session_to_graph(session_id: str, retain_messages: int = 0, *,
+                           prune_ordinary: bool = False, cache_messages: int = 12) -> dict[str, int]:
     """Promote old working-context turns into visible memory nodes in paired batches.
 
     The most recent retain_messages are kept in the short-term encrypted message
     window; after a new chat starts the remainder is flushed. Idempotent across
-    restarts and retries. Never deletes the underlying conversation transcript.
+    restarts and retries. Work transcripts stay intact; ordinary cache rows can
+    be discarded after their content has been committed to the graph.
     """
     if not session_id:
         return {"promoted": 0}
     conn = connect()
     promoted = []
     try:
-        messages = rows(conn, """SELECT id, role, content, created_at
-                                 FROM messages WHERE session_id=?
-                                 ORDER BY rowid ASC""", (session_id,))
+        conn.execute("BEGIN IMMEDIATE")
+        query = "SELECT id, role, content, created_at FROM messages WHERE session_id=?"
+        if prune_ordinary:
+            query += " AND provenance='ordinary-chat'"
+        messages = rows(conn, query + " ORDER BY rowid ASC", (session_id,))
         eligible = messages[:max(0, len(messages) - max(0, retain_messages))]
         index = 0
         while index < len(eligible):
@@ -365,16 +369,29 @@ def flush_session_to_graph(session_id: str, retain_messages: int = 0) -> dict[st
                                        source_message_id=msg["id"], created_at=msg["created_at"])
                 if nid:
                     node = one(conn, "SELECT * FROM memory_nodes WHERE id=?", (nid,))
+                    if prune_ordinary:
+                        node["user_text"] = msg["content"]
                     apply_pair(conn, node, following["id"], following["content"])
+                    if prune_ordinary:
+                        conn.execute("UPDATE memory_nodes SET assistant_text=?, content=? WHERE id=?",
+                                     (following["content"], f'You: {msg["content"]}\n\nPODA: {following["content"]}', nid))
                     promoted.append(nid)
                 index += 2
                 continue
             nid = ingest_chat_turn(conn, role, msg["content"], source_message_id=msg["id"],
                                    created_at=msg["created_at"])
             if nid:
+                if prune_ordinary:
+                    conn.execute("UPDATE memory_nodes SET content=? WHERE id=?", (msg["content"], nid))
                 promoted.append(nid)
             index += 1
+        if prune_ordinary:
+            expired = messages[:max(0, len(messages) - cache_messages)]
+            conn.executemany("DELETE FROM messages WHERE id=? AND provenance='ordinary-chat'",
+                             [(msg["id"],) for msg in expired])
         conn.commit()
+        if prune_ordinary:
+            return {"promoted": len(promoted)}
         for nid in promoted:
             try:
                 from . import surface
@@ -399,7 +416,9 @@ def save_message(role: str, content: str, model: str | None = None, session_id: 
             conn.commit()
             # Keep 6 recent user/assistant exchanges for cheap active-chat context.
             # Older exchanges become the sole source for long-term recall.
-            if role == "assistant":
+            if role == "assistant" and provenance == "ordinary-chat":
+                flush_session_to_graph(session_id, prune_ordinary=True)
+            elif role == "assistant" and provenance == "chat":
                 flush_session_to_graph(session_id, retain_messages=12)
             return message_id
         node_id = None
@@ -488,7 +507,8 @@ def ensure_seed(conn) -> None:
                      (f"migrated-contains-{row['id']}", PERSONAL_CLOUD, row["id"], now, now))
     # Mirror every historical chat turn that lacks a visible node.
     for msg in rows(conn, """SELECT m.id, m.role, m.content, m.created_at FROM messages m
-        WHERE NOT EXISTS (SELECT 1 FROM memory_nodes n WHERE n.source_message_id=m.id OR n.response_message_id=m.id)
+        WHERE m.provenance NOT IN ('ordinary-chat','work-discussion')
+        AND NOT EXISTS (SELECT 1 FROM memory_nodes n WHERE n.source_message_id=m.id OR n.response_message_id=m.id)
         ORDER BY m.created_at ASC"""):
         exact = None
         if msg["role"] == "user":

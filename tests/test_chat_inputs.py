@@ -87,7 +87,7 @@ def test_zip_upload_changes_selected_source_and_preserves_other_members(client, 
         ])}, "done": True}
 
     _model(monkeypatch, writer)
-    run, events = _prompt(client, "Edit the uploaded ZIP so src/main.py prints new.", [("app.zip", original)])
+    run, events = _prompt(client, "/work Edit the uploaded ZIP so src/main.py prints new.", [("app.zip", original)])
     name = dict(events)["done"]["download"]["sandbox_file"]
     with ZipFile(io.BytesIO(sandbox_files.read_bytes(name))) as archive:
         assert archive.read("src/main.py") == b"print('new')\n"

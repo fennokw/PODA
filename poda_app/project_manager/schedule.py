@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from threading import RLock
 
 from ..connectors.calendar import service as calendar
@@ -66,7 +67,11 @@ def sync(db, task_id):
         if not task["deadline"] and not info.get("calendar_page"):
             return
         try:
-            _mirror_notion(db, task, info, scope)
+            canvas = one(db, "SELECT * FROM pm_canvas_links WHERE task_id=?", (task_id,))
+            if canvas:
+                _sync_canvas(db, task, canvas, scope)
+            else:
+                _mirror_notion(db, task, info, scope)
         except Exception as exc:
             folders.save_details(db, task_id, {"calendar_error": str(exc)})
 
@@ -162,3 +167,76 @@ def overlay(start, end, scope, existing=()):
                        "title": task["title"], "start": due, "end": None, "type": "Task", "is_deadline": True,
                        "done": task["status"] == "done" or task["progress"] == 100, "all_day": "T" not in due})
     return result
+
+def _canvas_source(*, write=False):
+    from ..connectors.notion import mapping, state
+    from ..connectors.notion.client import NotionClient
+
+    calendar._require(write, "can_update_content" if write else "can_read_content")
+    cfg = mapping.require_write("update") if write else state.get_config()
+    client = NotionClient()
+    active, schema = mapping.live_mapping(cfg, client)
+    names = active["mapping"]
+    field = names.get("external_ids", {}).get("canvas_assignment_id")
+    if not field or schema.get(field, {}).get("type") != "rich_text" or not names.get("completed") or not names.get("type"):
+        raise ValueError("Map Canvas Assignment ID, Type, and Completed in BestNDS before linking.")
+    return client, names, field
+
+
+def link_canvas(db, task_id, assignment_id):
+    from . import folders
+    from ..connectors.notion import mapping
+    from ..connectors.notion.service import normalize_page, query_pages
+
+    if not re.fullmatch(r"[0-9]{1,30}", assignment_id):
+        raise ValueError("Enter the numerical assignment ID from its Canvas link.")
+    with SYNC_LOCK, calendar._lock:
+        scope = calendar.binding()
+        if scope["provider"] != "notion":
+            raise ValueError("Select the Notion calendar containing the imported assignment.")
+        source = scope["data_source_id"]
+        client, names, field = _canvas_source()
+        found = query_pages(limit=2, filter_obj={"property": field, "rich_text": {"equals": assignment_id}},
+                            client=client, data_source_id=source)
+        if len(found) != 1:
+            raise ValueError("Canvas assignment ID must match exactly one task in the selected Notion data source.")
+        raw = mapping.page_in_source(client, found[0]["id"], source)
+        page = normalize_page(raw)
+        if page.get("in_trash") or page["properties"].get(names["type"]) != "Task":
+            raise ValueError("The matched record must be an active Notion task.")
+        page_id = page["id"]
+        info = folders.details(db, task_id)
+        if info.get("calendar_page") and info["calendar_page"].replace("-", "") != page_id.replace("-", ""):
+            raise ValueError("This local task already mirrors a different Notion record.")
+        linked = one(db, "SELECT task_id FROM pm_canvas_links WHERE page_id=?", (page_id,))
+        if linked and linked["task_id"] != task_id:
+            raise ValueError("This imported assignment is linked to another PODA task.")
+        db.execute("""INSERT INTO pm_canvas_links(task_id,page_id,source_id,assignment_id)
+            VALUES (?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET
+                page_id=excluded.page_id,source_id=excluded.source_id,assignment_id=excluded.assignment_id""",
+            (task_id, page_id, source, assignment_id))
+        folders.save_details(db, task_id, {"calendar_page": page_id, "calendar_source": source,
+                                          "calendar_error": None, "scheduled": 1})
+        return {"assignment_id": assignment_id, "page_id": page_id, "url": page.get("url")}
+
+
+def _sync_canvas(db, task, link, scope):
+    from . import folders
+    from ..connectors.notion import mapping
+    from ..connectors.notion.service import normalize_page
+
+    if scope["data_source_id"] != link["source_id"]:
+        raise ValueError("Select the original BestNDS data source to update this assignment.")
+    client, names, field = _canvas_source(write=True)
+    source, page_id = link["source_id"], link["page_id"]
+    page = normalize_page(mapping.page_in_source(client, page_id, source))
+    values = page["properties"]
+    if page["in_trash"] or values.get(field) != link["assignment_id"] or values.get(names["type"]) != "Task":
+        raise ValueError("The linked Canvas assignment no longer matches the approved Notion task.")
+    completed = task["status"] == "done" or task["progress"] == 100
+    if values.get(names["completed"]) != completed:
+        client.update_page(page_id, {"properties": {names["completed"]: {"checkbox": completed}}})
+        page = normalize_page(mapping.page_in_source(client, page_id, source))
+    if page["properties"].get(names["completed"]) != completed:
+        raise ValueError("Notion did not verify the assignment completion state.")
+    folders.save_details(db, task["id"], {"calendar_error": None})

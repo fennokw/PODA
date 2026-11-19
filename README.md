@@ -114,3 +114,14 @@ Open a project from **Projects**. Select a task in **Task folders** to open its 
 Each task shows its completion percentage and PODA's workload estimate. Enter a time estimate to override PODA's estimate. Set a goal with a target count to calculate progress from the count completed. Report a verified count in task chat, use `/taskprogress 3`, or use `/taskdone` to check the task off. Task edits proposed by the chat model use PODA's normal action approval settings.
 
 Set a deadline in the task editor or select **Link calendar event** to use an existing event’s start time. **View in calendar** opens the deadline’s date. Opening a linked task refreshes the date from its source calendar. Editing the deadline directly detaches the event link and sets a new due date. The source event keeps its time. PODA shows deadlines on its Calendar and can mirror them into writable BestNDS Notion databases as native tasks. Google Calendar can supply a linked event, and the project deadline stays in PODA's Calendar. If Notion cannot verify a task update, the task editor shows the error and offers a retry.
+
+
+### Chat, Work Discussions, and learning
+
+Ordinary Chat keeps a short active context and stores exchanges in the Second Brain. Enter `/work` to save the current context as a discussion. Work Discussions appear beneath Chat and can be linked to a project or task. Existing saved conversations keep their session IDs.
+
+- `/learn Explain a first-order system` can display practice questions and an interactive step-response plot.
+- `/work /teach me Help me work through this assignment` keeps the material and transcript together. In a task-linked discussion, review and save the proposed checklist. Check off finished work to update task progress and the existing calendar mirror.
+- `/work /build Inspect the project in /path/to/project` uses a workspace granted through Files & access. The repository map ranks entry points, manifests, symbols, and tests. Review tool proposals before allowing file changes or execution.
+
+In **Files & access**, connect a GitHub repository with a fine-grained token scoped to that repo. Enable **Contents** and **Pull requests** write permissions to use approval-based publishing on a new branch as a draft PR. Configure **Web research** there to read public HTTPS sources and optionally search through Brave. Tokens are stored in the OS credential vault, and online tools honor Offline mode.
