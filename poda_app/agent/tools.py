@@ -5,7 +5,7 @@ import json
 from typing import Any, Callable
 
 from ..runtime.db import connect
-from . import fs_tools, exec_tools, grants, receipts, code_context, sandbox_files
+from . import repository, fs_tools, exec_tools, grants, receipts, code_context, sandbox_files
 
 
 def _memory_search(query: str, limit: int = 10) -> dict[str, Any]:
@@ -109,6 +109,12 @@ TOOLS: dict[str, dict[str, Any]] = {
                       "handler": sandbox_files.sandbox_write, "schema": _schema({"path": _str("Sandbox filename only"), "content": _str("Complete file source or base64 bytes"), "encoding": _str("auto (default) or base64"), "expected_sha256": _str("Required to replace an existing file")}, ["path", "content"])},
     "code_context": {"description": "Cortex-style static source symbol/import map for a granted file. Use BEFORE editing to ground code changes. Does not execute the file.", "mutating": False, "requires_confirmation": False, "needs": "fs_read",
                 "handler": code_context.inspect_code, "schema": _schema({"path": _str("Exact path to a granted source code file")}, ["path"])},
+    "repository_map": {"description": "Map a granted local repository or plain folder. Returns ranked source files, entry points, manifests, symbols and nearby tests. Use before choosing files to read on multi-file coding tasks.", "mutating": False, "requires_confirmation": False, "needs": "fs_read",
+                       "handler": repository.map_workspace, "schema": _schema({"root": _str("Absolute path to a granted workspace folder"), "query": _str("Relevant features, filenames, symbols or error text"), "limit": _int("Maximum candidate files to return", 1, 40)}, ["root"])},
+    "repository_git_state": {"description": "Inspect local Git HEAD, status and changes for a granted repository or worktree. Requires the existing code execution grant.", "mutating": False, "requires_confirmation": False, "needs": "execute",
+                             "handler": repository.git_state, "schema": _schema({"root": _str("Absolute path to an approved Git root")}, ["root"])},
+    "repository_worktree": {"description": "Create a detached local Git worktree in a separate folder under the same approved workspace grant. Use the actual base SHA from repository_git_state.", "mutating": True, "requires_confirmation": True, "needs": "execute",
+                           "handler": repository.isolated_worktree, "schema": _schema({"root": _str("Absolute path to the granted Git root"), "destination": _str("Absolute path to a sibling worktree folder within the same grant"), "base_sha": _str("Full starting Git commit SHA")}, ["root", "destination", "base_sha"])},
     "fs_list": {"description": "List files and folders inside a granted folder (depth ≤ 2).", "mutating": False, "requires_confirmation": False, "needs": "fs_read",
                 "handler": fs_tools.fs_list, "schema": _schema({"path": _str("Absolute path inside a granted folder"), "depth": _int("Recursion depth 0-2", 0, 2)}, ["path"])},
     "fs_read": {"description": "Read a UTF-8 text file inside a granted folder; returns content and sha256.", "mutating": False, "requires_confirmation": False, "needs": "fs_read",
@@ -126,6 +132,8 @@ TOOLS: dict[str, dict[str, Any]] = {
                                                                        "args": {"type": "array", "items": {"type": "string"}, "description": "Arguments"}, "timeout": _int("Seconds", 1, 120)}, ["cwd"])},
     "run_tests": {"description": "Run pytest inside a folder granted execute access.", "mutating": True, "requires_confirmation": True, "needs": "execute",
                   "handler": exec_tools.run_tests, "schema": _schema({"cwd": _str("Project directory"), "args": {"type": "array", "items": {"type": "string"}, "description": "pytest args"}, "timeout": _int("Seconds", 1, 120)}, ["cwd"])},
+    "run_npm_script": {"description": "Run an exact existing npm script in a granted JavaScript or TypeScript workspace. Returns real exit code and bounded output from the regular execution sandbox.", "mutating": True, "requires_confirmation": True, "needs": "execute",
+                       "handler": exec_tools.run_npm_script, "schema": _schema({"cwd": _str("Approved workspace folder with package.json"), "script": _str("Exact existing named script, for example test, lint or build"), "timeout": _int("Seconds", 1, 120)}, ["cwd", "script"])},
     "memory_search": {"description": "Search PODA's local second brain (hybrid lexical + semantic).", "mutating": False, "requires_confirmation": False, "needs": None,
                       "handler": _memory_search, "schema": _schema({"query": _str("Search text"), "limit": _int("Max results", 1, 30)}, ["query"])},
     "memory_dive": {"description": "Read the full question→response exchanges stored inside one surface memory (by surface_id, or the best surface for a query). Use when a surface memory is relevant but too compressed.",
@@ -157,6 +165,31 @@ def _load_extensions() -> None:
         register_extension(getattr(email_tools, "TOOLS", {}), getattr(email_tools, "NEEDS", {}))
     except Exception:
         pass
+    from ..connectors import research
+    from ..connectors.github import service as github
+    from ..security import egress
+    register_extension({
+        "github_repo_map": {"description": "Read a map and pinned commit for the configured GitHub repository. Fill repo with the exact connected owner/name.", "mutating": False, "requires_confirmation": False, "needs": "github_read",
+            "handler": github.map_tree, "schema": _schema({"repo": _str("Connected owner/name"), "query": _str("Relevant terms"), "ref": _str("Optional branch or commit; default is repository default branch")}, ["repo"])},
+        "github_read_file": {"description": "Read a text file from the connected GitHub repo at the pinned commit.", "mutating": False, "requires_confirmation": False, "needs": "github_read",
+            "handler": github.read_file, "schema": _schema({"repo": _str("Connected owner/name"), "path": _str("Repository-relative file path"), "ref": _str("Exact commit SHA from github_repo_map")}, ["repo", "path", "ref"])},
+        "github_pull_context": {"description": "Read a GitHub pull request from the connected repo.", "mutating": False, "requires_confirmation": False, "needs": "github_read",
+            "handler": github.pull_context, "schema": _schema({"repo": _str("Connected owner/name"), "number": _int("Pull request number", 1, 100000000)}, ["repo", "number"])},
+        "github_publish_patch": {"description": "Publish user-authorized text file changes on a new poda/ branch and open a draft PR against the pinned base. The proposal contains the full files. Use only when the user explicitly requests publishing to GitHub. This tool performs no test execution.", "mutating": True, "requires_confirmation": True, "needs": "github_write",
+            "handler": github.publish, "schema": _schema({"repo": _str("Connected owner/name"), "base": _str("Base branch"), "expected_base": _str("Pinned full SHA from github_repo_map"), "branch": _str("New branch named poda/<short-name>"), "title": _str("Reviewable PR and commit title"), "changes": {"type": "array", "items": _schema({"path": _str("Repo-relative path"), "content": _str("Complete new file text")}, ["path", "content"]), "description": "One to twelve changed text files"}}, ["repo", "base", "expected_base", "branch", "title", "changes"])},
+    }, {
+        "github_read": (lambda _: bool(github.status()["repo"]) and not egress.offline_mode(), "Connect GitHub in Files & access and enable online tools."),
+        "github_write": (lambda _: bool(github.status()["repo"]) and github.status()["write"] and not egress.offline_mode(), "Enable writes for the connected GitHub repository while online."),
+    })
+    register_extension({
+        "web_read": {"description": "Open an explicitly requested or relevant public HTTPS source. Returns the final URL and exact text excerpts. Use for evidence and versioned docs.", "mutating": False, "requires_confirmation": False, "needs": "public_web",
+            "handler": research.read, "schema": _schema({"url": _str("Public HTTPS source URL"), "topic": _str("Question or relevant terms to select passages")}, ["url"])},
+        "web_search": {"description": "Search the public internet when requested. Use a minimal public query and never include private content or credentials. Open the main results for evidence.", "mutating": False, "requires_confirmation": False, "needs": "public_search",
+            "handler": research.search, "schema": _schema({"query": _str("Public search terms"), "limit": _int("Results to return", 1, 8)}, ["query"])},
+    }, {
+        "public_web": (lambda _: research.status()["enabled"] and not egress.offline_mode(), "Enable public web in Files & access and turn off offline mode."),
+        "public_search": (lambda _: all(research.status().values()) and not egress.offline_mode(), "Enable public web and configure an online search key in Files & access."),
+    })
     from ..connectors.messaging import tools as messaging_tools
     register_extension(messaging_tools.TOOLS, messaging_tools.NEEDS)
     from ..workload import tools as workload_tools
@@ -232,8 +265,11 @@ def validate_args(name: str, args: Any) -> dict[str, Any]:
                 continue  # junk like max_bytes=0 → fall back to the handler default
             if hi is not None and value > hi:
                 value = hi
-        if expected is list and not all(isinstance(v, str) for v in value):
-            raise ToolValidationError(f"Argument '{key}' must be a list of strings")
+        if expected is list:
+            item_type = props[key].get("items", {}).get("type", "string")
+            item_class = _TYPE_MAP[item_type]
+            if not all(isinstance(item, item_class) for item in value):
+                raise ToolValidationError(f"Argument '{key}' must contain only {item_type} values")
         clean[key] = value
     return clean
 
@@ -300,7 +336,7 @@ def summarize_args(name: str, args: dict[str, Any]) -> str:
 
 
 def _target_of(name: str, args: dict[str, Any]) -> str | None:
-    for key in ("path", "root", "cwd", "src", "query"):
+    for key in ("path", "root", "cwd", "src", "repo", "query"):
         if key in args:
             return str(args[key])[:300]
     return None

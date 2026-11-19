@@ -38,7 +38,7 @@ def test_chat_emits_tool_and_proposal_events(client, monkeypatch, tmp_folder):
         monkeypatch.setattr(chat_router.inference, "chat_stream", fake_stream)
         monkeypatch.setattr(chat_router.models, "resolve", lambda *a, **k: {"model": "llama3.2:3b", "profile": "fast", "num_ctx": 8192, "options": {}, "think": False})
         monkeypatch.setattr(chat_router.retrieval, "recall", lambda q, limit=18, **kw: {"mode": "test", "weights": {}, "results": [], "depth_used": kw.get("depth", "auto"), "surfaces": []})
-        r = client.post("/chat/stream", json={"message": f"Read notes.md in {tmp_folder} and create copy.md with the same text", "mode": "fast"})
+        r = client.post("/chat/stream", json={"message": f"/work Read notes.md in {tmp_folder} and create copy.md with the same text", "mode": "fast"})
         events = _events(r.text)
         kinds = [e for e, _ in events]
         assert "tool" in kinds and "proposal" in kinds and "done" in kinds
@@ -187,7 +187,7 @@ def test_chat_download_is_available_without_filesystem_grants(client, monkeypatc
         "model": "test", "profile": "fast", "num_ctx": 8192, "options": {}})
     monkeypatch.setattr(chat_router.orchestrator, "tool_prerequisites_exist", lambda _: False)
     assert not grants.list_grants()
-    response = client.post("/chat/stream", json={"message": "Create a CSV with name and count", "use_memory": False})
+    response = client.post("/chat/stream", json={"message": "/work Create a CSV with name and count", "use_memory": False})
     events = dict(_events(response.text))
     session_id = events["session"]["session_id"]
     download = events["done"]["download"]
@@ -218,7 +218,7 @@ def test_sandbox_pdf_from_chat_persists_and_can_be_revised(client, monkeypatch):
         "model": "test", "profile": "fast", "num_ctx": 8192, "options": {}})
     monkeypatch.setattr(chat_router.orchestrator, "tool_prerequisites_exist", lambda _: False)
     assert not grants.list_grants()
-    response = client.post("/chat/stream", json={"message": "Create a PDF named workspace-regression.pdf", "use_memory": False})
+    response = client.post("/chat/stream", json={"message": "/work Create a PDF named workspace-regression.pdf", "use_memory": False})
     events = dict(_events(response.text))
     name = events["done"]["download"]["sandbox_file"]
     assert name == "workspace-regression.pdf"
@@ -333,7 +333,7 @@ def test_mermaid_markdown_export_without_a_folder_grant(client, monkeypatch, ret
         "model": "test", "profile": "fast", "num_ctx": 8192, "options": {}})
     monkeypatch.setattr(chat_router.orchestrator, "tool_prerequisites_exist", lambda _: False)
     assert not grants.list_grants()
-    response = client.post("/chat/stream", json={"message": "Now try." if retry else task,
+    response = client.post("/chat/stream", json={"message": "Now try." if retry else "/work " + task,
                                                 "session_id": session_id, "use_memory": False})
     events = _events(response.text)
     assert "".join(data["token"] for event, data in events if event == "token") == expected

@@ -18,6 +18,7 @@ from ..runtime.db import connect, now_iso, one, rows
 from ..workload import service as workload
 from ..workload.router import _extract_text, _suggest
 from ..agent import grants
+from ..chat import discussions
 from . import folders
 
 router = APIRouter(prefix="/project-manager", tags=["project-manager"])
@@ -232,8 +233,7 @@ def create_chat(project_id: str, body: NewChat):
         if body.task_id:
             folders.get_task(db, project_id, body.task_id)
         session_id = body.session_id or str(uuid.uuid4())
-        if body.session_id and not one(db, """SELECT 1 FROM messages
-            WHERE session_id=? AND provenance='chat' AND role='user' LIMIT 1""", (session_id,)):
+        if body.session_id and not discussions.is_work(db, session_id):
             raise HTTPException(404, "This chat is no longer available.")
         folders.assign(db, session_id, project_id, body.task_id)
         return {"session_id": session_id}
@@ -417,3 +417,23 @@ def unlink_attachment(project_id: str, attachment_id: str) -> dict[str, Any]:
         return {"removed": True, "source_file_untouched": True}
     finally:
         db.close()
+
+class CanvasTaskLink(BaseModel):
+    assignment_id: str = Field(min_length=1, max_length=30)
+
+
+@router.put("/projects/{project_id}/tasks/{task_id}/canvas")
+def link_canvas_task(project_id: str, task_id: str, req: CanvasTaskLink):
+    from . import schedule
+
+    with folders.LOCK:
+        db = connect()
+        try:
+            folders.get_task(db, project_id, task_id)
+            return schedule.link_canvas(db, task_id, req.assignment_id.strip())
+        except KeyError as exc:
+            raise HTTPException(404, "Task not found.") from exc
+        except (ValueError, PermissionError, RuntimeError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        finally:
+            db.close()

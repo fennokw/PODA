@@ -2,8 +2,8 @@
 
 Opening another PODA screen disconnects only the stream subscriber. The llama.cpp
 generation task belongs to this server, not to the browser request lifecycle.
-Running tasks are ephemeral across process restarts, while finished chat messages
-remain in PODA's encrypted history/memory tables.
+Work Discussions persist the request and latest completed phase. After a restart
+they expose an interrupted checkpoint so the user can continue deliberately.
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import asyncio
 import json
 import time
 import uuid
+from contextlib import closing
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -19,10 +20,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
+from . import discussions
 from .router import ChatRequest, chat_stream, run_chat, sse
 from .inputs import InputFile, MAX_FILES, MAX_TOTAL_BYTES
 from ..agent import sandbox_files
 from ..memory import store
+from ..runtime.db import connect, one, now_iso
 
 router = APIRouter(prefix="/chat/runs", tags=["chat"])
 MAX_ACTIVE = 2
@@ -34,6 +37,10 @@ MAX_EVENT_COUNT = 20000
 class ChatRun:
     run_id: str
     started: float
+    session_id: str = ""
+    prompt: str = ""
+    persistent: bool = False
+    phase: str = "starting"
     events: list[tuple[int, str]] = field(default_factory=list)
     state: str = "running"
     finished_at: float | None = None
@@ -45,6 +52,15 @@ class ChatRun:
     async def append(self, frame: str) -> None:
         if not frame:
             return
+        header = frame.splitlines()[0]
+        if header in {"event: session", "event: status"}:
+            data = json.loads(next(line[5:].strip() for line in frame.splitlines() if line.startswith("data:")))
+            if header == "event: session":
+                self.persistent = data.get("work_discussion", self.persistent)
+            else:
+                self.phase = str(data.get("message", self.phase))[:120]
+            if self.persistent:
+                await asyncio.to_thread(checkpoint, self)
         async with self.condition:
             event_id = self.next_id
             self.next_id += 1
@@ -63,6 +79,26 @@ class ChatRun:
 
 
 _runs: dict[str, ChatRun] = {}
+
+
+def checkpoint(run: ChatRun) -> None:
+    with closing(connect()) as db, db:
+        db.execute("""INSERT INTO chat_run_checkpoints(run_id,session_id,state,prompt,phase,updated_at)
+            VALUES (?,?,?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET
+                state=excluded.state,phase=excluded.phase,updated_at=excluded.updated_at""",
+            (run.run_id, run.session_id, run.state, run.prompt, run.phase, now_iso()))
+
+
+def interrupt_checkpoints(db) -> None:
+    db.execute("UPDATE chat_run_checkpoints SET state='interrupted' WHERE state='running'")
+
+
+def interrupted_checkpoints(db, session_id):
+    return one(db, """SELECT run_id,phase,prompt,updated_at FROM chat_run_checkpoints
+        WHERE session_id=? AND state='interrupted' AND NOT EXISTS (
+            SELECT 1 FROM chat_run_checkpoints newer WHERE newer.session_id=?
+            AND newer.updated_at>chat_run_checkpoints.updated_at)
+        ORDER BY updated_at DESC LIMIT 1""", (session_id, session_id))
 
 
 def _lookup(run_id: str) -> ChatRun:
@@ -93,8 +129,9 @@ async def _generate(run: ChatRun, req: ChatRequest, files: tuple[InputFile, ...]
         partial = "".join(run.partial).strip()
         if partial:
             try:
+                provenance = await asyncio.to_thread(discussions.provenance, req.session_id)
                 await asyncio.to_thread(store.save_message, "assistant", partial + "\n\n[response stopped by user]",
-                                        "cancelled", req.session_id)
+                                        "cancelled", req.session_id, provenance, None, True)
             except Exception:
                 pass
         await run.append(sse("status", {"message": "cancelled"}))
@@ -104,6 +141,8 @@ async def _generate(run: ChatRun, req: ChatRequest, files: tuple[InputFile, ...]
         await run.append(sse("error", {"message": f"Chat run failed: {type(exc).__name__}: {exc}"}))
     finally:
         run.finished_at = time.monotonic()
+        if run.persistent:
+            await asyncio.to_thread(checkpoint, run)
         async with run.condition:
             run.condition.notify_all()
 
@@ -168,15 +207,28 @@ async def _start_run(req: ChatRequest, files: tuple[InputFile, ...] = ()) -> dic
             req = req.model_copy(update={"session_id": proposal["session_id"]})
     if not req.session_id:
         req = req.model_copy(update={"session_id": str(uuid.uuid4())})
-    run = ChatRun(run_id=str(uuid.uuid4()), started=time.monotonic())
+    from .commands import parse
+    persistent = parse(req.message).work or await asyncio.to_thread(discussions.provenance, req.session_id) == discussions.WORK
+    if any(run.session_id == req.session_id and run.state == "running" for run in _runs.values()):
+        raise HTTPException(409, "A response is already running in this chat.")
+    run = ChatRun(run_id=str(uuid.uuid4()), started=time.monotonic(), session_id=req.session_id,
+                  prompt=req.message, persistent=persistent)
     _runs[run.run_id] = run
+    if persistent:
+        await asyncio.to_thread(checkpoint, run)
     run.task = asyncio.create_task(_generate(run, req, files), name="poda-chat-" + run.run_id[:8])
     return {"run_id": run.run_id, "session_id": req.session_id, "state": run.state}
 
 
 @router.get("/{run_id}")
 def status(run_id: str) -> dict[str, Any]:
-    run = _lookup(run_id)
+    run = _runs.get(run_id)
+    if run is None:
+        with closing(connect()) as db:
+            saved = one(db, "SELECT state,phase FROM chat_run_checkpoints WHERE run_id=?", (run_id,))
+        if saved:
+            return {"run_id": run_id, **saved, "last_event_id": 0, "retained_from": 0}
+        run = _lookup(run_id)
     return {"run_id": run_id, "state": run.state, "last_event_id": run.next_id - 1,
             "retained_from": run.events[0][0] if run.events else 1}
 

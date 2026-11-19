@@ -36,20 +36,21 @@
       const before = input.value.slice(0, input.selectionStart);
       const after = input.value.slice(input.selectionEnd);
       if (after && !/^\s/.test(after)) return null;
-      const match = before.match(/^\s*\/([^\s/]*)(?:[ \t]+([^\n]*))?$/u);
+      const kept = before.match(/^(?:\s*\/(?:work|teach[ \t]+me|learn|build|research|act)[ \t]+)+(?=\/)/i)?.[0] || '';
+      const match = before.slice(kept.length).match(/^\s*\/([^\s/]*)(?:[ \t]+([^\n]*))?$/u);
       if (!match) return null;
       const command = match[1].toLowerCase();
       const argument = match[2];
-      if (argument !== undefined && !['project','task'].includes(command)) return null;
+      if (argument !== undefined && !['project','task','teach'].includes(command)) return null;
       if (argument && /^"(?:[^"\\]|\\.)*"/u.test(argument)) return null;
-      return {command, argument, after};
+      return {command, argument, after, kept};
     }
 
     function choose(row) {
       const current = query();
       if (!current) return;
       const tail = current.after.trimStart();
-      const replacement = row.value + (row.space || tail ? ' ' : '');
+      const replacement = current.kept + row.value + (row.space || tail ? ' ' : '');
       input.value = replacement + (row.expand && tail ? ' ' : '') + tail;
       input.setSelectionRange(replacement.length, replacement.length);
       input.focus();
@@ -63,7 +64,7 @@
     function rows(data, current) {
       const projects = data.projects || [];
       const tasks = data.tasks || [];
-      if (current.argument !== undefined) {
+      if (current.argument !== undefined && current.command !== 'teach') {
         const search = current.argument.replace(/^"/,'').toLowerCase();
         const targets = current.command === 'project' ? projects : tasks;
         return targets.filter(target => target.name.toLowerCase().includes(search)
@@ -77,13 +78,21 @@
           {value:'/taskdone', label:'/taskdone', description:'Complete '+data.task_name},
           ...(data.goal_target ? [{value:'/taskprogress', label:'/taskprogress', description:'Enter the completed count out of '+data.goal_target, space:true}] : []),
         ] : []),
+        ...[
+          ['/work', 'Start or save a Work Discussion'],
+          ['/learn', 'Explore a topic with interactive practice'],
+          ['/teach me', 'Work through your material step by step'],
+          ['/build', 'Work on code and verify the result'],
+          ['/research', 'Investigate a question'],
+          ['/act', 'Use connected tools to do a task'],
+        ].map(([value, description]) => ({value, label:value, description, space:true})),
       ];
       const aliases = [
         ...projects.map(target => ({...target, scope:'Project'})),
         ...tasks.map(target => ({...target, scope:'Task'})),
       ].filter(target => target.shortcut).map(target =>
         ({value:target.shortcut, label:target.shortcut, description:target.scope+' · '+target.name, space:true}));
-      const prefix = '/' + current.command;
+      const prefix = '/' + current.command + (current.command === 'teach' && current.argument !== undefined ? ' ' + current.argument : '');
       return [...staticRows, ...aliases].filter(row => row.value.toLowerCase().startsWith(prefix));
     }
 
@@ -161,7 +170,7 @@
       } else if (suggestions.length && !event.shiftKey && ['Tab','Enter'].includes(event.key)) {
         const current = query();
         if (!current) return false;
-        if (event.key === 'Enter' && focused < 0 && suggestions.some(row => row.value === input.value.trim() && !row.expand && row.value !== '/taskprogress')) {
+        if (event.key === 'Enter' && focused < 0 && suggestions.some(row => current.kept.trimStart() + row.value === input.value.trim() && !row.expand && row.value !== '/taskprogress')) {
           return false;
         }
         choose(suggestions[Math.max(0, focused)]);

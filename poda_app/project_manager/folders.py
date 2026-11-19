@@ -7,6 +7,7 @@ from collections import Counter
 from threading import RLock
 
 from ..runtime.db import connect, now_iso, one, rows
+from ..chat import commands as chat_commands, discussions
 from ..workload import service as workload
 
 LOCK = RLock()
@@ -33,7 +34,7 @@ def chats(db, project_id, task_id=None):
     scope = "" if task_id is None else " AND f.task_id=?"
     params = (project_id,) if task_id is None else (project_id, task_id)
     return rows(db, """SELECT f.session_id, f.task_id,
-        COALESCE((SELECT substr(content, 1, 100) FROM messages m
+        COALESCE((SELECT title FROM chat_discussions d WHERE d.session_id=f.session_id), (SELECT substr(content, 1, 100) FROM messages m
                   WHERE m.session_id=f.session_id AND m.role='user' ORDER BY m.rowid LIMIT 1),
                  'New chat') AS title,
         COALESCE((SELECT max(created_at) FROM messages m WHERE m.session_id=f.session_id),
@@ -45,6 +46,7 @@ def chats(db, project_id, task_id=None):
 
 
 def assign(db, session_id, project_id, task_id=None):
+    discussions.promote(db, session_id)
     db.execute("""INSERT INTO pm_chat_folders VALUES (?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET project_id=excluded.project_id,
         task_id=excluded.task_id, linked_at=excluded.linked_at""",
@@ -56,15 +58,16 @@ def find_chats(db, query):
     """Search conversation titles without exposing the rest of their transcript."""
     return rows(db, """WITH titles AS (
         SELECT session_id, min(rowid) AS first_id, max(rowid) AS latest_id
-        FROM messages WHERE provenance='chat' AND role='user' AND session_id IS NOT NULL
+        FROM messages WHERE provenance IN ('chat','work-discussion') AND role='user' AND session_id IS NOT NULL
         GROUP BY session_id
-    ) SELECT titles.session_id, substr(m.content, 1, 100) AS title, p.name AS project_name,
+    ) SELECT titles.session_id, COALESCE(d.title, substr(m.content, 1, 100)) AS title, p.name AS project_name,
         w.title AS task_title, f.project_id, f.task_id
         FROM titles JOIN messages m ON m.rowid=titles.first_id
+        LEFT JOIN chat_discussions d ON d.session_id=titles.session_id
         LEFT JOIN pm_chat_folders f ON titles.session_id=f.session_id
         LEFT JOIN projects p ON f.project_id=p.id
         LEFT JOIN workload_items w ON w.id=f.task_id AND lower(w.project)=lower(p.name)
-        WHERE instr(lower(substr(m.content,1,100)), lower(?)) > 0 OR ? = ''
+        WHERE instr(lower(COALESCE(d.title,substr(m.content,1,100))), lower(?)) > 0 OR ? = ''
         ORDER BY titles.latest_id DESC LIMIT 40""", (query, query))
 
 
@@ -85,7 +88,7 @@ def resolve(items, name, label):
     return matches[0]
 
 
-COMMANDS = {"project", "task", "taskdone", "taskprogress"}
+COMMANDS = {"project", "task", "taskdone", "taskprogress"} | chat_commands.RESERVED
 
 
 def _targets(items, command, blocked):

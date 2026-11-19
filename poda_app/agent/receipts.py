@@ -51,3 +51,13 @@ def get_receipt(rid: str) -> dict[str, Any] | None:
 def format_receipt(r: dict[str, Any]) -> str:
     return (f"[receipt {r.get('id','')[:8]}] tool={r.get('tool')} target={r.get('target')} outcome={r.get('outcome')} "
             f"verification={r.get('verification') or 'none'} at={r.get('finished_at') or r.get('started_at')}")
+
+
+def session_checkpoint(session_id: str) -> str:
+    db = connect()
+    try:
+        previous = rows(db, """SELECT id, tool, target, outcome, verification FROM action_receipts
+            WHERE session_id=? ORDER BY started_at DESC LIMIT 14""", (session_id,))
+    finally:
+        db.close()
+    return json.dumps(previous, default=str)[:5000] if previous else ""

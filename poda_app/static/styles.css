@@ -581,3 +581,16 @@ dialog::backdrop { background: rgba(2, 6, 16, 0.66); backdrop-filter: blur(6px);
 .chat-input-warning { white-space: pre-wrap; }
 
 .chat-diagram-actions { margin-block-start: 8px; }
+
+.work-discussions { margin: 2px 0 6px 15px; min-width: 0; font-size: .8rem; }
+.work-discussions summary { padding: 5px 0; cursor: pointer; }
+#workDiscussionLinks { display: grid; gap: 1px; max-height: 13rem; overflow: auto; }
+#workDiscussionLinks a { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: inherit; padding: 4px 6px; border-radius: 5px; }
+#workDiscussionLinks a:hover, #workDiscussionLinks a[aria-current=page] { background: rgba(115, 174, 228, .16); }
+
+.learning-card { display: grid; gap: 8px; margin: 12px 0; padding: 12px; border: 1px solid var(--border, #30435a); border-radius: 8px; }
+.learning-card svg { width: 100%; max-width: 30rem; }
+.learning-card textarea { width: 100%; }
+.learning-choices { display: flex; flex-wrap: wrap; gap: 6px; }
+.learning-choices [aria-pressed=true] { outline: 2px solid #48baff; }
+.learning-requirement { display: block; }
