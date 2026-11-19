@@ -176,3 +176,61 @@ def test_public_reader_rejects_local_or_mixed_addresses(monkeypatch):
         research._address("example.test")
     with pytest.raises(ValueError, match="public HTTPS"):
         research._download("https://user:password@example.test/")
+
+
+def test_git_worktree_isolated_and_read_back(client, tmp_folder, monkeypatch):
+    import subprocess
+    from poda_app.agent import exec_tools, grants, repository
+
+    root = tmp_folder / "project"
+    root.mkdir()
+    git = lambda *args: subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
+    git("init", "-q")
+    (root / "app.py").write_text("print(1)\n")
+    git("add", "app.py")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.test", "commit", "-m", "Initial")
+    sha = git("rev-parse", "HEAD")
+    grant = grants.add_grant(str(tmp_folder), "edit", allow_execute=True)
+
+    def run(cmd, cwd, timeout):
+        proc = subprocess.run(cmd, cwd=cwd, timeout=timeout, capture_output=True, text=True)
+        return {"ok": proc.returncode == 0, "result": {"stdout": proc.stdout, "stderr": proc.stderr,
+                "stdout_truncated": False}, "error": None}
+    monkeypatch.setattr(exec_tools, "_run", run)
+    try:
+        target = tmp_folder / "chat-worktree"
+        result = repository.isolated_worktree(str(root), str(target), sha)
+        assert result["result"]["base_sha"] == sha
+        assert repository.isolated_worktree(str(root), str(target), sha) == result
+        (target / "app.py").write_text("print(2)\n")
+        assert (root / "app.py").read_text() == "print(1)\n"
+        assert "+print(2)" in repository.git_state(str(target))["result"]["diff"]
+    finally:
+        grants.revoke_grant(grant["id"])
+
+
+def test_linked_canvas_sync_writes_completion_only(client, monkeypatch):
+    from poda_app.connectors.notion import mapping, service
+    from poda_app.project_manager import folders, schedule
+    project = client.post("/project-manager/projects", json={"name": "Canvas " + str(uuid4())}).json()
+    task = client.post("/workload", json={"title": "Imported homework", "project": project["name"]}).json()
+    updates = []
+    values = {"Kind": "Task", "Done": False, "Assignment": "91234"}
+    page = {"id": "page-91234", "properties": values, "in_trash": False}
+
+    class Notion:
+        def update_page(self, page_id, body):
+            updates.append((page_id, body))
+            values["Done"] = body["properties"]["Done"]["checkbox"]
+
+    monkeypatch.setattr(schedule.calendar, "binding", lambda: {"provider": "notion", "data_source_id": "owner"})
+    monkeypatch.setattr(schedule, "_canvas_source", lambda **_: (Notion(), {"type": "Kind", "completed": "Done"}, "Assignment"))
+    monkeypatch.setattr(service, "query_pages", lambda **kwargs: [page])
+    monkeypatch.setattr(mapping, "page_in_source", lambda *a: page)
+    monkeypatch.setattr(service, "normalize_page", lambda data: data)
+    url = f"/project-manager/projects/{project['id']}/tasks/{task['id']}/canvas"
+    assert client.put(url, json={"assignment_id": "91234"}).json()["page_id"] == page["id"]
+    assert not updates
+    folders.update_task(project["id"], task["id"], {"progress": 100})
+    assert updates == [(page["id"], {"properties": {"Done": {"checkbox": True}}})]
+    assert values["Assignment"] == "91234"

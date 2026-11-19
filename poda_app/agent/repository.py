@@ -74,3 +74,63 @@ def map_workspace(root: str, query: str = "", limit: int = 25) -> dict:
     return {"ok": True, "result": {"root": str(root_path), "files": files,
             "candidates": len(candidates), "truncated": truncated or len(candidates) > limit},
             "verification": "Read granted workspace source and mapped selected symbols without executing project files."}
+
+
+def _git(area: Path, cwd: Path, *args: str) -> dict:
+    from .exec_tools import _run
+
+    return _run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false",
+                 "-c", "core.hooksPath=" + os.devnull, "-C", str(cwd), *args], area, 35)
+
+
+def _output(result: dict) -> str:
+    if not result["ok"]:
+        detail = (result.get("result") or {}).get("stderr") or result.get("error")
+        raise ValueError(str(detail or "Git did not complete.")[:500])
+    return result["result"]["stdout"].strip()
+
+
+def isolated_worktree(root: str, destination: str, base_sha: str) -> dict:
+    """Create and read back a detached worktree under the same approved grant."""
+    if not re.fullmatch(r"[0-9a-f]{40}", base_sha):
+        raise ValueError("Use the full Git commit SHA for the approved starting revision.")
+    repo, grant = grants.resolve(root, "execute")
+    target, target_grant = grants.resolve(destination, "execute")
+    area = Path(grant["root_path"])
+    if grant["id"] != target_grant["id"]:
+        raise PermissionError("The repo and worktree must be covered by the same execute-enabled folder grant.")
+    if target.is_relative_to(repo) or repo.is_relative_to(target) or not target.parent.is_dir():
+        raise ValueError("Choose a separate, non-existing worktree folder under an existing parent in the grant.")
+    actual = Path(_output(_git(area, repo, "rev-parse", "--show-toplevel"))).resolve()
+    if actual != repo:
+        raise ValueError("Choose the root of the Git repository.")
+    expected = _output(_git(area, repo, "rev-parse", "--verify", base_sha + "^{commit}"))
+    if target.exists():
+        original = _output(_git(area, repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        linked = _output(_git(area, target, "rev-parse", "--path-format=absolute", "--git-common-dir"))
+        target_root = Path(_output(_git(area, target, "rev-parse", "--show-toplevel"))).resolve()
+        if linked != original or target_root != target:
+            raise ValueError("The destination is already in use by a different workspace.")
+    else:
+        _output(_git(area, repo, "worktree", "add", "--detach", "--", str(target), expected))
+    actual_head = _output(_git(area, target, "rev-parse", "--verify", "HEAD"))
+    if actual_head != expected:
+        raise ValueError("The worktree has a different HEAD. Review the existing workspace before continuing.")
+    return {"ok": True, "result": {"root": str(target), "base_sha": actual_head},
+            "verification": "Read back the isolated worktree HEAD at the approved starting revision."}
+
+
+def git_state(root: str) -> dict:
+    """Return the staged and unstaged changes, plus untracked path names."""
+    repo, grant = grants.resolve(root, "execute")
+    area = Path(grant["root_path"])
+    actual = Path(_output(_git(area, repo, "rev-parse", "--show-toplevel"))).resolve()
+    if actual != repo:
+        raise ValueError("Choose the root of a Git repository or worktree.")
+    head = _output(_git(area, repo, "rev-parse", "--verify", "HEAD"))
+    status = _output(_git(area, repo, "status", "--porcelain=v1", "--untracked-files=normal"))
+    diff = _git(area, repo, "diff", "--no-ext-diff", "--no-textconv", "HEAD", "--")
+    patch = _output(diff)
+    return {"ok": True, "result": {"root": str(repo), "head": head, "status": status[:4000],
+                                  "diff": patch[:18000], "truncated": len(patch) > 18000 or diff["result"]["stdout_truncated"]},
+            "verification": "Read local Git HEAD, working-tree status, and diff."}

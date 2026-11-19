@@ -122,6 +122,6 @@ Ordinary Chat keeps a short active context and stores exchanges in the Second Br
 
 - `/learn Explain a first-order system` can display practice questions and an interactive step-response plot.
 - `/work /teach me Help me work through this assignment` keeps the material and transcript together. In a task-linked discussion, review and save the proposed checklist. Check off finished work to update task progress and the existing calendar mirror.
-- `/work /build Inspect the project in /path/to/project` uses a workspace granted through Files & access. The repository map ranks entry points, manifests, symbols, and tests. Review tool proposals before allowing file changes or execution.
+- `/work /build Inspect the project in /path/to/project` uses a workspace granted through Files & access. The repository map ranks entry points, manifests, symbols, and tests. An execute-enabled grant over a workspace parent can cover both a Git repository and an isolated sibling worktree. Review tool proposals before allowing file changes or execution.
 
 In **Files & access**, connect a GitHub repository with a fine-grained token scoped to that repo. Enable **Contents** and **Pull requests** write permissions to use approval-based publishing on a new branch as a draft PR. Configure **Web research** there to read public HTTPS sources and optionally search through Brave. Tokens are stored in the OS credential vault, and online tools honor Offline mode.

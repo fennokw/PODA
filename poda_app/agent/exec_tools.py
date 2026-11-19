@@ -124,3 +124,23 @@ def run_tests(cwd: str, args: list[str] | None = None, timeout: int = 120) -> di
     timeout = max(1, min(int(timeout or 120), MAX_TIMEOUT))
     safe_args = [a for a in (args or ["-q"]) if isinstance(a, str) and ".." not in a and not a.startswith("--rootdir") and not os.path.isabs(a)][:16]
     return _run([_python_for(workdir), "-m", "pytest", *safe_args], workdir, timeout)
+
+
+def run_npm_script(cwd: str, script: str, timeout: int = 120) -> dict[str, Any]:
+    """Run one exact existing package script with the normal execution isolation."""
+    import json
+    import re
+
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:_-]{0,79}", script):
+        return _fail("Choose an exact package.json script such as test, lint, or build.")
+    try:
+        workdir, _ = grants.resolve(cwd, "execute")
+        manifest, _ = grants.resolve(str(workdir / "package.json"), "read")
+        if manifest.parent != workdir or manifest.stat().st_size > 500_000:
+            return _fail("Choose a normal package.json inside the approved folder.")
+        scripts = json.loads(manifest.read_text(encoding="utf-8")).get("scripts", {})
+        if not isinstance(scripts, dict) or script not in scripts:
+            return _fail("The selected script does not exist in package.json.")
+    except (PermissionError, OSError, ValueError, AttributeError) as exc:
+        return _fail(str(exc))
+    return _run(["npm", "--offline", "run", script], workdir, max(1, min(int(timeout or 120), MAX_TIMEOUT)))
