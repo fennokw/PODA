@@ -1,26 +1,31 @@
-/* Suggestions for commands handled by the chat composer. */
+/* Composer completion for single-word commands and explicit plugin mentions. */
 (function () {
   'use strict';
   const {el, api} = window.PODA;
+  const modes = [
+    ['teach', 'Guide me step by step with questions, diagrams, and feedback'],
+    ['build', 'Work on code and verify the result'],
+    ['research', 'Investigate a question using sources'],
+  ];
 
   function mount(input, getSessionId) {
-    const listId = 'chat-slash-options';
-    const options = el('div', {id:listId, role:'listbox', 'aria-label':'Slash commands'});
+    const id = 'chat-slash-options';
+    const options = el('div', {id, role:'listbox', 'aria-label':'Chat commands and plugins'});
     const status = el('p', {class:'chat-slash-status', role:'status'});
     const panel = el('div', {class:'chat-slash-panel', hidden:true}, options, status);
     const field = el('div', {class:'chat-slash-anchor'}, input, panel);
     const trigger = el('button', {class:'btn btn-ghost btn-sm chat-slash-trigger', type:'button',
-      'aria-label':'Browse chat slash commands', 'aria-controls':listId, 'aria-expanded':'false', title:'Slash commands'}, '/');
+      'aria-label':'Browse chat slash commands', 'aria-controls':id, 'aria-expanded':'false', title:'Slash commands'}, '/');
+    const pluginTrigger = el('button', {class:'btn btn-ghost btn-sm chat-slash-trigger', type:'button',
+      'aria-label':'Browse chat plugins', 'aria-controls':id, 'aria-expanded':'false', title:'Mention a plugin'}, '@');
     input.setAttribute('aria-autocomplete', 'list');
-    input.setAttribute('aria-controls', listId);
-    let request = null;
-    let suggestions = [];
-    let focused = -1;
-    let dismissed = false;
+    input.setAttribute('aria-controls', id);
+    let request, suggestions = [], focused = -1, dismissed = false;
 
     function close() {
       panel.hidden = true;
       trigger.setAttribute('aria-expanded','false');
+      pluginTrigger.setAttribute('aria-expanded','false');
       input.removeAttribute('aria-activedescendant');
       suggestions = [];
       focused = -1;
@@ -36,64 +41,35 @@
       const before = input.value.slice(0, input.selectionStart);
       const after = input.value.slice(input.selectionEnd);
       if (after && !/^\s/.test(after)) return null;
-      const kept = before.match(/^(?:\s*\/(?:work|teach[ \t]+me|learn|build|research|act)[ \t]+)+(?=\/)/i)?.[0] || '';
-      const match = before.slice(kept.length).match(/^\s*\/([^\s/]*)(?:[ \t]+([^\n]*))?$/u);
-      if (!match) return null;
-      const command = match[1].toLowerCase();
-      const argument = match[2];
-      if (argument !== undefined && !['project','task','teach'].includes(command)) return null;
-      if (argument && /^"(?:[^"\\]|\\.)*"/u.test(argument)) return null;
-      return {command, argument, after, kept};
+      const prefix = before.match(/^(\s*(?:\/(?:teach|build|research)(?:off)?\s+)?)([@/])([a-z0-9_-]*)$/i);
+      if (prefix) return {kept:prefix[1], kind:prefix[2], query:prefix[3].toLowerCase(), after};
+      const mention = before.match(/^(.*\s)@([a-z0-9_-]*)$/is);
+      return mention ? {kept:mention[1], kind:'@', query:mention[2].toLowerCase(), after} : null;
     }
 
     function choose(row) {
       const current = query();
       if (!current) return;
-      const tail = current.after.trimStart();
-      const replacement = current.kept + row.value + (row.space || tail ? ' ' : '');
-      input.value = replacement + (row.expand && tail ? ' ' : '') + tail;
+      const replacement = current.kept + row.value + ' ';
+      input.value = replacement + current.after.trimStart();
       input.setSelectionRange(replacement.length, replacement.length);
+      dismissed = true;
+      close();
       input.focus();
-      input.dispatchEvent(new Event('input', {bubbles:true}));
-      if (!row.expand) {
-        dismissed = true;
-        close();
-      }
     }
 
     function rows(data, current) {
-      const projects = data.projects || [];
-      const tasks = data.tasks || [];
-      if (current.argument !== undefined && current.command !== 'teach') {
-        const search = current.argument.replace(/^"/,'').toLowerCase();
-        const targets = current.command === 'project' ? projects : tasks;
-        return targets.filter(target => target.name.toLowerCase().includes(search)
-          || target.shortcut?.toLowerCase().includes(search))
-          .map(target => ({value:target.value, label:target.name, description:target.value, space:true}));
-      }
-      const staticRows = [
-        {value:'/project', label:'/project', description:'Choose a project for this chat', expand:true, space:true},
-        ...(tasks.length ? [{value:'/task', label:'/task', description:'Choose a task in this project', expand:true, space:true}] : []),
-        ...(data.task_name && !current.after.trim() ? [
-          {value:'/taskdone', label:'/taskdone', description:'Complete '+data.task_name},
-          ...(data.goal_target ? [{value:'/taskprogress', label:'/taskprogress', description:'Enter the completed count out of '+data.goal_target, space:true}] : []),
-        ] : []),
-        ...[
-          ['/work', 'Start or save a Work Discussion'],
-          ['/learn', 'Explore a topic with interactive practice'],
-          ['/teach me', 'Work through your material step by step'],
-          ['/build', 'Work on code and verify the result'],
-          ['/research', 'Investigate a question'],
-          ['/act', 'Use connected tools to do a task'],
-        ].map(([value, description]) => ({value, label:value, description, space:true})),
+      const slash = [
+        ...modes.flatMap(([mode, detail]) => [
+          {value:'/' + mode, label:'/' + mode, detail},
+          {value:'/' + mode + 'off', label:'/' + mode + 'off', detail:'Turn off ' + mode + ' mode'},
+        ]),
+        ...(data.task_name ? [{value:'/taskdone', label:'/taskdone', detail:'Complete ' + data.task_name}] : []),
+        ...(data.goal_target ? [{value:'/taskprogress', label:'/taskprogress', detail:'Enter the completed count'}] : []),
       ];
-      const aliases = [
-        ...projects.map(target => ({...target, scope:'Project'})),
-        ...tasks.map(target => ({...target, scope:'Task'})),
-      ].filter(target => target.shortcut).map(target =>
-        ({value:target.shortcut, label:target.shortcut, description:target.scope+' · '+target.name, space:true}));
-      const prefix = '/' + current.command + (current.command === 'teach' && current.argument !== undefined ? ' ' + current.argument : '');
-      return [...staticRows, ...aliases].filter(row => row.value.toLowerCase().startsWith(prefix));
+      const candidates = current.kind === '/' ? slash : (data.plugins || []).map(item =>
+        ({value:'@' + item.name, label:'@' + item.name, detail:item.label}));
+      return candidates.filter(row => row.value.toLowerCase().startsWith(current.kind + current.query));
     }
 
     function draw(data, current, error = '') {
@@ -101,58 +77,55 @@
       focused = -1;
       input.removeAttribute('aria-activedescendant');
       options.replaceChildren(...suggestions.map((row, index) =>
-        el('div', {role:'option', id:listId+'-'+index, class:'chat-slash-option', 'aria-selected':'false',
+        el('div', {role:'option', id:id+'-'+index, class:'chat-slash-option', 'aria-selected':'false',
           onmousedown:event=>event.preventDefault(), onclick:()=>choose(row)},
-          el('strong', {}, row.label), el('span', {}, row.description))));
-      status.hidden = !error && suggestions.length > 0;
-      const emptyText = current.argument === undefined ? 'No matching slash commands.'
-        : current.command === 'task' && !data.tasks?.length ? 'File this chat under a project with tasks first.'
-        : 'No matching ' + current.command + ' names.';
-      status.textContent = error || emptyText;
+          el('strong', {}, row.label), el('span', {}, row.detail))));
+      status.hidden = !error && !!suggestions.length;
+      status.textContent = error || (current.kind === '/' ? 'No matching commands.' : 'No matching plugins.');
     }
 
     async function refresh() {
       const current = query();
       if (dismissed || !current || document.activeElement !== input) { close(); return; }
       panel.hidden = false;
-      trigger.setAttribute('aria-expanded','true');
+      trigger.setAttribute('aria-expanded', String(current.kind === '/'));
+      pluginTrigger.setAttribute('aria-expanded', String(current.kind === '@'));
       const session = getSessionId();
-      if (!request || request.session !== session) {
-        const suffix = session ? '?session_id=' + encodeURIComponent(session) : '';
-        const pending = {session, data:null, error:''};
+      if (!request || request.kind !== current.kind || request.session !== session) {
+        const pending = {kind:current.kind, session, data:null, error:''};
         request = pending;
-        // Render the project chooser while the local catalog loads.
-        draw({}, current, 'Loading commands…');
+        draw({}, current, current.kind === '@' ? 'Loading plugins…' : '');
         try {
-          pending.data = await api('/project-manager/chat-commands' + suffix);
+          pending.data = await api(current.kind === '@' ? '/chat/plugins' :
+            '/project-manager/chat-commands' + (session ? '?session_id=' + encodeURIComponent(session) : ''));
         } catch {
-          pending.error = 'Could not load slash commands. Type / again to retry.';
+          pending.error = current.kind === '@' ? 'Could not load plugins.' : '';
         }
         if (request !== pending) return;
       }
       const latest = query();
-      if (dismissed || panel.hidden || !latest || document.activeElement !== input) return;
-      if (request.data || request.error) draw(request.data || {}, latest, request.error);
+      if (!dismissed && !panel.hidden && latest && document.activeElement === input) draw(request.data || {}, latest, request.error);
     }
 
-    input.addEventListener('input', () => {
-      dismissed = false;
-      if (request?.error) request = null;
-      refresh();
-    });
+    input.addEventListener('input', () => { dismissed = false; if (request?.error) request = null; refresh(); });
     input.addEventListener('focus', () => { if (!dismissed) refresh(); });
     input.addEventListener('blur', close);
     input.addEventListener('click', () => { if (!dismissed) refresh(); });
-    trigger.onclick = () => {
-      if (!panel.hidden) { dismissed = true; close(); return; }
-      dismissed = false;
-      input.focus();
-      if (!input.value.trimStart().startsWith('/')) {
-        input.value = input.value ? '/ ' + input.value : '/';
-        input.setSelectionRange(1, 1);
-      }
-      refresh();
-    };
+    for (const [button, symbol] of [[trigger,'/'],[pluginTrigger,'@']]) {
+      button.onmousedown = event => event.preventDefault();
+      button.onclick = () => {
+        if (!panel.hidden && query()?.kind === symbol) { dismissed = true; close(); return; }
+        dismissed = false;
+        input.focus();
+        if (query()?.kind !== symbol) {
+          const value = input.value;
+          const mode = symbol === '@' ? value.match(/^\s*\/(?:teach|build|research)(?:off)?\s+/i)?.[0] || '' : '';
+          input.value = mode + symbol + (value.slice(mode.length) ? ' ' + value.slice(mode.length) : '');
+          input.setSelectionRange(mode.length + 1, mode.length + 1);
+        }
+        refresh();
+      };
+    }
 
     function handleKey(event) {
       if (panel.hidden || event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return false;
@@ -160,27 +133,23 @@
         dismissed = true;
         close();
       } else if (suggestions.length && ['ArrowDown','ArrowUp'].includes(event.key)) {
-        const last = suggestions.length - 1;
         focused = event.key === 'ArrowDown' ? (focused + 1) % suggestions.length
-          : (focused <= 0 ? last : focused-1);
-        [...options.children].forEach((node, index) => node.setAttribute('aria-selected',String(index === focused)));
+          : (focused <= 0 ? suggestions.length - 1 : focused - 1);
+        [...options.children].forEach((node,index) => node.setAttribute('aria-selected',String(index === focused)));
         const active = options.children[focused];
         input.setAttribute('aria-activedescendant',active.id);
         active.scrollIntoView?.({block:'nearest'});
       } else if (suggestions.length && !event.shiftKey && ['Tab','Enter'].includes(event.key)) {
         const current = query();
         if (!current) return false;
-        if (event.key === 'Enter' && focused < 0 && suggestions.some(row => current.kept.trimStart() + row.value === input.value.trim() && !row.expand && row.value !== '/taskprogress')) {
-          return false;
-        }
+        if (event.key === 'Enter' && focused < 0 && suggestions.some(row =>
+          row.value !== '/taskprogress' && row.value === current.kind + current.query && !current.after.trim())) return false;
         choose(suggestions[Math.max(0, focused)]);
-      } else {
-        return false;
-      }
+      } else return false;
       event.preventDefault();
       return true;
     }
-    return {field, trigger, handleKey, reset};
+    return {field, trigger, pluginTrigger, handleKey, reset};
   }
   window.PODAChatCommands = {mount};
 })();

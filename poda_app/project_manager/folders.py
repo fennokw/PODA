@@ -3,11 +3,10 @@ from __future__ import annotations
 
 import json
 import re
-from collections import Counter
 from threading import RLock
 
 from ..runtime.db import connect, now_iso, one, rows
-from ..chat import commands as chat_commands, discussions
+from ..chat import discussions
 from ..workload import service as workload
 
 LOCK = RLock()
@@ -26,23 +25,17 @@ def ensure_tables(db):
         scheduled INTEGER NOT NULL DEFAULT 0)""")
 
 
-def key(name):
-    return re.sub(r"[^\w-]+", "-", name.casefold()).strip("-")
-
-
 def chats(db, project_id, task_id=None):
     scope = "" if task_id is None else " AND f.task_id=?"
     params = (project_id,) if task_id is None else (project_id, task_id)
-    return rows(db, """SELECT f.session_id, f.task_id,
-        COALESCE((SELECT title FROM chat_discussions d WHERE d.session_id=f.session_id), (SELECT substr(content, 1, 100) FROM messages m
-                  WHERE m.session_id=f.session_id AND m.role='user' ORDER BY m.rowid LIMIT 1),
-                 'New chat') AS title,
+    linked = rows(db, """SELECT f.session_id, f.task_id,
         COALESCE((SELECT max(created_at) FROM messages m WHERE m.session_id=f.session_id),
                  f.linked_at) AS updated_at
         FROM pm_chat_folders f LEFT JOIN workload_items w ON w.id=f.task_id
         JOIN projects p ON p.id=f.project_id
         WHERE f.project_id=? AND (f.task_id IS NULL OR lower(w.project)=lower(p.name))
         """ + scope + " ORDER BY updated_at DESC", params)
+    return [{**item, "title": discussions.header(db, item["session_id"])["title"]} for item in linked]
 
 
 def assign(db, session_id, project_id, task_id=None):
@@ -56,19 +49,17 @@ def assign(db, session_id, project_id, task_id=None):
 
 def find_chats(db, query):
     """Search conversation titles without exposing the rest of their transcript."""
-    return rows(db, """WITH titles AS (
-        SELECT session_id, min(rowid) AS first_id, max(rowid) AS latest_id
-        FROM messages WHERE provenance IN ('chat','work-discussion') AND role='user' AND session_id IS NOT NULL
-        GROUP BY session_id
-    ) SELECT titles.session_id, COALESCE(d.title, substr(m.content, 1, 100)) AS title, p.name AS project_name,
-        w.title AS task_title, f.project_id, f.task_id
-        FROM titles JOIN messages m ON m.rowid=titles.first_id
-        LEFT JOIN chat_discussions d ON d.session_id=titles.session_id
-        LEFT JOIN pm_chat_folders f ON titles.session_id=f.session_id
-        LEFT JOIN projects p ON f.project_id=p.id
-        LEFT JOIN workload_items w ON w.id=f.task_id AND lower(w.project)=lower(p.name)
-        WHERE instr(lower(COALESCE(d.title,substr(m.content,1,100))), lower(?)) > 0 OR ? = ''
-        ORDER BY titles.latest_id DESC LIMIT 40""", (query, query))
+    matches = []
+    for discussion in discussions.list_work(db, limit=-1 if query else 100):
+        if query.casefold() not in discussion["label"].casefold():
+            continue
+        sid = discussion["session_id"]
+        filing = context(db, sid) or {}
+        matches.append({"session_id": sid, "title": discussion["label"],
+                        **{key: filing.get(key) for key in ("project_id", "project_name", "task_id", "task_title")}})
+        if len(matches) == 40:
+            break
+    return matches
 
 
 def context(db, session_id):
@@ -79,67 +70,10 @@ def context(db, session_id):
         LEFT JOIN pm_task_details d ON d.task_id=w.id WHERE f.session_id=?""", (session_id,))
 
 
-def resolve(items, name, label):
-    exact = [item for item in items if item["name"].casefold() == name.strip().casefold()]
-    matches = exact or [item for item in items if key(item["name"]) == key(name)]
-    if len(matches) != 1:
-        detail = "is ambiguous" if matches else "was not found"
-        raise ValueError(f"{label} {name!r} {detail}. Use the exact name in quotes or open its folder.")
-    return matches[0]
-
-
-COMMANDS = {"project", "task", "taskdone", "taskprogress"} | chat_commands.RESERVED
-
-
-def _targets(items, command, blocked):
-    counts = Counter(key(item["name"]) for item in items)
-    exact_counts = Counter(item["name"].casefold() for item in items)
-    targets = []
-    for item in items:
-        name = item["name"]
-        if exact_counts[name.casefold()] != 1:
-            continue
-        slug = key(name)
-        shortcut = "/" + slug if slug and slug not in blocked and counts[slug] == 1 else None
-        targets.append({
-            "name": name,
-            "value": f'/{command} {json.dumps(name, ensure_ascii=False)}',
-            "shortcut": shortcut,
-        })
-    return targets
-
-
 def command_options(db, session_id):
-    projects = rows(db, "SELECT id, name FROM projects ORDER BY lower(name)")
     current = context(db, session_id) if session_id else None
-    tasks = []
-    if current:
-        tasks = rows(db, """SELECT id, title AS name FROM workload_items
-            WHERE lower(project)=lower(?) ORDER BY lower(title)""", (current["project_name"],))
-    # The parser resolves a project shortcut before looking at its tasks.
-    return {
-        "projects": _targets(projects, "project", COMMANDS),
-        "tasks": _targets(tasks, "task", COMMANDS | {key(p["name"]) for p in projects}),
-        "task_name": current["task_title"] if current else None,
-        "goal_target": current["goal_target"] if current else None,
-    }
-
-
-def _command_target(rest):
-    if not rest.startswith('"'):
-        return rest, ""
-    try:
-        target, end = json.JSONDecoder().raw_decode(rest)
-    except ValueError:
-        # Keep older quoted names containing a literal backslash usable.
-        quoted = re.match(r'^"([^"]+)"(?:\s+([\s\S]*))?$', rest)
-        if quoted:
-            return quoted[1], quoted[2] or ""
-        raise ValueError("Choose a name in quotes, or select it from the slash menu.") from None
-    suffix = rest[end:]
-    if suffix and not suffix[0].isspace():
-        raise ValueError("Add a space after the quoted name.")
-    return target, suffix.lstrip()
+    return {"task_name": current["task_title"] if current else None,
+            "goal_target": current["goal_target"] if current else None}
 
 
 def command(session_id, message):
@@ -155,7 +89,7 @@ def command(session_id, message):
                 r"(?:please )?(?:mark (?:this|the) task (?:as )?(?:done|complete|completed)|check (?:(?:this|the) task|it) off|check off (?:(?:this|the) task|it)|complete (?:this|the) task)[.!]?",
                 message, re.I)):
             if not current or not current["task_id"]:
-                return "", "Open a task chat or assign this chat with /task first.", current
+                return "", "Choose a task in the chat header first.", current
             task = update_task(current["project_id"], current["task_id"], {"progress": 100})
             return "", completion_reply(task), context(db, session_id)
 
@@ -165,38 +99,9 @@ def command(session_id, message):
             task = update_task(current["project_id"], current["task_id"], {"goal_current": int(count[1])})
             reply = completion_reply(task) if task["progress"] == 100 else f'Updated {task["title"]} to {task["progress"]}%.'
             return "", reply, context(db, session_id)
-        match = re.match(r'^/([^\s]+)(?:\s+([\s\S]*))?$', message)
-        if not match:
-            return message, "", current
-        verb, rest = match[1], match[2] or ""
-        project = task = None
-        if verb.casefold() in {"project", "task"}:
-            target, remainder = _command_target(rest)
-            if verb.casefold() == "project":
-                project = resolve(rows(db, "SELECT id, name FROM projects"), target, "Project")
-            else:
-                if not current:
-                    return "", "Choose a project with /project before assigning a task.", current
-                project = {"id": current["project_id"], "name": current["project_name"]}
-                task = resolve(rows(db, "SELECT id, title AS name FROM workload_items WHERE lower(project)=lower(?)",
-                                    (project["name"],)), target, "Task")
-        else:
-            projects = rows(db, "SELECT id, name FROM projects")
-            if any(p["name"].casefold() == verb.casefold() or key(p["name"]) == key(verb) for p in projects):
-                project = resolve(projects, verb, "Project")
-            elif current:
-                candidates = rows(db, "SELECT id, title AS name FROM workload_items WHERE lower(project)=lower(?)",
-                                  (current["project_name"],))
-                if not any(t["name"].casefold() == verb.casefold() or key(t["name"]) == key(verb) for t in candidates):
-                    return message, "", current
-                project = {"id": current["project_id"], "name": current["project_name"]}
-                task = resolve(candidates, verb, "Task")
-            else:
-                return message, "", current
-            remainder = rest
-        assign(db, session_id, project["id"], task["id"] if task else None)
-        label = f'{project["name"]} / {task["name"]}' if task else project["name"]
-        return remainder, f"This chat is filed under {label}.", context(db, session_id)
+        if re.match(r"^/(?:project|task)(?=\s|$)", message, re.I):
+            return "", "Use Project and Task at the top of the chat to file this discussion.", current
+        return message, "", current
     except ValueError as exc:
         return "", str(exc), context(db, session_id)
     finally:

@@ -38,10 +38,10 @@ def test_chat_commands_scope_to_project_task_and_complete_goal(client):
     path = f'/project-manager/projects/{project["id"]}'
     task_path = path + f'/tasks/{task["id"]}'
     try:
-        sid, reply = _chat(client, "/flight-dynamics")
-        assert "filed under Flight Dynamics" in reply
-        _, reply = _chat(client, '/task "Solve exercises"', sid)
-        assert "Flight Dynamics / Solve exercises" in reply
+        sid = _post(client, "/chat/work", {})["session_id"]
+        filing = client.put(f"/chat/session/{sid}/filing",
+                            json={"project_id": project["id"], "task_id": task["id"]})
+        assert filing.json()["folder"]["task_title"] == "Solve exercises"
         assert [chat["session_id"] for chat in client.get(path).json()["chats"]] == [sid]
         assert client.get(f'/project-manager/projects/{wrong["id"]}/tasks/{task["id"]}').status_code == 404
         updated = _patch(client, task_path, {"goal": "Exercises solved", "goal_target": 4, "user_minutes": 45})
@@ -74,8 +74,11 @@ def test_existing_chat_can_move_from_project_to_task_folder(client):
     origin_path = f'/project-manager/projects/{origin["id"]}'
     target_path = f'/project-manager/projects/{target["id"]}'
     try:
-        session, _ = _chat(client, "/older-sketches")
-        matches = client.get("/project-manager/chats", params={"query": "OLDER-SKETCHES"}).json()["chats"]
+        session = _post(client, "/chat/work", {})["session_id"]
+        _patch(client, f"/chat/session/{session}/title", {"title": "Older sketches"})
+        client.put(f"/chat/session/{session}/filing", json={"project_id": origin["id"]})
+        _chat(client, "/teach", session)
+        matches = client.get("/project-manager/chats", params={"query": "OLDER SKETCHES"}).json()["chats"]
         assert any(hit["session_id"] == session and hit["project_name"] == origin["name"] for hit in matches)
 
         moved = _post(client, target_path + "/chats", {"task_id": task["id"], "session_id": session})
@@ -83,7 +86,7 @@ def test_existing_chat_can_move_from_project_to_task_folder(client):
         assert client.get(origin_path).json()["chats"] == []
         task_chats = client.get(target_path + "/tasks/" + task["id"]).json()["chats"]
         assert [chat["session_id"] for chat in task_chats] == [session]
-        assert client.get(f"/chat/session/{session}/messages").json()["messages"][0]["content"] == "/older-sketches"
+        assert client.get(f"/chat/session/{session}/messages").json()["messages"][0]["content"] == "/teach"
         assert client.post(target_path + "/chats", json={"session_id": "missing"}).status_code == 404
     finally:
         client.delete("/workload/" + task["id"])
@@ -189,30 +192,30 @@ def test_notion_deadline_retry_reuses_native_task(client, monkeypatch):
         client.delete("/project-manager/projects/" + project["id"])
 
 
-def test_slash_options_respect_chat_scope_and_escape_names(client):
+def test_manual_filing_scopes_task_commands_and_titles(client):
     name = 'Prototype "A"'
     project = _post(client, "/project-manager/projects", {"name": name})
-    collision = _post(client, "/project-manager/projects", {"name": "taskdone"})
+    other = _post(client, "/project-manager/projects", {"name": "Separate project"})
     task = _post(client, "/workload", {"title": "Review design", "project": name})
     path = f'/project-manager/projects/{project["id"]}'
+    sid = _post(client, "/chat/work", {})["session_id"]
     endpoint = "/project-manager/chat-commands"
+    filing = f"/chat/session/{sid}/filing"
     try:
-        unfiled = client.get(endpoint).json()
-        assert unfiled["tasks"] == [] and unfiled["task_name"] is None
-        target = next(p for p in unfiled["projects"] if p["name"] == name)
-        assert target["shortcut"] == "/prototype-a"
-        assert next(p for p in unfiled["projects"] if p["name"] == "taskdone")["shortcut"] is None
-        sid, reply = _chat(client, target["value"])
-        assert name in reply
-        filed = client.get(endpoint, params={"session_id": sid}).json()
-        assert [item["shortcut"] for item in filed["tasks"]] == ["/review-design"]
-        assert filed["task_name"] is None
-        _, reply = _chat(client, filed["tasks"][0]["value"], sid)
-        assert "Review design" in reply
+        assert client.get(endpoint, params={"session_id": sid}).json() == {"task_name": None, "goal_target": None}
+        wrong = client.put(filing, json={"project_id": other["id"], "task_id": task["id"]})
+        assert wrong.status_code == 404
+        assert client.put(filing, json={"project_id": project["id"], "task_id": task["id"]}).json()["folder"]["project_name"] == name
         _patch(client, path + "/tasks/" + task["id"], {"goal_target": 3})
-        scoped = client.get(endpoint, params={"session_id": sid}).json()
-        assert scoped["task_name"] == "Review design" and scoped["goal_target"] == 3
+        assert client.get(endpoint, params={"session_id": sid}).json() == {"task_name": "Review design", "goal_target": 3}
+        _patch(client, f"/chat/session/{sid}/title", {"title": "Design review"})
+        assert client.get(path).json()["chats"][0]["title"] == "Design review"
+        _, reply = _chat(client, '/project "Separate project"', sid)
+        assert "top of the chat" in reply
+        assert client.get(f"/chat/session/{sid}/header").json()["folder"]["project_id"] == project["id"]
+        assert client.put(filing, json={}).json()["folder"] is None
+        assert client.get(f"/chat/session/{sid}/header").json()["title"] == "Design review"
     finally:
         client.delete("/workload/" + task["id"])
         client.delete(path)
-        client.delete("/project-manager/projects/" + collision["id"])
+        client.delete("/project-manager/projects/" + other["id"])

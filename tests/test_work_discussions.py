@@ -27,11 +27,13 @@ def _model(monkeypatch, answer):
 
 
 def test_commands_keep_mode_independent_of_storage():
-    assert commands.parse("/work /teach me Solve Q2").mode == "teach"
-    assert commands.parse("/work /teach me Solve Q2").message == "Solve Q2"
-    assert commands.parse("/work /teach me Solve Q2").work
-    assert not commands.parse("/learn Solve Q2").work
-    assert commands.parse("/workbench test").message == "/workbench test"
+    command = commands.parse("/teach Solve Q2")
+    assert command.mode == "teach" and command.message == "Solve Q2"
+    assert commands.active_mode("", command) == "teach"
+    assert commands.active_mode("teach", commands.parse("Tell me more")) == "teach"
+    assert commands.active_mode("teach", commands.parse("/teachoff")) == ""
+    assert commands.active_mode("learn", commands.parse("Continue")) == "teach"
+    assert commands.parse("/teachme questions").mode == ""
     assert commands.parse("Show /work in an example").mode == ""
 
 
@@ -39,7 +41,7 @@ def test_ordinary_learning_publishes_memory_then_promotes_active_chat(client, mo
     quiz = {"question": "What is two plus two?", "choices": [
         {"label": "3", "feedback": "Add the second two."}, {"label": "4", "feedback": "Two pairs contain four."}], "correct": 1}
     _model(monkeypatch, "Try this.\n\n```poda-quiz\n" + json.dumps(quiz) + "\n```")
-    first = client.post("/chat/stream", json={"message": "/learn Review two pairs", "use_memory": False})
+    first = client.post("/chat/stream", json={"message": "/teach Review two pairs", "use_memory": False})
     session = _event(first, "session")
     assert session["work_discussion"] is False
     sid = session["session_id"]
@@ -48,8 +50,8 @@ def test_ordinary_learning_publishes_memory_then_promotes_active_chat(client, mo
     assert not any(item["session_id"] == sid for item in client.get("/chat/sessions").json()["sessions"])
     with closing(connect()) as db:
         assert rows(db, "SELECT 1 FROM memory_nodes WHERE source_message_id=?", (session["user_message_id"],))
-    opened = client.post("/chat/stream", json={"message": "/work", "session_id": sid, "use_memory": False})
-    assert _event(opened, "session")["session_id"] == sid
+    opened = client.post("/chat/work", params={"session_id": sid})
+    assert opened.json()["session_id"] == sid
     messages = client.get(f"/chat/session/{sid}/messages").json()["messages"]
     assert messages[1]["learning_widgets"][0]["question"] == quiz["question"]
     assert client.patch(f"/chat/session/{sid}/title", json={"title": "Pair exercise"}).is_success
@@ -234,3 +236,68 @@ def test_linked_canvas_sync_writes_completion_only(client, monkeypatch):
     folders.update_task(project["id"], task["id"], {"progress": 100})
     assert updates == [(page["id"], {"properties": {"Done": {"checkbox": True}}})]
     assert values["Assignment"] == "91234"
+
+
+def test_teach_persists_until_off_and_uses_open_answer_card(client, monkeypatch):
+    from poda_app.chat import router as chat
+    sid = client.post("/chat/work").json()["session_id"]
+    captured = []
+    answers = iter([
+        "Perfect!\n\n# Problem M-9.1\nAt the free end there is no traction.\n\nYour turn: What is the stress there?",
+        "The boundary stress is zero.\n\nQuestion: Which expression vanishes at x=L? A. x B. L−x\n\n(Select an option.)",
+        "# A normal response\nThe mode is off.",
+    ])
+    _model(monkeypatch, "")
+    async def stream(messages, *args, **kwargs):
+        captured.append(messages)
+        yield {"message": {"content": next(answers)}, "done": True}
+    monkeypatch.setattr(chat.inference, "chat_stream", stream)
+    payload = {"session_id": sid, "use_memory": False}
+    first = client.post("/chat/stream", json={**payload, "message": "/teach Explain the boundary condition"})
+    assert _event(first, "session")["discussion_mode"] == "teach"
+    done = _event(first, "done")
+    assert done["answer"] == "At the free end there is no traction."
+    assert done["learning_widgets"] == [{"kind": "question", "question": "What is the stress there?"}]
+    ref = {"message_id": done["download"]["message_id"], "widget": 0}
+    answer = client.post("/chat/stream", json={**payload, "message": "Zero", "practice": ref})
+    assert _event(answer, "session")["discussion_mode"] == "teach"
+    result = _event(answer, "done")
+    assert len(result["learning_widgets"]) == 1
+    assert result["learning_widgets"][0]["choices"] == [{"label": "x"}, {"label": "L−x"}]
+    assert "What is the stress there?" in captured[1][-1]["content"]
+    assert [m for m in client.get(f"/chat/session/{sid}/messages").json()["messages"]
+            if m.get("practice")][0]["practice"]["message_id"] == ref["message_id"]
+    off = client.post("/chat/stream", json={**payload, "message": "/teachoff Give a regular answer"})
+    assert _event(off, "session")["discussion_mode"] == ""
+    assert _event(off, "done")["learning_widgets"] == []
+    assert "Ask at most one question" not in captured[-1][0]["content"]
+    assert client.get(f"/chat/session/{sid}/messages").json()["discussion_mode"] == ""
+
+
+def test_duplicate_quiz_and_spoiled_plain_question_render_one_card():
+    quiz = dict(question="Which condition applies at the free end?", correct=0,
+                choices=[{"label": "Zero traction", "feedback": "Correct."}, {"label": "Zero strain", "feedback": "Use traction."}])
+    result, widgets = learning.extract("The end is free.\n\nQuiz Time: Boundary conditions\n"
+        "Question: Which condition applies at the free end? A. Zero traction B. Zero strain\n\n"
+        "```poda-quiz\n" + json.dumps(quiz) + "\n```")
+    assert result == "The end is free."
+    assert widgets[0]["choices"] == quiz["choices"] and len(widgets) == 1
+    result, widgets = learning.extract("Use Hooke’s law.\n\nYour turn: What relates stress and strain?\n\nHooke’s law!")
+    assert result == "Use Hooke’s law."
+    assert widgets[0]["kind"] == "question"
+
+
+def test_plugin_mentions_route_only_selected_tools(client, monkeypatch):
+    from poda_app.chat import router as chat
+    _model(monkeypatch, "Ready.")
+    monkeypatch.setattr(chat.orchestrator, "tool_prerequisites_exist", lambda _: True)
+    captured = {}
+    def plan(prompt, *args, **kw):
+        captured.update(prompt=prompt, **kw)
+        return {"flagged": [], "executed": [], "proposal_id": None}
+    monkeypatch.setattr(chat.orchestrator, "plan", plan)
+    result = client.post("/chat/stream", json={"message": "Use @github to show the selected repo", "use_memory": False})
+    assert _event(result, "done")
+    assert captured["allowed_tools"] and all(tool.startswith("github_") for tool in captured["allowed_tools"])
+    assert "@github" not in captured["prompt"]
+    assert chat.plugins.resolve("Email help@github.com or write `@github` in docs")[1] is None

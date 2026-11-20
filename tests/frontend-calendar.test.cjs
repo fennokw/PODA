@@ -189,21 +189,20 @@ test('project task folders show progress, reopen chats, and save a new due time'
     assert.equal(patch.progress,undefined);
   }finally{dom.window.close();}
 });
-test('slash menu completes scoped commands without sending or losing drafts', async () => {
+test('slash menu completes one-word modes and @ mentions without losing drafts', async () => {
   const {dom,w,calls}=create();
   try {
     let session;
-    w.fetch=async(url)=>{
+    w.fetch=async url=>{
       calls.push(url);
-      const projects=[{name:'Demo Project',shortcut:'/demo-project',value:'/project "Demo Project"'}];
-      const data=url.includes('session_id=task-chat') ? {projects,task_name:'Review',goal_target:5,
-        tasks:[{name:'Review',shortcut:'/review',value:'/task "Review"'}]} : {projects,tasks:[]};
+      const data=url==='/chat/plugins' ? {plugins:[{name:'github',label:'GitHub'}]} :
+        url.includes('session_id=task-chat') ? {task_name:'Review',goal_target:5} : {};
       return {ok:true,status:200,text:async()=>JSON.stringify(data)};
     };
     w.eval(fs.readFileSync(path.join(root,'chat-commands.js'),'utf8'));
     const area=w.document.createElement('textarea');
     const menu=w.PODAChatCommands.mount(area,()=>session);
-    w.document.body.append(menu.field,menu.trigger);
+    w.document.body.append(menu.field,menu.trigger,menu.pluginTrigger);
     let enters=0;
     area.addEventListener('keydown',event=>{
       if (!menu.handleKey(event) && event.key==='Enter') enters++;
@@ -217,35 +216,23 @@ test('slash menu completes scoped commands without sending or losing drafts', as
     type('/');
     await settle();
     assert.equal(panel.hidden,false);
-    assert.match(panel.textContent,/Demo Project/);
-    assert.doesNotMatch(panel.textContent,/taskdone/);
-    type('/demo');
-    press('ArrowDown');press('Enter');
-    assert.equal(area.value,'/demo-project ');
-    assert.equal(enters,0);
-    assert.equal(panel.hidden,true);
-    press('Enter');
-    assert.equal(enters,1);
-
-    type('Summarize the plan');
-    menu.trigger.click();
+    assert.match(panel.textContent,/\/teachoff/);
+    assert.doesNotMatch(panel.textContent,/\/(?:learn|act|work|project)|taskdone/);
+    type('/teachoff');press('Enter');assert.equal(enters,1);
+    type('Explain the equation');menu.trigger.click();
     panel.querySelector('[role="option"]').click();
-    assert.match(panel.textContent,/Demo Project/);
-    panel.querySelector('[role="option"]').click();
-    assert.equal(area.value,'/project "Demo Project" Summarize the plan');
-
+    assert.equal(area.value,'/teach Explain the equation');
+    type('/research @gi');await settle();press('Tab');
+    assert.equal(area.value,'/research @github ');
+    type('Use @gi');await settle();press('Tab');
+    assert.equal(area.value,'Use @github ');
     session='task-chat';menu.reset();
     type('/task');await settle();
     assert.match(panel.textContent,/taskdone/);
-    assert.match(panel.textContent,/out of 5/);
+    assert.match(panel.textContent,/taskprogress/);
     assert.ok(calls.includes('/project-manager/chat-commands?session_id=task-chat'));
-    type('/task rev');
-    press('Tab');
-    assert.equal(area.value,'/task "Review" ');
-    type('/');press('Escape');
-    assert.equal(panel.hidden,true);
-    type('https://example.com/path');
-    assert.equal(panel.hidden,true);
+    type('/');press('Escape');assert.equal(panel.hidden,true);
+    type('https://example.com/path');assert.equal(panel.hidden,true);
   } finally {dom.window.close();}
 });
 
@@ -303,26 +290,84 @@ test('Projects exposes task folders and files an existing chat without a command
   }finally{dom.window.close();}
 });
 
-test('the actual Chat composer renders slash suggestions',async()=>{
+test('Chat header turns Work mode on, files the discussion, and renames it', async () => {
   const {dom,w}=create();
-  try{
+  try {
     w.history.replaceState(null,'','#/ask');
-    w.fetch=async url=>{
-      const data=url==='/project-manager/chat-commands'?{projects:[{name:'Workshop',shortcut:'/workshop',value:'/project "Workshop"'}]}:{};
+    w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
+    w.HTMLDialogElement.prototype.close=function(){this.open=false;};
+    const initial={session_id:'lesson-chat',title:'New work discussion',folder:null};
+    let header=initial, saved=[], renamed;
+    w.fetch=async (url,opts={})=>{
+      let data={};
+      if(url==='/chat/work')data=header;
+      if(url==='/chat/sessions')data={sessions:header===initial?[]:[{session_id:header.session_id,label:header.title}]};
+      if(url==='/project-manager/projects')data={projects:[{id:'class',name:'Materials'}]};
+      if(url==='/project-manager/projects/class')data={tasks:[{id:'hw',title:'Homework 9'}]};
+      if(url.endsWith('/lesson-chat/filing')){
+        const payload=JSON.parse(opts.body);saved.push(payload);
+        header={...header,folder:payload};data=header;
+      }
+      if(url.endsWith('/lesson-chat/title')){
+        renamed=JSON.parse(opts.body).title;header={...header,title:renamed};data={title:renamed};
+      }
       return {ok:true,status:200,text:async()=>JSON.stringify(data)};
     };
-    for(const name of ['chat-commands.js','app.js'])w.eval(fs.readFileSync(path.join(root,name),'utf8'));
+    for(const name of ['chat-commands.js','app.js']) w.eval(fs.readFileSync(path.join(root,name),'utf8'));
     await settle();
     const area=w.document.querySelector('.composer textarea');
-    area.focus();area.value='/';
-    area.dispatchEvent(new w.Event('input',{bubbles:true}));
+    const toolbar=w.document.querySelector('.chat-work-toolbar');
+    const [work]=toolbar.querySelectorAll('button');
+    work.click();await settle();
+    assert.equal(work.getAttribute('aria-pressed'),'true');
+    const project=toolbar.querySelector('[aria-label="Project"]');
+    project.value='class';project.dispatchEvent(new w.Event('change'));await settle();
+    const task=toolbar.querySelector('[aria-label="Task"]');
+    task.value='hw';task.dispatchEvent(new w.Event('change'));await settle();
+    assert.deepEqual(saved,[{project_id:'class',task_id:null},{project_id:'class',task_id:'hw'}]);
+    [...toolbar.querySelectorAll('button')].find(b=>b.textContent==='Rename').click();
+    const dialog=w.document.querySelector('dialog');
+    dialog.querySelector('input').value='Homework 9 walkthrough';
+    [...dialog.querySelectorAll('button')].find(b=>b.textContent==='Save').click();
     await settle();
-    const panel=w.document.querySelector('.composer .chat-slash-panel');
-    assert.equal(panel.hidden,false);
-    assert.match(panel.textContent,/\/workshop/);
-    panel.querySelector('[role="option"]').click();
-    assert.equal(area.value,'/project ');
+    assert.equal(renamed,'Homework 9 walkthrough');
+    assert.equal(w.document.querySelector('#viewTitle').textContent,renamed);
+    assert.match(w.document.querySelector('#workDiscussionLinks').textContent,/Homework 9 walkthrough/);
+    work.click();await settle();assert.equal(work.getAttribute('aria-pressed'),'false');
+    assert.equal(w.document.querySelector('#viewTitle').textContent,'Chat');
+    assert.equal(w.document.querySelector('#workDiscussionLinks a').textContent,'Homework 9 walkthrough');
+    area.focus();area.value='/';area.dispatchEvent(new w.Event('input',{bubbles:true}));await settle();
+    assert.match(w.document.querySelector('.composer .chat-slash-panel').textContent,/\/teachoff/);
   }finally{dom.window.close();}
+});
+
+test('Practice cards submit through buttons or text and excerpts show the exact source', () => {
+  const {dom,w}=create();
+  try {
+    w.eval(fs.readFileSync(path.join(root,'learning.js'),'utf8'));
+    const box=w.document.createElement('main');
+    w.document.body.append(box);
+    const answers=[];
+    const send=(text,ref)=>{answers.push([text,ref]);return true;};
+    w.PODALearning.sources([{file:'Homework.pdf',page:2,text:'Problem M-9.1'}],box);
+    w.PODALearning.mount([
+      {kind:'quiz',question:'Which end is free?',choices:[{label:'Bottom'},{label:'Top'}],correct:null},
+      {kind:'question',question:'What is the stress there?'},
+      {kind:'plot',title:'Stress',x_label:'x',y_label:'σ',points:[[0,2],[1,0]]},
+    ],box,send,null,'discussion','message');
+    box.querySelector('.learning-choices button').click();
+    const form=box.querySelector('form');
+    form.querySelector('input').value='Zero';
+    form.dispatchEvent(new w.Event('submit',{cancelable:true}));
+    assert.deepEqual(JSON.parse(JSON.stringify(answers)),[
+      ['Bottom',{message_id:'message',widget:0,choice:0}],
+      ['Zero',{message_id:'message',widget:1,choice:null}],
+    ]);
+    assert.match(box.querySelector('figure').textContent,/Homework.pdf · page 2.*Problem M-9.1/);
+    const slider=box.querySelector('input[type="range"]');
+    slider.value=1;slider.dispatchEvent(new w.Event('input'));
+    assert.match(box.querySelector('output').textContent,/x = 1 · σ = 0/);
+  } finally {dom.window.close();}
 });
 
 test('BestNDS matching errors stay beside the preset button',async()=>{
