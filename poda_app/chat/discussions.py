@@ -1,6 +1,7 @@
 """Persistent discussions and the bounded cache used by ordinary Chat."""
 from __future__ import annotations
 
+import json
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -8,6 +9,7 @@ from uuid import uuid4
 
 from ..runtime.db import connect, now_iso, one, rows
 from ..memory import store
+from .commands import title_from_message
 
 ORDINARY = "ordinary-chat"
 WORK = "work-discussion"
@@ -60,19 +62,32 @@ def clear_old_caches() -> None:
     expire_materials()
 
 
-def list_work(db):
-    return rows(db, """WITH work AS (
+def header(db, session_id):
+    record = one(db, "SELECT title FROM chat_discussions WHERE session_id=?", (session_id,))
+    title = (record or {}).get("title")
+    if not title:
+        for turn in rows(db, """SELECT content FROM messages WHERE session_id=? AND role='user'
+                ORDER BY rowid LIMIT 12""", (session_id,)):
+            title = title_from_message(turn["content"])
+            if title:
+                break
+    if not title:
+        attachment = one(db, "SELECT name FROM chat_materials WHERE session_id=? ORDER BY rowid LIMIT 1", (session_id,))
+        title = (attachment or {}).get("name") or "New work discussion"
+    return {"session_id": session_id, "title": title[:100]}
+
+
+def list_work(db, limit=100):
+    sessions = rows(db, """WITH work AS (
         SELECT session_id, created_at FROM chat_discussions
         UNION ALL SELECT session_id, MIN(created_at) FROM messages
           WHERE session_id IS NOT NULL AND provenance IN ('chat','work-discussion')
           GROUP BY session_id
     ), sessions AS (SELECT session_id, MIN(created_at) AS created_at FROM work GROUP BY session_id)
     SELECT s.session_id,
-        COALESCE((SELECT MAX(created_at) FROM messages WHERE session_id=s.session_id), s.created_at) AS updated_at,
-        COALESCE(NULLIF(d.title,''), (SELECT substr(content,1,100) FROM messages
-          WHERE session_id=s.session_id AND role='user' AND lower(trim(content))!='/work' ORDER BY rowid LIMIT 1), 'New work discussion') AS label
-    FROM sessions s LEFT JOIN chat_discussions d ON d.session_id=s.session_id
-    ORDER BY updated_at DESC, s.session_id LIMIT 100""")
+        COALESCE((SELECT MAX(created_at) FROM messages WHERE session_id=s.session_id), s.created_at) AS updated_at
+    FROM sessions s ORDER BY updated_at DESC, s.session_id LIMIT ?""", (limit,))
+    return [{**session, "label": header(db, session["session_id"])["title"]} for session in sessions]
 
 
 def last_mode(session_id: str) -> str:
@@ -115,3 +130,41 @@ def recent_materials(session_id):
             files.append(InputFile(record["name"], data))
             remaining -= len(data)
     return tuple(reversed(files))
+
+def last_question(session_id, response=None):
+    with closing(connect()) as db:
+        if response:
+            record = one(db, """SELECT metadata_json FROM messages
+                WHERE id=? AND session_id=? AND role='assistant'""", (response.message_id, session_id))
+        else:
+            record = one(db, """SELECT metadata_json FROM messages
+                WHERE session_id=? AND role='assistant' ORDER BY rowid DESC LIMIT 1""", (session_id,))
+    try:
+        widgets = json.loads((record or {}).get("metadata_json") or "{}").get("learning_widgets") or []
+    except (ValueError, AttributeError):
+        return None
+    if response:
+        if response.widget >= len(widgets):
+            return None
+        item = widgets[response.widget]
+    else:
+        item = next((widget for widget in widgets if widget.get("kind") in {"question", "quiz"}), {})
+    if item.get("kind") not in {"question", "quiz"} or not item.get("question"):
+        return None
+    choices = [choice["label"] for choice in item.get("choices", [])]
+    if response and response.choice is not None and response.choice >= len(choices):
+        return None
+    result = {"question": item["question"],
+              "choices": {chr(65 + index): label for index, label in enumerate(choices)}}
+    if response and response.choice is not None:
+        result["selected"] = choices[response.choice]
+    return result
+
+def previous_sources(session_id):
+    with closing(connect()) as db:
+        record = one(db, """SELECT metadata_json FROM messages WHERE session_id=? AND role='assistant'
+            ORDER BY rowid DESC LIMIT 1""", (session_id,))
+    try:
+        return json.loads((record or {}).get("metadata_json") or "{}").get("source_excerpts") or []
+    except (ValueError, AttributeError):
+        return []

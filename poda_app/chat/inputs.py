@@ -7,16 +7,19 @@ import json
 import re
 import stat
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..agent import sandbox_files
-from . import artifacts, document_ocr
+from . import artifacts, document_ocr, source_excerpts
 
 MAX_FILES = 4
 MAX_TOTAL_BYTES = 32 * 1024 * 1024
 IMAGE_SUFFIXES = {".png", ".jpeg", ".jpg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
-_EDIT = re.compile(r"\b(edit|modify|fix|update|patch|change|rewrite|revise|replace|correct)\b|\b(?:add|remove)\b.{0,100}\b(?:to|from|in)\b", re.I)
+_EDIT = re.compile(
+    r"^(?:please\s+|(?:can|could|would) you\s+)?(?:edit|modify|fix|update|patch|change|rewrite|revise|replace|correct)\b"
+    r"[^\r\n]{0,100}\b(?:pdf|zip|(?:uploaded|attached|this) (?:file|document|archive))\b", re.I)
+_MATERIAL = re.compile(r"\b(?:attached|uploaded|handout|worksheet|document|assignment|problem set|pdf|page\s+\d+|[a-z]+-\d+\.\d+)\b", re.I)
 _EXTERNAL_READ = re.compile(r"\b(?:my|our|connected) (?:calendar|inbox|e-?mail|notion|workload|projects?)\b|\b(?:search|check|read|pull|fetch|look up)\b.{0,40}\b(?:inbox|notion|calendar|e-?mails?|workload)\b", re.I)
 
 
@@ -35,8 +38,12 @@ def needs_separate_tools(message: str, intents: set[str], *, uploaded: bool = Fa
     return bool(artifacts.external_destination(message) or intents - local or _EXTERNAL_READ.search(message))
 
 
+def references_material(message: str) -> bool:
+    return bool(_MATERIAL.search(message))
+
+
 def edit_target(message: str, files: tuple[InputFile, ...]) -> InputFile | None:
-    if len(files) == 1 and files[0].suffix in {".zip", ".pdf"} and _EDIT.search(message):
+    if len(files) == 1 and files[0].suffix in {".zip", ".pdf"} and _EDIT.match(message.strip()):
         return files[0]
     return None
 
@@ -111,6 +118,7 @@ class Prepared:
     warnings: list[str]
     original_zip: dict[str, bytes] | None
     editable_paths: set[str]
+    sources: list[dict] = field(default_factory=list)
 
 
 def prepare(files: tuple[InputFile, ...], message: str, limit: int, editing: InputFile | None) -> Prepared:
@@ -124,6 +132,12 @@ def prepare(files: tuple[InputFile, ...], message: str, limit: int, editing: Inp
                 result.images.append(image)
                 result.image_names.append(file.name)
                 if not recognized:
+                    from PIL import Image
+                    with Image.open(io.BytesIO(base64.b64decode(image))) as picture:
+                        picture.thumbnail((480, 360))
+                        thumb = io.BytesIO()
+                        picture.save(thumb, "PNG")
+                    blocks.append(source_excerpts.label_image(file.name, base64.b64encode(thumb.getvalue()).decode(), result.sources))
                     continue
                 content = "[Recognized image text · OCR can contain transcription errors]\n" + recognized[:per_file]
             elif file.suffix == ".pdf":
@@ -162,6 +176,12 @@ def prepare(files: tuple[InputFile, ...], message: str, limit: int, editing: Inp
                 if text is None:
                     raise ValueError("Use a ZIP, PDF, DOCX, XLSX, image, or UTF-8 text/code file.")
                 content = text[:per_file] + ("\n[Text excerpt ends here.]" if len(text) > per_file else "")
+            if not editing:
+                before = len(result.sources)
+                content = source_excerpts.label_text(content, file.name, result.sources, pdf=file.suffix == ".pdf")
+                if file.suffix in IMAGE_SUFFIXES:
+                    for item in result.sources[before:]:
+                        item["ocr"] = True
             blocks.append(f"Attachment {json.dumps(file.name, ensure_ascii=False)}\n{content}")
         except Exception as exc:
             reason = str(exc) if isinstance(exc, ValueError) else "PODA could not read this file."

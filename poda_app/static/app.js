@@ -157,7 +157,7 @@
     sessionId: sessionStorage.getItem('poda_session_id') || null,
     workDiscussion: !!sessionStorage.getItem('poda_session_id'),
     runId: sessionStorage.getItem('poda_active_run') || null,
-    mode: 'auto', thinking: 'balanced', useMemory: true,
+    discussionMode: '', mode: 'auto', thinking: 'balanced', useMemory: true,
     controller: null, transcript: []
   };
   // Only opaque identifiers go in browser storage. Full conversations remain in encrypted SQLite.
@@ -184,7 +184,7 @@
   $('#nav [data-route="ask"]')?.addEventListener('click', () => {
     if (!askState.workDiscussion) return;
     askState.controller?.abort();
-    Object.assign(askState, {sessionId:null, workDiscussion:false, runId:null, transcript:[], controller:null});
+    Object.assign(askState, {sessionId:null, workDiscussion:false, discussionMode:'', runId:null, transcript:[], controller:null});
     persistSession();
   });
 
@@ -195,6 +195,7 @@
       askState.controller = null;
       askState.sessionId = requestedSession;
       askState.workDiscussion = true;
+      askState.discussionMode = '';
       askState.runId = null;
       askState.transcript = [];
       persistSession();
@@ -254,7 +255,7 @@
     const memoryToggle = el('label', { class: 'check' }, el('input', { type: 'checkbox', checked: askState.useMemory, onchange: (e) => { askState.useMemory = e.target.checked; } }), 'Use memory');
     const slashMenu = window.PODAChatCommands?.mount(textarea, () => askState.sessionId);
     const composer = el('form', { class: 'composer' }, fileInput, draftAttachments, slashMenu?.field || textarea,
-      el('div', { class: 'composer-bar' }, attachBtn, slashMenu?.trigger,
+      el('div', { class: 'composer-bar' }, attachBtn, slashMenu?.trigger, slashMenu?.pluginTrigger,
         seg('Model', [['auto', 'Auto'], ['fast', 'Fast'], ['advanced', 'Advanced'], ['deep', 'Deep']], askState.mode, (v) => { askState.mode = v; }),
         (() => { const w = seg('Thinking', [['fast', 'Quick'], ['balanced', 'Balanced'], ['deep', 'Deep think']], askState.thinking, (v) => { askState.thinking = v; }); const deep = $$('button', w)[2]; if (deep) deep.title = 'Also reads in-depth memory (the full question and answer pairs behind each surface memory)'; return w; })(),
         memoryToggle, el('span', { class: 'spacer' }), el('button', { class: 'btn btn-ghost', type: 'button', title: 'Start a fresh conversation. Nothing is deleted: this chat stays in your memory web and can be recalled later.', onclick: () => newChat() }, 'New chat'), stopBtn, sendBtn));
@@ -284,22 +285,134 @@
     inspector.append(checkpointBox);
     const proposalCards = new Map();
     const proposalMessages = new Map();
-    const rename = el('button', {class:'btn btn-sm btn-ghost', type:'button', hidden:!askState.workDiscussion}, 'Rename discussion');
-    rename.onclick = async () => {
-      const title = window.prompt('Name this Work Discussion');
-      if (!title?.trim()) return;
+    const checklistPanel = el('div');
+    inspector.prepend(checklistPanel);
+    const workControl = el('button', {class:'btn btn-sm', type:'button', 'aria-pressed':'false'}, 'Work mode');
+    const rename = el('button', {class:'btn btn-sm btn-ghost', type:'button'}, 'Rename');
+    const project = el('select', {class:'input', 'aria-label':'Project'});
+    const task = el('select', {class:'input', 'aria-label':'Task'});
+    const filing = el('div', {class:'chat-filing', hidden:true},
+      el('label', {}, 'Project', project), el('label', {}, 'Task', task), rename);
+    const modeStatus = el('span', {class:'chat-mode-badge', hidden:true, role:'status'});
+    const toolbar = el('div', {class:'chat-work-toolbar', role:'group', 'aria-label':'Chat organization'},
+      workControl, filing, modeStatus);
+    chatScreen.prepend(toolbar);
+
+    let workHeader, projects, headerRevision = 0;
+    function showMode() {
+      const mode = askState.discussionMode;
+      modeStatus.hidden = !mode;
+      modeStatus.textContent = mode ? mode[0].toUpperCase() + mode.slice(1) + ' mode · /' + mode + 'off' : '';
+    }
+    function setWorkControls() {
+      workControl.setAttribute('aria-pressed', String(askState.workDiscussion));
+      filing.hidden = !askState.workDiscussion;
+      showMode();
+    }
+    async function refreshHeader(data) {
+      const revision = ++headerRevision;
+      const session = askState.sessionId;
+      setWorkControls();
+      if (!session || !askState.workDiscussion) return;
+      const path = '/chat/session/' + encodeURIComponent(session);
       try {
-        await api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/title', {method:'PATCH', body:{title}});
+        const [header, choices] = await Promise.all([
+          data || api(path + '/header'),
+          projects || api('/project-manager/projects').then(value => value.projects || []),
+        ]);
+        if (session !== askState.sessionId || revision !== headerRevision) return;
+        workHeader = header;
+        projects = choices;
+        setTitle(header.title || 'Work Discussion');
+        const projectId = header.folder?.project_id || '';
+        const taskId = header.folder?.task_id || '';
+        project.replaceChildren(el('option', {value:''}, 'No project'),
+          ...choices.map(item => el('option', {value:item.id}, item.name)));
+        project.value = projectId;
+        task.disabled = true;
+        task.replaceChildren(el('option', {value:''}, 'No task'));
+        if (projectId) {
+          const detail = await api('/project-manager/projects/' + encodeURIComponent(projectId));
+          if (session !== askState.sessionId || revision !== headerRevision) return;
+          for (const item of detail.tasks || []) task.append(el('option', {value:item.id}, item.title));
+          task.value = taskId;
+          task.disabled = false;
+        }
+      } catch (error) {
+        if (session === askState.sessionId && revision === headerRevision) toast(error.message, 'warn');
+      }
+    }
+    async function saveFiling(projectId, taskId) {
+      if (askState.controller) {
+        toast('Wait for the current response to finish before changing its task.', 'warn');
+        await refreshHeader(workHeader);
+        return;
+      }
+      const session = askState.sessionId;
+      try {
+        const header = await api('/chat/session/' + encodeURIComponent(session) + '/filing',
+          {method:'PUT', body:{project_id:projectId || null, task_id:taskId || null}});
+        if (session !== askState.sessionId) return;
+        await refreshHeader(header);
+        checklistPanel.replaceChildren();
+        if (header.folder?.task_id) window.PODALearning?.checklist(session, checklistPanel);
+        slashMenu?.reset();
+        refreshWorkDiscussions();
+      } catch (error) { toast(error.message, 'warn'); refreshHeader(workHeader); }
+    }
+    project.onchange = () => saveFiling(project.value, '');
+    task.onchange = () => saveFiling(project.value, task.value);
+    rename.onclick = async () => {
+      const session = askState.sessionId;
+      const title = await promptDialog({title:'Rename work discussion', label:'Discussion title', value:workHeader?.title || ''});
+      if (!title?.trim() || session !== askState.sessionId) return;
+      try {
+        const result = await api('/chat/session/' + encodeURIComponent(session) + '/title', {method:'PATCH', body:{title}});
+        if (session !== askState.sessionId) return;
+        setTitle(result.title);
+        if (workHeader) workHeader.title = result.title;
         refreshWorkDiscussions();
       } catch (error) { toast(error.message, 'warn'); }
     };
-    const checklistPanel = el('div');
-    inspector.prepend(rename, checklistPanel);
-    if (askState.workDiscussion) window.PODALearning?.checklist(askState.sessionId, checklistPanel);
-    const practice = (text) => {
-      if (askState.controller) return;
-      textarea.value = text; composer.requestSubmit();
+    workControl.onclick = async () => {
+      if (askState.controller) { toast('Wait for the current response to finish.', 'warn'); return; }
+      workControl.disabled = true;
+      try {
+        if (askState.workDiscussion) {
+          await newChat({keepDraft:true});
+        } else {
+          const suffix = askState.sessionId ? '?session_id=' + encodeURIComponent(askState.sessionId) : '';
+          const header = await api('/chat/work' + suffix, {method:'POST'});
+          askState.sessionId = header.session_id;
+          askState.workDiscussion = true;
+          history.replaceState(null, '', '#/ask?session=' + encodeURIComponent(header.session_id));
+          persistSession();
+          await refreshHeader(header);
+          refreshWorkDiscussions();
+        }
+      } catch (error) { toast(error.message, 'warn'); }
+      finally { workControl.disabled = false; }
     };
+    refreshHeader();
+    if (askState.workDiscussion) window.PODALearning?.checklist(askState.sessionId, checklistPanel);
+    const practice = (text, ref) => {
+      if (askState.controller) return false;
+      if (askState.discussionMode !== 'teach') {
+        toast('Use /teach to answer practice questions.', 'warn');
+        return false;
+      }
+      send(text, null, null, false, [], ref);
+      return true;
+    };
+    function renderLearning(wrap, metaRow, message) {
+      if (!window.PODALearning || !(message.sources?.length || message.widgets?.length)) return;
+      const region = el('div', {class:'chat-learning-region'});
+      wrap.insertBefore(region, metaRow);
+      window.PODALearning.sources(message.sources, region);
+      window.PODALearning.mount(message.widgets, region, practice, checklistPanel, askState.sessionId,
+        message.id, askState.transcript.filter(m => m.practice?.message_id === message.id));
+      if (!region.children.length) region.remove();
+    }
 
     textarea.addEventListener('input', () => { textarea.style.height = 'auto'; textarea.style.height = Math.min(textarea.scrollHeight, 180) + 'px'; });
     textarea.addEventListener('keydown', (e) => {
@@ -412,12 +525,13 @@
     // We intentionally do not save conversation text to browser localStorage/sessionStorage.
     let savedWorkflows = [];
     const readHistory = m => ({role:m.role, content:m.content, at:m.created_at, activity:m.workflow_activity,
-      download:m.download, attachments:m.attachments, widgets:m.learning_widgets});
+      download:m.download, attachments:m.attachments, widgets:m.learning_widgets, sources:m.source_excerpts,
+      practice:m.practice, id:m.id});
     function restoreMessage(m) {
       const {wrap, metaRow} = addMessage(m.role, m.content, m.at, m.attachments);
       restoreActivity(wrap, m.activity);
-      window.PODALearning?.mount(m.widgets, wrap, practice,
-        m.widgets?.some(widget => widget.kind === 'checklist') ? checklistPanel : null, askState.sessionId);
+      renderLearning(wrap, metaRow, m);
+      if (!m.content && (m.widgets?.length || m.sources?.length)) $('.bubble', wrap)?.setAttribute('hidden', '');
       addDownload(metaRow, m.download, askState.sessionId);
       return wrap;
     }
@@ -431,9 +545,11 @@
           askState.runId = null;
           historyReplaceChat();
           persistSession();
-          rename.hidden = true;
+          setWorkControls();
           setTitle('Chat');
         }
+        askState.discussionMode = history.discussion_mode || '';
+        showMode();
         savedWorkflows = history.workflows || [];
         askState.transcript = (history.messages || []).filter((m) => m.role === 'user' || m.role === 'assistant')
           .map(readHistory);
@@ -489,16 +605,17 @@
     }
     scrollToLatest();
     function historyReplaceChat() { window.history.replaceState(null, '', '#/ask'); }
-    async function newChat() {
+    async function newChat({keepDraft = false} = {}) {
       slashMenu?.reset();
       if (askState.runId) await api('/chat/runs/' + encodeURIComponent(askState.runId) + '/cancel', { method: 'POST' }).catch(() => {});
       askState.controller?.abort();
       // Finalize rolling short-term turns into visible second-brain memories.
       if (askState.sessionId && !askState.workDiscussion) await api('/chat/session/' + encodeURIComponent(askState.sessionId) + '/flush', { method: 'POST' }).catch(() => {});
       historyReplaceChat();
-      askState.workDiscussion = false; rename.hidden = true; checklistPanel.replaceChildren(); setTitle('Chat');
+      askState.workDiscussion = false; askState.discussionMode = ''; workHeader = null;
+      setWorkControls(); checklistPanel.replaceChildren(); setTitle('Chat');
       askState.sessionId = null; askState.runId = null; askState.transcript = [];
-      draftFiles.length = 0; drawDraftFiles();
+      if (!keepDraft) { textarea.value = ''; draftFiles.length = 0; drawDraftFiles(); }
       proposalCards.clear(); proposalMessages.clear();
       checkpointBox.replaceChildren(el('h3', {}, 'Workflow checkpoints')); checkpointBox.hidden = true;
       persistSession();
@@ -566,7 +683,7 @@
       }
     }
 
-    async function send(text, continuationOf, resumeId = null, resumeWorkflow = false, files = []) {
+    async function send(text, continuationOf, resumeId = null, resumeWorkflow = false, files = [], practiceReply = null) {
       if (askState.controller) return;
       stickToLatest = true;
       let userWrap;
@@ -574,7 +691,7 @@
         const at = new Date().toISOString();
         const attachments = files.map((file) => file.name);
         userWrap = addMessage('user', text, at, attachments).wrap;
-        askState.transcript.push({ role: 'user', content: text, at, attachments });
+        askState.transcript.push({ role: 'user', content: text, at, attachments, practice:practiceReply });
       }
       const empty = $('.hero-empty', messages); if (empty) empty.remove();
       const { wrap, bubble, metaRow } = addMessage('assistant', '', null);
@@ -585,7 +702,7 @@
       const addActivity = workflowActivity(wrap);
       let full = '', thoughtText = '', raf = 0, finished = false, responseError;
       let phase = '';
-      const paint = () => { raf = 0; rich.renderInto(bubble, full.split(/^```poda-(?:quiz|graph|checklist)/m)[0], { streaming: true }); scrollToLatest(); };
+      const paint = () => { raf = 0; rich.renderInto(bubble, full.split(/^```poda-(?:quiz|question|graph|plot|checklist)/m)[0].replace(/\[(?:source:\s*)?D\d{1,3}\]/ig, ''), { streaming: true }); scrollToLatest(); };
       const schedule = () => { if (!raf) raf = requestAnimationFrame(paint); };
       const setStatus = (text, live, elapsed = 0) => {
         if (!elapsed) phase = text;
@@ -597,6 +714,7 @@
       sendBtn.disabled = attachBtn.disabled = true; stopBtn.hidden = false;
       setStatus(files.length ? 'Uploading files locally…' : 'Contacting PODA…', true);
       const body = { message: text, mode: askState.mode, thinking_level: askState.thinking, use_memory: askState.useMemory, session_id: askState.sessionId };
+      if (practiceReply) body.practice = practiceReply;
       if (continuationOf) body.continuation_of = continuationOf;
       if (resumeWorkflow) body.resume_workflow = true;
       try {
@@ -622,9 +740,11 @@
                 if (data.session_id) {
                   askState.sessionId = data.session_id;
                   askState.workDiscussion = Boolean(data.work_discussion);
+                  askState.discussionMode = data.discussion_mode || '';
+                  setWorkControls();
                   if (askState.workDiscussion) {
                     history.replaceState(null, '', '#/ask?session=' + encodeURIComponent(data.session_id));
-                    setTitle('Work Discussion'); rename.hidden = false;
+                    if (!workHeader) refreshHeader();
                   }
                   persistSession();
                 }
@@ -671,7 +791,9 @@
                 setStatus(`Done · ${data.model || ''}`, false);
                 if (typeof data.answer === 'string') full = data.answer;
                 rich.renderInto(bubble, full);
-                window.PODALearning?.mount(data.learning_widgets, wrap, practice, checklistPanel, askState.sessionId);
+                renderLearning(wrap, metaRow, {widgets:data.learning_widgets, sources:data.source_excerpts,
+                  id:data.download?.message_id});
+                if (!full && (data.learning_widgets?.length || data.source_excerpts?.length)) bubble.hidden = true;
                 if (data.checklist_changed) {
                   checklistPanel.replaceChildren();
                   window.PODALearning?.checklist(askState.sessionId, checklistPanel);
@@ -688,7 +810,8 @@
                     addDownload(metaRow, data.download, askState.sessionId);
                   } catch (error) { imageStatus.textContent = `Could not create PNG: ${error.message}`; addDownload(metaRow, data.download, askState.sessionId); }
                 } else addDownload(metaRow, data.download, askState.sessionId);
-                askState.transcript.push({ role: 'assistant', content: full, at: new Date().toISOString(), download: data.download, widgets: data.learning_widgets });
+                askState.transcript.push({ role: 'assistant', content: full, at: new Date().toISOString(), download: data.download, widgets:data.learning_widgets, sources:data.source_excerpts,
+                  id:data.download?.message_id });
                 break;
               }
               case 'error': responseError = data; setStatus('Error', false); finished = true; break;
@@ -724,7 +847,10 @@
       } finally {
         if (raf) cancelAnimationFrame(raf);
         bubble.classList.remove('streaming'); if (askState.controller === subscription) askState.controller = null; sendBtn.disabled = attachBtn.disabled = false; stopBtn.hidden = true; scrollToLatest();
-        if (finished) { askState.runId = null; persistSession(); refreshWorkDiscussions(); }
+        if (finished) {
+          askState.runId = null; persistSession(); refreshWorkDiscussions();
+          if (workHeader?.title === 'New work discussion') refreshHeader();
+        }
         if (!thoughtText) thoughts.remove(); else $('.live', thoughts)?.remove();
       }
     }

@@ -3,25 +3,88 @@
   'use strict';
   const {el, api} = window.PODA;
 
-  function quiz(widget, next) {
-    const feedback = el('p', {role:'status', class:'small'});
-    const followUp = el('button', {class:'btn btn-sm btn-ghost', type:'button', hidden:true}, 'Try a follow-up');
-    let picked;
-    const choices = widget.choices.map((choice, index) =>
-      el('button', {class:'btn btn-sm btn-ghost', type:'button', 'aria-pressed':'false', onclick:() => {
-        picked = index;
-        choices.forEach((button, i) => button.setAttribute('aria-pressed', String(index === i)));
-        feedback.textContent = (index === widget.correct ? 'Correct. ' : 'Try again. ') + choice.feedback;
-        followUp.hidden = false;
-      }}, choice.label));
-    followUp.onclick = () => next('For “' + widget.question + '” I chose “' + widget.choices[picked].label +
-      '”. Give me a related practice question and help me check the reasoning.');
-    const reveal = el('button', {class:'btn btn-sm', type:'button', onclick:() => {
-      const answer = widget.choices[widget.correct];
-      feedback.textContent = answer.label + '. ' + answer.feedback;
-    }}, 'Reveal answer');
+  function richText(text, tag = 'div') {
+    const node = el(tag, {class:'learning-text'});
+    const renderer = window.PODAChatRendering;
+    if (renderer) renderer.renderInto(node, text);
+    else node.textContent = text;
+    return node;
+  }
+
+  function questionCard(widget, next, messageId, index, answered) {
+    const feedback = el('p', {role:'status', class:'small', hidden:!answered}, answered ? 'Answer submitted.' : '');
+    const choices = widget.choices || [];
+    const input = el('input', {class:'input', type:'text', 'aria-label':'Your answer', placeholder:'Type your answer', maxlength:2000, required:true});
+    const send = el('button', {class:'btn btn-primary btn-sm', type:'submit'}, 'Answer');
+    const form = el('form', {class:'learning-answer-form'}, input, send);
+    const reveal = Number.isInteger(widget.correct) && choices[widget.correct] ? el('button',
+      {class:'btn btn-ghost btn-sm', type:'button', onclick:() => {
+        feedback.hidden = false;
+        feedback.textContent = choices[widget.correct].label + '. ' + choices[widget.correct].feedback;
+      }}, 'Reveal answer') : null;
+    const selected = answered?.practice?.choice;
+    const buttons = choices.map((choice, i) => el('button', {
+      class:'btn btn-sm', type:'button', 'aria-pressed':String(i === selected), onclick:() => submit(choice.label, i)
+    }, el('span', {class:'learning-option-letter'}, String.fromCharCode(65+i)), richText(choice.label, 'span')));
+    function submit(value, choice = null) {
+      const answer = value.trim();
+      if (!answer || !next(answer, messageId ? {message_id:messageId, widget:index, choice} : null)) return;
+      buttons.forEach((button, i) => button.setAttribute('aria-pressed', String(i === choice)));
+      feedback.hidden = false;
+      feedback.textContent = 'Answer submitted.';
+    }
+    form.onsubmit = event => { event.preventDefault(); submit(input.value); };
     return el('section', {class:'learning-card', 'aria-label':'Practice question'},
-      el('strong', {}, widget.question), el('div', {class:'learning-choices'}, ...choices), feedback, reveal, followUp);
+      richText(widget.question, 'strong'),
+      buttons.length ? el('div', {class:'learning-choices'}, ...buttons) : form,
+      feedback, reveal);
+  }
+
+  function sources(excerpts, parent) {
+    if (!excerpts?.length) return;
+    const group = el('div', {class:'chat-source-excerpts', 'aria-label':'Source excerpts'});
+    for (const excerpt of excerpts) {
+      const trace = [excerpt.file, excerpt.page ? 'page ' + excerpt.page : '', excerpt.ocr ? 'OCR' : ''].filter(Boolean).join(' · ');
+      const card = el('figure', {class:'chat-source-card'}, el('figcaption', {}, trace));
+      if (excerpt.text) card.append(el('blockquote', {}, excerpt.text));
+      if (excerpt.image && /^[A-Za-z0-9+/]+=*$/.test(excerpt.image)) {
+        card.append(el('img', {src:'data:image/png;base64,' + excerpt.image, alt:'Excerpt from ' + excerpt.file}));
+      }
+      group.append(card);
+    }
+    parent.append(group);
+  }
+
+  function sampledPlot(widget) {
+    const points = widget.points;
+    if (!Array.isArray(points) || points.length < 2) return null;
+    const ymin = Math.min(...points.map(p => p[1]));
+    const ymax = Math.max(...points.map(p => p[1]));
+    const normalizeX = x => 35 + 330 * (x - points[0][0]) / (points.at(-1)[0] - points[0][0]);
+    const normalizeY = y => ymax === ymin ? 76 : 135 - 116 * (y-ymin) / (ymax-ymin);
+    const ns = 'http://www.w3.org/2000/svg';
+    function graphic(name, values) {
+      const node = document.createElementNS(ns, name);
+      for (const [key,value] of Object.entries(values)) node.setAttribute(key, value);
+      return node;
+    }
+    const svg = graphic('svg', {viewBox:'0 0 380 160', role:'img', 'aria-label':widget.title});
+    const marker = graphic('circle', {r:5, fill:'#f2c66f'});
+    svg.append(graphic('path',{d:'M35 15 V135 H365',fill:'none',stroke:'currentColor'}),
+      graphic('polyline',{fill:'none',stroke:'#48baff','stroke-width':2,
+        points:points.map(([x,y])=>normalizeX(x)+','+normalizeY(y)).join(' ')}), marker);
+    const slider = el('input', {type:'range', min:0, max:points.length-1, step:1, value:0, 'aria-label':'Inspect a plotted point'});
+    const label = el('output', {class:'small', 'aria-live':'polite'});
+    function plot() {
+      const [x,y] = points[Number(slider.value)];
+      marker.setAttribute('cx', normalizeX(x));
+      marker.setAttribute('cy', normalizeY(y));
+      label.textContent = widget.x_label + ' = ' + x + ' · ' + widget.y_label + ' = ' + y;
+    }
+    slider.addEventListener('input', plot);
+    plot();
+    return el('section', {class:'learning-card', 'aria-label':'Interactive plot'}, el('strong', {}, widget.title),
+      svg, el('label', {}, 'Inspect a point ', slider), label);
   }
 
   function graph(widget) {
@@ -92,15 +155,20 @@
     draw();
   }
 
-  function mount(widgets, parent, next, checklistParent, session) {
-    for (const widget of widgets || []) {
-      if (widget.kind === 'quiz') parent.append(quiz(widget, next));
+  function mount(widgets, parent, next, checklistParent, session, messageId, responses = []) {
+    (widgets || []).forEach((widget, index) => {
+      const answered = responses.find(m => m.practice.widget === index);
+      if (widget.kind === 'quiz' || widget.kind === 'question') parent.append(questionCard(widget, next, messageId, index, answered));
       if (widget.kind === 'graph') parent.append(graph(widget));
+      if (widget.kind === 'plot') {
+        const chart = sampledPlot(widget);
+        if (chart) parent.append(chart);
+      }
       if (widget.kind === 'checklist' && checklistParent) {
         checklistParent.replaceChildren();
         checklist(session, checklistParent, widget.items);
       }
-    }
+    });
   }
-  window.PODALearning = {mount, checklist};
+  window.PODALearning = {mount, checklist, sources};
 })();

@@ -21,8 +21,8 @@ def _events(response):
             for data in lines if data.startswith("data: ")]
 
 
-def _prompt(client, message, files):
-    started = client.post("/chat/runs/with-files", data={"prompt": json.dumps({"message": message, "use_memory": False})},
+def _prompt(client, message, files, session_id=None):
+    started = client.post("/chat/runs/with-files", data={"prompt": json.dumps({"message": message, "use_memory": False, "session_id": session_id})},
                           files=[("files", (name, data, "application/octet-stream")) for name, data in files])
     assert started.status_code == 200, started.text
     run = started.json()
@@ -87,7 +87,8 @@ def test_zip_upload_changes_selected_source_and_preserves_other_members(client, 
         ])}, "done": True}
 
     _model(monkeypatch, writer)
-    run, events = _prompt(client, "/work Edit the uploaded ZIP so src/main.py prints new.", [("app.zip", original)])
+    run, events = _prompt(client, "Edit the uploaded ZIP so src/main.py prints new.", [("app.zip", original)],
+                          session_id=client.post("/chat/work").json()["session_id"])
     name = dict(events)["done"]["download"]["sandbox_file"]
     with ZipFile(io.BytesIO(sandbox_files.read_bytes(name))) as archive:
         assert archive.read("src/main.py") == b"print('new')\n"
@@ -163,3 +164,32 @@ def test_planner_idle_error_falls_back_once(monkeypatch):
     assert calls == ["strong", "fast"]
     assert any(value["message"] == "planner_fallback" for _, value in progress)
     assert result["flagged"] and not result["proposal_id"]
+
+
+def test_uploaded_pdf_renders_exact_page_excerpt_in_ordinary_chat(client, monkeypatch):
+    original = io.BytesIO()
+    canvas = Canvas(original)
+    canvas.drawString(40, 650, "Problem M-9.1: A prismatic bar hangs under its own weight.")
+    canvas.showPage()
+    canvas.drawString(40, 650, "Problem M-9.2: The rotor spins at a constant speed.")
+    canvas.save()
+
+    async def model(messages, *args, **kwargs):
+        assert "[D2]" in messages[-1]["content"]
+        yield {"message": {"content": "The rotor has constant speed [D2]."}, "done": True}
+    _model(monkeypatch, model)
+    run, events = _prompt(client, "Explain the rotor in the attached PDF.", [("problem-set.pdf", original.getvalue())],
+                          session_id=client.post("/chat/work").json()["session_id"])
+    done = dict(events)["done"]
+    excerpt, = done["source_excerpts"]
+    assert excerpt["page"] == 2
+    assert excerpt["text"] == "Problem M-9.2: The rotor spins at a constant speed."
+    assert "[D2]" not in done["answer"]
+    assert client.get(f"/chat/session/{run['session_id']}/messages").json()["messages"][-1]["source_excerpts"] == [excerpt]
+
+
+def test_teaching_followup_does_not_edit_retained_pdf():
+    file = chat.inputs.InputFile("homework.pdf", b"sample")
+    prompt = "For ‘what is the correct expression?’, I chose B. Give me a related practice question."
+    assert chat.inputs.edit_target(prompt, (file,)) is None
+    assert chat.inputs.edit_target("Change the title in the attached PDF", (file,)) is file

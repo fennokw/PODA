@@ -207,8 +207,7 @@ async def _start_run(req: ChatRequest, files: tuple[InputFile, ...] = ()) -> dic
             req = req.model_copy(update={"session_id": proposal["session_id"]})
     if not req.session_id:
         req = req.model_copy(update={"session_id": str(uuid.uuid4())})
-    from .commands import parse
-    persistent = parse(req.message).work or await asyncio.to_thread(discussions.provenance, req.session_id) == discussions.WORK
+    persistent = await asyncio.to_thread(discussions.provenance, req.session_id) == discussions.WORK
     if any(run.session_id == req.session_id and run.state == "running" for run in _runs.values()):
         raise HTTPException(409, "A response is already running in this chat.")
     run = ChatRun(run_id=str(uuid.uuid4()), started=time.monotonic(), session_id=req.session_id,

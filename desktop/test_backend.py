@@ -61,10 +61,12 @@ def test_desktop_requires_token_and_local_session(tmp_path):
                 for asset in ("project-manager.js", "project-manager.css", "chat-commands.js", "chat-commands.css", "learning.js"):
                     assert f"/static/{asset}" in page.text
                     assert http.get(f"/static/{asset}").status_code == 200
-                assert http.get("/project-manager/chat-commands").json()["projects"] == []
-                opened = http.post("/chat/stream", json={"message": "/work"})
-                finished = next(line for line in opened.text.splitlines() if '"work_discussion": true' in line)
-                session = json.loads(finished.removeprefix("data: "))["session_id"]
+                assert http.get("/project-manager/chat-commands").json()["task_name"] is None
+                assert any(item["name"] == "github" for item in http.get("/chat/plugins").json()["plugins"])
+                opened = http.post("/chat/work")
+                session = opened.json()["session_id"]
+                assert http.patch(f"/chat/session/{session}/title", json={"title": "Homework"}).json()["title"] == "Homework"
+                assert http.get(f"/chat/session/{session}/header").json()["title"] == "Homework"
                 assert http.get(f"/chat/session/{session}/messages").json()["work_discussion"]
                 assert http.get("/connections/github").json()["repo"] == ""
                 assert http.get("/connections/web").json() == {"enabled": False, "search": False}

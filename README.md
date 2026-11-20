@@ -109,7 +109,7 @@ After upgrading an older BestNDS database with Event kind, refresh the Notion sc
 
 ### Project and task folders
 
-Open a project from **Projects**. Select a task in **Task folders** to open its progress, deadline, and chats. Use **New chat** or **File existing chat** from the project or task. In Chat, type `/` to see suggestions, or file the current conversation with `/project-name` or `/project "Exact project name"`. Inside that project, use `/task "Exact task name"` to file the chat under a task.
+Open a project from **Projects**. Select a task in **Task folders** to open its progress, deadline, and chats. Use **New chat** or **File existing chat** from the project or task. In Chat, turn on **Work mode**, then choose **Project** and **Task** at the top. **Rename** edits the discussion title in the header and sidebar.
 
 Each task shows its completion percentage and PODA's workload estimate. Enter a time estimate to override PODA's estimate. Set a goal with a target count to calculate progress from the count completed. Report a verified count in task chat, use `/taskprogress 3`, or use `/taskdone` to check the task off. Task edits proposed by the chat model use PODA's normal action approval settings.
 
@@ -118,10 +118,10 @@ Set a deadline in the task editor or select **Link calendar event** to use an ex
 
 ### Chat, Work Discussions, and learning
 
-Ordinary Chat keeps a short active context and stores exchanges in the Second Brain. Enter `/work` to save the current context as a discussion. Work Discussions appear beneath Chat and can be linked to a project or task. Existing saved conversations keep their session IDs.
+Ordinary Chat keeps a short active context and stores exchanges in the Second Brain. Turn on **Work mode** at the top of Chat to save the active conversation as a discussion. Work Discussions appear beneath Chat and can be linked to a project or task. Existing saved conversations keep their session IDs.
 
-- `/learn Explain a first-order system` can display practice questions and an interactive step-response plot.
-- `/work /teach me Help me work through this assignment` keeps the material and transcript together. In a task-linked discussion, review and save the proposed checklist. Check off finished work to update task progress and the existing calendar mirror.
-- `/work /build Inspect the project in /path/to/project` uses a workspace granted through Files & access. The repository map ranks entry points, manifests, symbols, and tests. An execute-enabled grant over a workspace parent can cover both a Git repository and an isolated sibling worktree. Review tool proposals before allowing file changes or execution.
+- `/teach Explain a first-order system` starts guided practice with answer cards, document excerpts when available, and plots. The mode stays on in this chat until you use `/teachoff`.
+- Turn on **Work mode** and use `/teach Help me work through this assignment` to keep the material and transcript together. In a task-linked discussion, review and save the proposed checklist. Check off finished work to update task progress and the existing calendar mirror.
+- `/build Inspect the project in /path/to/project` uses a workspace granted through Files & access. The repository map ranks entry points, manifests, symbols, and tests. An execute-enabled grant over a workspace parent can cover both a Git repository and an isolated sibling worktree. Review tool proposals before allowing file changes or execution.
 
-In **Files & access**, connect a GitHub repository with a fine-grained token scoped to that repo. Enable **Contents** and **Pull requests** write permissions to use approval-based publishing on a new branch as a draft PR. Configure **Web research** there to read public HTTPS sources and optionally search through Brave. Tokens are stored in the OS credential vault, and online tools honor Offline mode.
+Use `@github`, `@web`, or another plugin mention to request its tools. In **Files & access**, connect a GitHub repository with a fine-grained token scoped to that repo. Enable **Contents** and **Pull requests** write permissions to use approval-based publishing on a new branch as a draft PR. Configure **Web research** there to read public HTTPS sources and optionally search through Brave. Tokens are stored in the OS credential vault, and online tools honor Offline mode.

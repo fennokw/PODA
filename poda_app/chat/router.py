@@ -17,7 +17,7 @@ import re
 
 from fastapi import APIRouter, HTTPException, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..runtime import config, inference, models, capability, skill_library
 from ..scheduling import evidence as scheduling
@@ -28,7 +28,7 @@ from ..agent.sandbox_router import download_file
 from ..connectors.notion import context as notion_context
 from ..project_manager import checklists
 from .prompt import build_system_prompt, tools_block
-from . import commands, discussions, learning, artifacts, inputs, mail_fulfillment, working_context
+from . import commands, discussions, learning, plugins, artifacts, inputs, mail_fulfillment, source_excerpts, working_context
 
 router = APIRouter()
 _ARCHIVE_READY = "Your ZIP file is ready to download."
@@ -51,6 +51,12 @@ def should_recall_memory(message: str, enabled: bool = True) -> bool:
 
 
 
+class PracticeResponse(BaseModel):
+    message_id: str = Field(min_length=1, max_length=128)
+    widget: int = Field(ge=0, le=20)
+    choice: int | None = Field(default=None, ge=0, le=4)
+
+
 class ChatRequest(BaseModel):
     message: str
     mode: str = "auto"            # auto | fast | advanced | deep
@@ -59,6 +65,7 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
     continuation_of: str | None = None  # existing proposal for this session
     resume_workflow: bool = False
+    practice: PracticeResponse | None = None
 
 
 def sse(event: str, data: Any) -> str:
@@ -225,9 +232,10 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                 proposal_receipts.append(receipt)
     task_message = (previous_proposal["plan"]["message"] if req.resume_workflow else req.message)
     parsed = commands.parse(task_message) if not ephemeral and not previous_proposal else commands.ChatCommands(task_message)
-    if parsed.work:
-        await asyncio.to_thread(discussions.open_work, session_id)
     task_message = parsed.message
+    selected_plugin = None
+    if not ephemeral and not previous_proposal:
+        task_message, selected_plugin = await asyncio.to_thread(plugins.resolve, task_message)
     folder_reply = ""
     folder_context = None
     if not ephemeral:
@@ -235,29 +243,42 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
         if previous_proposal:
             _, _, folder_context = await asyncio.to_thread(folders.command, session_id, "")
         else:
-            task_message, folder_reply, folder_context = await asyncio.to_thread(folders.command, session_id, task_message)
+            task_message, folder_reply, folder_context = await asyncio.to_thread(
+                folders.command, session_id, task_message)
+    if not ephemeral and not folder_reply and (retired := commands.RETIRED.match(task_message.lstrip())):
+        folder_reply = {"work": "Use Work mode at the top of Chat.",
+                        "learn": "Use /teach for guided practice and explanations.",
+                        "act": "Use @ to select a plugin."}[retired[1].lower()]
+        task_message = ""
     provenance = await asyncio.to_thread(discussions.provenance, session_id) if not ephemeral else ""
     is_work = provenance == discussions.WORK
-    if not task_message and not folder_reply:
-        if input_files and parsed.mode:
-            task_message = "Use the attached material to start this session."
-        elif parsed.mode:
-            folder_reply = "What would you like to work on?" if is_work else "What topic or problem would you like to start with?"
-        elif parsed.work:
-            folder_reply = "Work Discussion is ready."
     new_files = input_files
-    previous_mode = await asyncio.to_thread(discussions.last_mode, session_id) if not ephemeral and not parsed.mode else ""
-    discussion_mode = parsed.mode or previous_mode
-    study_mode = discussion_mode in {"learn", "teach"}
+    previous_mode = await asyncio.to_thread(discussions.last_mode, session_id) if not ephemeral else ""
+    discussion_mode = commands.active_mode(previous_mode, parsed)
+    study_mode = discussion_mode == "teach"
+    practice = None
+    if study_mode and not previous_proposal and not ephemeral:
+        practice = await asyncio.to_thread(discussions.last_question, session_id, req.practice)
+    if req.practice and not practice:
+        raise HTTPException(409, "This question is no longer active. Send your answer in Chat.")
+    if not task_message and not folder_reply:
+        if input_files:
+            task_message = "Help me with the attached material."
+        elif parsed.mode:
+            state = "on" if discussion_mode == parsed.mode else "off"
+            folder_reply = f"{parsed.mode.title()} mode is {state}."
+        elif selected_plugin:
+            folder_reply = f"What would you like to do with {selected_plugin.label}?"
     checklist_changed = False
-    if study_mode and is_work and folder_context and folder_context.get("task_id") and task_message and not input_files:
+    if study_mode and not req.practice and is_work and folder_context and folder_context.get("task_id") and task_message and not input_files:
         progress_reply = await asyncio.to_thread(checklists.confirm_from_chat, session_id, task_message)
         if progress_reply:
             folder_reply, task_message = progress_reply, ""
             checklist_changed = True
     if input_files and not ephemeral:
         await asyncio.to_thread(discussions.save_materials, session_id, input_files)
-    elif study_mode and task_message and not previous_proposal:
+    elif not ephemeral and task_message and not previous_proposal and (
+            study_mode or inputs.references_material(task_message)):
         input_files = await asyncio.to_thread(discussions.recent_materials, session_id)
     folder_prompt = ""
     if folder_context:
@@ -275,7 +296,8 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                       checkpoint["plan"]["steps"][:len(checkpoint["receipt_ids"])]]
     user_message_id = None if ephemeral or previous_proposal else await asyncio.to_thread(
         store.save_message, "user", req.message, None, session_id, provenance,
-        {"attachments": [file.name for file in new_files], "discussion_mode": discussion_mode}, True)
+        {"attachments": [file.name for file in new_files], "discussion_mode": discussion_mode,
+         "practice": req.practice.model_dump() if req.practice else None}, True)
     schedule_review = bool(ephemeral and unattended_timezone and
                            mail_fulfillment.MAIL_TOPIC.search(task_message) and
                            re.search(r"(?:^|[,.]\s*|\band\s+)(?:please\s+)?(?:add|create|insert|put|record)\s+(?:any|all|new)\b"
@@ -289,8 +311,9 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
     resume_archive = bool(req.resume_workflow and sandbox_checkpoint and previous_proposal["status"] == "executed"
                           and len(proposal_receipts) == len(steps)
                           and (artifacts.requested_name(task_message) or "").lower().endswith(".zip"))
-    attachment = artifacts.requested_name(task_message) if not ephemeral and not blocked and (not previous_proposal or resume_archive) else None
-    editing = inputs.edit_target(task_message, input_files) if not blocked and not artifacts.external_destination(task_message) else None
+    attachment = artifacts.requested_name(task_message) if not req.practice and not ephemeral and not blocked and (not previous_proposal or resume_archive) else None
+    editing = (inputs.edit_target(task_message, new_files or input_files)
+               if not req.practice and not blocked and not artifacts.external_destination(task_message) else None)
     if sandbox_target and not input_files and not artifacts.creates_attachment(task_message):
         attachment = None
     if editing and (not attachment or attachment == "poda-output.md"):
@@ -298,8 +321,8 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
     markdown_export = bool(attachment and attachment.lower().endswith((".md", ".mmd")))
     mermaid_export = markdown_export and artifacts.is_mermaid_request(task_message)
     archive_export = bool(attachment and attachment.lower().endswith(".zip"))
-    separate_tools = inputs.needs_separate_tools(task_message, gate.requested_action_intents(task_message),
-                                                 uploaded=bool(input_files))
+    separate_tools = bool(selected_plugin) or inputs.needs_separate_tools(
+        task_message, gate.requested_action_intents(task_message), uploaded=bool(input_files))
     direct = (not ephemeral and not previous_proposal and not separate_tools
               and (bool(input_files) or bool(archive_export and not sandbox_target)))
     capability_reply = gate.capability_answer(snapshot) if (gate.is_capability_query(req.message) and not blocked and not input_files) else None
@@ -327,7 +350,8 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
         return sse(event, data)
 
     async def save_response(content: str, model: str, completed: bool = True, *, attach: bool = False,
-                            source: tuple[str, str] | None = None, widgets: list | None = None) -> dict:
+                            source: tuple[str, str] | None = None, widgets: list | None = None,
+                            citations: list | None = None) -> dict:
         if completed:
             activity.append({"event": "done", "model": model})
         saved = {}
@@ -347,6 +371,8 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
         metadata = {"workflow_activity": activity, "download_name": "poda-response.md"}
         if widgets:
             metadata["learning_widgets"] = widgets
+        if citations:
+            metadata["source_excerpts"] = citations
         if sandbox_file:
             metadata["sandbox_file"] = sandbox_file
         if saved.get("error"):
@@ -356,7 +382,7 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
 
 
     async def generate() -> AsyncIterator[str]:
-        yield frame("session", {"session_id": session_id, "user_message_id": user_message_id, "build_id": config.BUILD_ID, "work_discussion": is_work})
+        yield frame("session", {"session_id": session_id, "user_message_id": user_message_id, "build_id": config.BUILD_ID, "work_discussion": is_work, "discussion_mode": discussion_mode})
         if folder_reply and not task_message:
             download = await save_response(folder_reply, "PODA Projects")
             yield frame("token", {"token": folder_reply})
@@ -440,9 +466,10 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                 yield frame("attachment_warning", {"message": warning})
         # Read-only mail requests are fulfilled by PODA itself, not deferred as
         # a promise in model prose. Success/failure comes from the tool receipt.
-        if not input_files and not schedule_review and not attachment and not previous_proposal and snapshot.get("email", {}).get("can_read") and not (ephemeral and len(unattended_mail_accounts or [])>1) and mail_fulfillment.is_mail_request(req.message, session_id):
+        mail_selected = not selected_plugin or selected_plugin.name == "mail"
+        if mail_selected and not req.practice and not input_files and not schedule_review and not attachment and not previous_proposal and snapshot.get("email", {}).get("can_read") and not (ephemeral and len(unattended_mail_accounts or [])>1) and mail_fulfillment.is_mail_request(task_message, session_id):
             yield frame("status", {"message": "searching_mail", "model": "PODA mail tools"})
-            params, executed, summary = await asyncio.to_thread(mail_fulfillment.fulfill, req.message, session_id, (unattended_mail_accounts or [None])[0] if ephemeral else None)
+            params, executed, summary = await asyncio.to_thread(mail_fulfillment.fulfill, task_message, session_id, (unattended_mail_accounts or [None])[0] if ephemeral else None)
             receipt = executed.get("receipt") or {}
             yield frame("tool", {"name": "mail_search",
                                "args_summary": f"date={params.get('start_date')}..{params.get('end_date')}",
@@ -465,7 +492,10 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                                  "in_depth_loaded": recalled.get("in_depth_loaded", depth == "deep"), "surfaces": recalled.get("surfaces", []), "knowledge_facts": recalled.get("knowledge_facts", []), "graph_ms": recalled.get("graph_ms"),
                                  "results": [{k: r.get(k) for k in ("id", "title", "provenance", "score", "factors", "parent_id", "memory_kind", "speaker", "source_message_id",
                                                                      "tier", "surface_id", "member_count")} for r in recalled.get("results", [])[:14]]})
-        notion_block = await asyncio.to_thread(notion_context.live_context) if not direct and snapshot.get("calendar", {}).get("can_read_calendar") else "[not connected]"
+        calendar_selected = not selected_plugin or selected_plugin.name == "calendar"
+        notion_block = (await asyncio.to_thread(notion_context.live_context)
+                        if calendar_selected and not direct and snapshot.get("calendar", {}).get("can_read_calendar")
+                        else "[no live calendar context]")
         receipts_block = ""
         tool_results_block = ""
         proposal_note = ""
@@ -475,7 +505,7 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
         if previous_proposal:
             receipts_block = "\n" + await asyncio.to_thread(orchestrator.receipts_block, req.continuation_of, lineage or None) + "\n"
         if req.resume_workflow or (not direct and not previous_proposal and orchestrator.tool_prerequisites_exist(snapshot)
-                                   and (discussion_mode in {"build", "research", "act"} or sandbox_target or orchestrator.looks_like_tool_task(task_message)
+                                   and (selected_plugin or discussion_mode in {"build", "research"} or sandbox_target or orchestrator.looks_like_tool_task(task_message)
                                         or (folder_context and folder_context["task_id"] and re.search(r"\b(finished|completed|progress|check off|mark done|mark complete|out of)\b", task_message, re.I)))):
             yield frame("status", {"message": "planning_tools", "model": model})
             recalled_ctx = retrieval.context_block(recalled) if recalled else ""
@@ -543,7 +573,7 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                                                  {"error":data.get("error")},default=str)[:max(450, 10000 // len(unattended_mail_accounts))] +
                                       "\nSUMMARY: " + summary[:450])
                 yield frame("status",{"message":"searched_all_selected_mail_accounts"})
-            elif not previous_proposal and snapshot.get("email", {}).get("can_read") and mail_fulfillment.is_compound_request(task_message) and len(unattended_mail_accounts or []) <= 1:
+            elif mail_selected and not previous_proposal and snapshot.get("email", {}).get("can_read") and mail_fulfillment.is_compound_request(task_message) and len(unattended_mail_accounts or []) <= 1:
                 yield frame("status", {"message":"searching_mail_for_followup_actions","model":"PODA mail tools"})
                 params, mail_run, summary = await asyncio.to_thread(
                     mail_fulfillment.fulfill, req.message, session_id,
@@ -565,6 +595,8 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
             previous_receipts = await asyncio.to_thread(receipts.session_checkpoint, session_id) if is_work else ""
             checkpoint_context = ("\nPrevious actions from this discussion. Recheck current state before repeating writes:\n" +
                                   previous_receipts) if previous_receipts else ""
+            if selected_plugin:
+                checkpoint_context += f"\nUser selected {selected_plugin.label}. Resolve the request with that plugin's available tools and existing permissions."
             planner_ctx = ("RECENT ACTIVE CONVERSATION (not tool evidence):\n" + recent_dialogue +
                            "\n\n" + daily_context + folder_prompt + recalled_ctx + preflight_mail + checkpoint_context)
             if sandbox_target:
@@ -592,7 +624,11 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                         continuation_of=req.continuation_of if req.resume_workflow else None,
                         reply_archive=archive_export, schedule_candidates=schedule_candidates,
                         schedule_timezone=unattended_timezone,
-                        schedule_day=schedule_now.date().isoformat() if schedule_now else None)
+                        schedule_day=schedule_now.date().isoformat() if schedule_now else None,
+                        workflow_mode="research" if selected_plugin and selected_plugin.name == "web" else discussion_mode,
+                        allowed_tools=set(selected_plugin.tools) if selected_plugin else None,
+                        tool_guard=selected_plugin.guard if selected_plugin else None,
+                        require_tool_attempt=bool(selected_plugin))
                 finally:
                     progress.put_nowait(None)
 
@@ -688,8 +724,22 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                 if mermaid_export and attachment.lower().endswith(".md"):
                     system += " PODA will wrap the diagram in a Mermaid fence inside the Markdown file."
         user_content = ("Continue the remaining steps of this request using the action receipts: " + task_message if req.resume_workflow else task_message)
+        if practice:
+            user_content += "\n\nRecent practice question (data): " + json.dumps(practice, ensure_ascii=False)
+            system += "\nIf the learner answers the recent practice question, check their reasoning and respond directly."
+        turn_sources = prepared.sources if prepared else []
         if prepared and prepared.context:
             user_content += "\n\n--- Uploaded reference material ---\n" + prepared.context
+        elif not ephemeral and not attachment and not selected_plugin:
+            previous = await asyncio.to_thread(discussions.previous_sources, session_id)
+            turn_sources = [excerpt for excerpt in previous if excerpt.get("text")]
+            if turn_sources:
+                user_content += "\n\n--- Excerpts from the previous reply (reference data) ---\n" + "\n".join(
+                    f"[{excerpt['id']}] {excerpt['text']}" for excerpt in turn_sources)
+        if turn_sources:
+            system += ("\nWhen you use facts, assumptions, a question, or a figure from an uploaded source, "
+                       "append the matching excerpt ID such as [D3] to the claim. Only cite supplied IDs. "
+                       "PODA will show the actual excerpt. Do not invent a quote or page number.")
         user_turn = {"role": "user", "content": user_content}
         if prepared and prepared.images:
             user_turn["images"] = prepared.images
@@ -770,15 +820,20 @@ async def run_chat(req: ChatRequest, request: Request, *, ephemeral: bool = Fals
                             return
                         final = (f"```mermaid\n{source[0]}```" if attachment.lower().endswith(".mmd") else source[0])
                         yield frame("token", {"token": final})
-                    widgets = []
+                    widgets, citations = [], []
+                    if not attachment and turn_sources:
+                        anchors = task_message if study_mode else ""
+                        final, citations = source_excerpts.resolve(final, turn_sources, anchors=anchors)
                     if study_mode and not attachment:
                         final, widgets = learning.extract(final)
                         if not (folder_context and folder_context.get("task_id") and is_work):
                             widgets = [item for item in widgets if item["kind"] != "checklist"]
-                    download = await save_response(final, model, attach=not sandbox_write_proposed, source=source, widgets=widgets) if not ephemeral else None
+                    download = await save_response(final, model, attach=not sandbox_write_proposed, source=source,
+                                                   widgets=widgets, citations=citations) if not ephemeral else None
                     if show_archive:
                         yield frame("token", {"token": download["error"] or _ARCHIVE_READY})
-                    yield frame("done", {"model": model, "download": download, "profile": profile["profile"], "learning_widgets": widgets, "answer": final if study_mode and not attachment else None, "eval_count": chunk.get("eval_count"), "eval_duration_ms": round((chunk.get("eval_duration") or 0) / 1e6),
+                    yield frame("done", {"model": model, "download": download, "profile": profile["profile"], "learning_widgets": widgets, "source_excerpts": citations,
+                                        "answer": final if (study_mode or turn_sources) and not attachment else None, "eval_count": chunk.get("eval_count"), "eval_duration_ms": round((chunk.get("eval_duration") or 0) / 1e6),
                                        "prompt_eval_count": chunk.get("prompt_eval_count"), "speculation": chunk.get("speculation")})
                     if not ephemeral and profile.get("profile") in {"fast_coding", "deep_coding"} and chunk.get("done_reason") != "length":
                         from ..connectors.messaging.notifications import coding_finished
@@ -828,8 +883,10 @@ def session_messages(session_id: str, limit: int = 100, before: int | None = Non
             metadata = json.loads(record.pop("metadata_json") or "{}")
         except ValueError:
             metadata = {}
-        if isinstance(metadata, dict) and "learning_widgets" in metadata:
-            record["learning_widgets"] = metadata["learning_widgets"]
+        if isinstance(metadata, dict):
+            for key in ("learning_widgets", "source_excerpts", "practice"):
+                if metadata.get(key):
+                    record[key] = metadata[key]
         if isinstance(metadata, dict) and "workflow_activity" in metadata:
             record["workflow_activity"] = metadata["workflow_activity"]
         if record["role"] == "user" and isinstance(metadata, dict):
@@ -838,7 +895,9 @@ def session_messages(session_id: str, limit: int = 100, before: int | None = Non
             sandbox_file = metadata.get("sandbox_file") if isinstance(metadata, dict) else None
             record["download"] = {"message_id": record["id"], "filename": sandbox_file or artifacts.saved_filename(metadata),
                                   "sandbox_file": sandbox_file, "error": metadata.get("attachment_error") if isinstance(metadata, dict) else None}
-    return {"messages": records, "workflows": workflows, "work_discussion": True, "next_before": next_before, "interrupted": interrupted, "materials": materials}
+    return {"messages": records, "workflows": workflows, "work_discussion": True, "next_before": next_before,
+            "interrupted": interrupted, "materials": materials, "discussion_mode": commands.active_mode(
+                discussions.last_mode(session_id), commands.ChatCommands(""))}
 
 
 @router.post("/chat/session/{session_id}/messages/{message_id}/diagram-image")
@@ -926,6 +985,61 @@ def rename_discussion(session_id: str, req: DiscussionTitle):
         discussions.promote(conn, session_id)
         conn.execute("UPDATE chat_discussions SET title=? WHERE session_id=?", (title, session_id))
     return {"title": title}
+
+
+class ChatFiling(BaseModel):
+    project_id: str | None = None
+    task_id: str | None = None
+
+
+@router.post("/chat/work")
+def start_work(session_id: str | None = None):
+    sid = session_id or str(uuid.uuid4())
+    if len(sid) > 128:
+        raise HTTPException(422, "Invalid chat session.")
+    discussions.open_work(sid)
+    return discussion_header(sid)
+
+
+@router.get("/chat/session/{session_id}/header")
+def discussion_header(session_id: str):
+    from ..project_manager import folders
+    from ..project_manager.router import ensure_tables
+    with closing(connect()) as conn:
+        if not discussions.is_work(conn, session_id):
+            raise HTTPException(404, "Work discussion not found.")
+        ensure_tables(conn)
+        return {**discussions.header(conn, session_id), "folder": folders.context(conn, session_id)}
+
+
+@router.put("/chat/session/{session_id}/filing")
+def file_discussion(session_id: str, filing: ChatFiling):
+    from ..project_manager import folders
+    from ..project_manager.router import ensure_tables
+    with folders.LOCK, closing(connect()) as conn, conn:
+        if not discussions.is_work(conn, session_id):
+            raise HTTPException(404, "Turn on Work mode to file this chat.")
+        ensure_tables(conn)
+        if filing.task_id and not filing.project_id:
+            raise HTTPException(422, "Choose a project first.")
+        if filing.project_id:
+            if not one(conn, "SELECT 1 FROM projects WHERE id=?", (filing.project_id,)):
+                raise HTTPException(404, "Project not found.")
+            if filing.task_id:
+                try:
+                    folders.get_task(conn, filing.project_id, filing.task_id)
+                except KeyError as exc:
+                    raise HTTPException(404, "Task not found in this project.") from exc
+            folders.assign(conn, session_id, filing.project_id, filing.task_id)
+        else:
+            conn.execute("DELETE FROM pm_chat_folders WHERE session_id=?", (session_id,))
+    return discussion_header(session_id)
+
+
+@router.get("/chat/plugins")
+def chat_plugins():
+    available = plugins.catalog()
+    return {"plugins": [{"name": key, "label": plugin.label} for key, plugin in available.items()]}
 
 
 @router.get("/chat/history")
